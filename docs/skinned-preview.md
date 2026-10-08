@@ -78,7 +78,36 @@ Not tested here: game data, the window, any visual result.
 Counts: +0 newly viewable, +0 newly Complete (meshes were already viewable; animation is
 not part of Complete).
 
+## Re: GPU skinning (branch claude/gpu-skinning, stacked on Rd)
+
+- The viewer now skins with Bevy `SkinnedMesh` by default; `--skinning cpu` keeps the Rd
+  CPU path as the reference. Status text names the path in use.
+- Joint entities mirror the mesh hierarchy under a root whose transform is the display
+  normalisation N (scale 1/span, translate −centre). Inverse bindposes are
+  `invSkinPose × N⁻¹`, so display-space vertices skin to `N × world × invSkinPose × raw`,
+  the same result as the CPU path. Each frame writes `Rig::local_matrices(pose)` into
+  the joint transforms.
+- `lbp_preview::skinned::gpu_skin_attributes` applies the CPU weight rules: weights on
+  out-of-range joints or non-positive weights are dropped and the rest normalised; a
+  vertex with no usable weight is bound to an extra static joint (index = bone count)
+  that leaves it in place. Limit: bone count + 1 ≤ Bevy `MAX_JOINTS` (256), otherwise
+  the clip fails with a message pointing to `--skinning cpu`.
+- Morphs stay on the CPU: when the mesh and the clip both have morphs, positions are
+  rewritten each frame with `SkinnedClip::morphed_bind`, then the GPU skins them.
+- Scene meshes get `NoFrustumCulling` (the bind-pose bounds do not cover the motion).
+
+Tests (cloud): `hierarchy_of_locals_reproduces_skin_matrices` and
+`gpu_attributes_match_cpu_weight_rules` (lbp-preview);
+`gpu_joint_hierarchy_matches_cpu_skin_matrices` (lbp-bevy-viewer: spawns the rig, runs
+Bevy transform propagation, compares joint global × inverse bind with
+`N × CPU skin matrix × N⁻¹`). Not tested: the GPU shader output on screen.
+
+PC check: same mesh/animation as above, capture `--skinning cpu` and `--skinning gpu`
+with the same `--animation-frame`; the two captures should match.
+
 ## Next
 
-Re: GPU skinning with Bevy `SkinnedMesh` and the measured clip as the reference, then
-the state→animation map (ABK/AST/AMP leads in `docs/animation-keys.md`).
+The state→animation map: no Toolkit serializer exists for ABK/AST/AMP
+(`ResourceType` lists them only), and runtime-evidence/sackboy.md marks the anim-per-state
+table UNKNOWN. It needs the PC census (do those resource types occur on 01.33?) before
+any reader.

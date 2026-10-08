@@ -6,7 +6,8 @@ use lbp_catalog::{
     Catalog, LoadControl,
 };
 use lbp_mesh::{Skeleton, SkinStreams};
-use lbp_resource::animation::{self, Animation, Pose};
+pub use lbp_resource::animation::Pose;
+use lbp_resource::animation::{self, Animation};
 
 pub type Mat4 = [f32; 16];
 
@@ -149,7 +150,21 @@ impl Rig {
     /// Per mesh bone: world(pose) × inverse skin pose. Undriven bones keep their bind
     /// local transform, so a pose without matches reproduces the bind pose.
     pub fn skin_matrices(&self, pose: Option<&Pose>) -> Vec<Mat4> {
-        let local: Vec<Mat4> = (0..self.bones.len())
+        let local = self.local_matrices(pose);
+        self.chains
+            .iter()
+            .zip(&self.bones)
+            .map(|(chain, bone)| {
+                let world = chain.iter().fold(IDENTITY, |acc, &j| mul(&acc, &local[j]));
+                mul(&world, &bone.inv_skin_pose)
+            })
+            .collect()
+    }
+
+    /// Per mesh bone local transform: the pose's TRS for driven bones, else bind local.
+    /// A joint hierarchy fed these and `inverse_binds` reproduces `skin_matrices`.
+    pub fn local_matrices(&self, pose: Option<&Pose>) -> Vec<Mat4> {
+        (0..self.bones.len())
             .map(|i| {
                 match (pose, self.driven_by[i]) {
                     (Some(p), Some(a)) => p
@@ -162,16 +177,47 @@ impl Rig {
                 }
                 .unwrap_or(self.bind_local[i])
             })
-            .collect();
-        self.chains
-            .iter()
-            .zip(&self.bones)
-            .map(|(chain, bone)| {
-                let world = chain.iter().fold(IDENTITY, |acc, &j| mul(&acc, &local[j]));
-                mul(&world, &bone.inv_skin_pose)
-            })
             .collect()
     }
+
+    pub fn parents(&self) -> Vec<i32> {
+        self.bones.iter().map(|b| b.parent).collect()
+    }
+
+    pub fn inverse_binds(&self) -> Vec<Mat4> {
+        self.bones.iter().map(|b| b.inv_skin_pose).collect()
+    }
+}
+
+/// GPU skin attributes with the same semantics as `skin_positions`: weights on joints
+/// past `bone_count` or non-positive are dropped, the rest normalised; a vertex with no
+/// usable weight is bound fully to the extra static joint `bone_count`.
+pub fn gpu_skin_attributes(
+    joints: &[[u8; 4]],
+    weights: &[[f32; 4]],
+    bone_count: usize,
+) -> (Vec<[u16; 4]>, Vec<[f32; 4]>) {
+    let fixed = u16::try_from(bone_count).unwrap_or(u16::MAX);
+    joints
+        .iter()
+        .zip(weights)
+        .map(|(j, w)| {
+            let mut out_j = [0u16; 4];
+            let mut out_w = [0f32; 4];
+            for k in 0..4 {
+                if usize::from(j[k]) < bone_count && w[k] > 0. && w[k].is_finite() {
+                    out_j[k] = u16::from(j[k]);
+                    out_w[k] = w[k];
+                }
+            }
+            let total: f32 = out_w.iter().sum();
+            if total > 0. {
+                (out_j, out_w.map(|v| v / total))
+            } else {
+                ([fixed, 0, 0, 0], [1., 0., 0., 0.])
+            }
+        })
+        .unzip()
 }
 
 /// Bind positions plus weighted morph offsets (morph index = animation morph index).
@@ -285,19 +331,30 @@ impl SkinnedClip {
         })
     }
 
-    /// Skinned positions for a running frame number. Clips with a loop range wrap into
-    /// it; others restart from frame 0 (preview policy: the game decides when a
-    /// non-looping clip ends).
-    pub fn frame_positions(&self, frame: i64) -> Option<Vec<[f32; 3]>> {
+    /// Resolved frame and pose for a running frame number (see `frame_positions`).
+    pub fn frame_pose(&self, frame: i64) -> Option<Pose> {
         let frames = i64::from(self.animation.frame_count());
         let frame = if self.report.looped {
             self.animation.looped_frame(frame, true)?
         } else {
             u16::try_from(frame.checked_rem_euclid(frames)?).ok()?
         };
-        let pose = self.animation.pose(frame)?;
+        self.animation.pose(frame)
+    }
+
+    /// Bind positions with this pose's morph weights applied (before skinning).
+    pub fn morphed_bind(&self, pose: &Pose) -> Vec<[f32; 3]> {
         let mut base = self.bind_positions.clone();
         apply_morphs(&mut base, &self.skin, &pose.morphs);
+        base
+    }
+
+    /// Skinned positions for a running frame number. Clips with a loop range wrap into
+    /// it; others restart from frame 0 (preview policy: the game decides when a
+    /// non-looping clip ends).
+    pub fn frame_positions(&self, frame: i64) -> Option<Vec<[f32; 3]>> {
+        let pose = self.frame_pose(frame)?;
+        let base = self.morphed_bind(&pose);
         let matrices = self.rig.skin_matrices(Some(&pose));
         Some(skin_positions(
             &base,
@@ -442,6 +499,44 @@ mod tests {
         assert!(close(out[0], [3., 2., 2.]));
         assert_eq!(out[1], [5., 5., 5.]); // no weight
         assert_eq!(out[2], [3., 3., 3.]); // joint past the bone list
+    }
+
+    /// The viewer's GPU path: joint world = parent world × local, matrix × inverse bind.
+    #[test]
+    fn hierarchy_of_locals_reproduces_skin_matrices() {
+        let r = rig(&[10, 20]);
+        let pose = Pose {
+            rotations: vec![[0., 0., 0.6, 0.8], [0.6, 0., 0., 0.8]],
+            positions: vec![[1., 2., 3.], [0., 1., 0.]],
+            scales: vec![[1.; 3], [0.5; 3]],
+            morphs: vec![],
+        };
+        let local = r.local_matrices(Some(&pose));
+        let parents = r.parents();
+        let mut world = local.clone();
+        for i in 0..world.len() {
+            if let Ok(p) = usize::try_from(parents[i]) {
+                world[i] = mul(&world[p], &local[i]);
+            }
+        }
+        let inverse = r.inverse_binds();
+        for (i, m) in r.skin_matrices(Some(&pose)).iter().enumerate() {
+            let gpu = mul(&world[i], &inverse[i]);
+            assert!(m.iter().zip(gpu).all(|(a, b)| (a - b).abs() < 1e-5));
+        }
+    }
+
+    #[test]
+    fn gpu_attributes_match_cpu_weight_rules() {
+        let (j, w) = gpu_skin_attributes(
+            &[[0, 1, 9, 0], [0, 0, 0, 0], [9, 0, 0, 0]],
+            &[[0.5, 0.25, 0.25, 0.], [0.; 4], [1., 0., 0., 0.]],
+            2,
+        );
+        assert_eq!(j[0], [0, 1, 0, 0]);
+        assert!((w[0][0] - 2. / 3.).abs() < 1e-6 && (w[0][1] - 1. / 3.).abs() < 1e-6);
+        assert_eq!((j[1], w[1]), ([2, 0, 0, 0], [1., 0., 0., 0.]));
+        assert_eq!((j[2], w[2]), ([2, 0, 0, 0], [1., 0., 0., 0.]));
     }
 
     #[test]
