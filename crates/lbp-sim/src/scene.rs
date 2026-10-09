@@ -46,6 +46,69 @@ pub const COLLIDABLE_GAME: i16 = 0x1;
 pub const MAX_PARENT_DEPTH: usize = 256;
 /// Triangles below this area (world units²) after the transform are dropped.
 pub const MIN_TRIANGLE_AREA: f32 = 1e-4;
+/// World triangles and the z slab (centre, half depth) of a [`sideways`] shape.
+type Sideways = (Vec<[[f32; 2]; 3]>, (f32, f32));
+
+/// Side view of a SHAPE whose world matrix flattens its outline plane in xy: the outline
+/// extruded over local z in [-t, t], projected onto world xy. For a connected outline that
+/// projects to a line this is exactly the convex hull of the projected prism corners (a
+/// parallelogram). Returns CCW world triangles and the world z slab (centre, half depth)
+/// the outline spans. INFERRED from d198 samples (Things rotated 90 degrees about x in DLC
+/// levels): the game evidently collides with them, as Sackboy stands on such floors.
+fn sideways(m: &[f32; 16], points: &[[f32; 2]], t: f32) -> Option<Sideways> {
+    let scale = m[0].abs().max(m[1].abs()).max(m[4].abs()).max(m[5].abs());
+    let det = m[0] * m[5] - m[1] * m[4];
+    if det.abs() > 1e-6 * scale * scale || t <= 0. {
+        return None;
+    }
+    let mut corners = Vec::with_capacity(points.len() * 2);
+    let (mut zlo, mut zhi) = (f32::MAX, f32::MIN);
+    for p in points {
+        for z in [-t, t] {
+            let w = |r: usize| m[r] * p[0] + m[4 + r] * p[1] + m[8 + r] * z + m[12 + r];
+            corners.push([w(0), w(1)]);
+            let wz = w(2);
+            zlo = zlo.min(wz);
+            zhi = zhi.max(wz);
+        }
+    }
+    let hull = convex_hull(corners);
+    let mut tris = Vec::new();
+    for k in 1..hull.len().saturating_sub(1) {
+        let tri = [hull[0], hull[k], hull[k + 1]];
+        if area(&tri) >= MIN_TRIANGLE_AREA {
+            tris.push(tri);
+        }
+    }
+    let slab = (0.5 * (zlo + zhi), 0.5 * (zhi - zlo));
+    (!tris.is_empty() && slab.0.is_finite() && slab.1.is_finite()).then_some((tris, slab))
+}
+
+/// Counter-clockwise convex hull (monotone chain), collinear points dropped.
+fn convex_hull(mut p: Vec<[f32; 2]>) -> Vec<[f32; 2]> {
+    p.retain(|q| q[0].is_finite() && q[1].is_finite());
+    p.sort_by(|a, b| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])));
+    p.dedup();
+    if p.len() < 3 {
+        return p;
+    }
+    let cross = |o: [f32; 2], a: [f32; 2], b: [f32; 2]| {
+        (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+    };
+    let mut h: Vec<[f32; 2]> = Vec::with_capacity(2 * p.len());
+    for pass in [p.clone(), p.into_iter().rev().collect()] {
+        let start = h.len();
+        for q in pass {
+            while h.len() >= start + 2 && cross(h[h.len() - 2], h[h.len() - 1], q) <= 0. {
+                h.pop();
+            }
+            h.push(q);
+        }
+        h.pop();
+    }
+    h
+}
+
 /// Flat-transform samples kept per scene (diagnostics).
 pub const FLAT_SAMPLES: usize = 4;
 
@@ -283,6 +346,19 @@ pub fn build_scene_with(
             // A mirrored transform reverses the winding.
             triangles.push(if area > 0. { [a, b, c] } else { [a, c, b] });
         }
+        let (mut z, mut half_thickness) = (m[14], shape.thickness.abs());
+        if triangles.is_empty() {
+            // A shape turned on its side (its outline plane contains the z axis, e.g. rotated
+            // 90 degrees about x): the 2D collider is the side view of its extruded slab.
+            if let Some((tris, slab)) = sideways(m, &outline.points, shape.thickness.abs()) {
+                triangles = tris
+                    .into_iter()
+                    .map(|t| t.map(|p| frame.to_local(p)))
+                    .collect();
+                (z, half_thickness) = slab;
+                *scene.report.filled.entry("sideways prism").or_default() += 1;
+            }
+        }
         if triangles.is_empty() {
             // Split by cause: a world matrix that flattens the xy plane (seen edge-on, or
             // scaled to nothing), a tiny outline, or neither.
@@ -314,8 +390,8 @@ pub fn build_scene_with(
             body,
             frame,
             triangles,
-            z: m[14],
-            half_thickness: shape.thickness.abs(),
+            z,
+            half_thickness,
             density: shape.mass_depth.max(0.) * DENSITY,
         });
     }

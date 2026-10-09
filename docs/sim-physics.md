@@ -180,6 +180,18 @@ zero_area_loop 57, no_loops 26. Movers first moved at ticks 2-5 (3,098), 6-30 (2
 axes parallel (turned edge-on); `flat_samples` per level (Thing and the 3x3 linear part,
 up to 4); `why_moved.sleep` (never asleep, asleep to the end, woke at 1-5, 6-30, 31+).
 
+## Part 2f: shapes turned on their side (2026-10-09)
+
+d198 (#72): all 6,325 "flat transform" rejects are "one axis zero"; every sample is a shape
+rotated 90 degrees about x (local y -> world z, local z -> world -y), in DLC levels
+(dccomics minigame_2, catwoman2, move side_move_tilt). Movers over 100 woke at ticks 1-5
+(3,120), 6-30 (2,054), 31+ (669): they fall almost at once, consistent with missing floors.
+Such a shape now becomes the side view of its extruded slab: the convex hull of the outline
+corners at local z -t and +t projected onto world xy (exact for a connected outline whose
+plane holds the z axis), with the z slab spanning the outline's world z range. Counted as
+`filled["sideways prism"]`. INFERRED: the game collides with these as floors. Test
+`floor_turned_on_its_side_still_holds_a_box`. Not tested: levels after the change.
+
 ## Part 3: Sackboy movement rules (2026-10-09)
 
 `lbp_sim::sackboy`: a Bevy-free per-tick controller. The caller supplies the pad state,

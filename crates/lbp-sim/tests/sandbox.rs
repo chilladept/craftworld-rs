@@ -639,3 +639,35 @@ fn crossing_outline_is_filled_and_holds_a_box() {
     let p = run(&things, 120)[1].1;
     assert!((p[1] - 50.).abs() < 5., "rests on top of the floor: {p:?}");
 }
+
+#[test]
+fn floor_turned_on_its_side_still_holds_a_box() {
+    // Rotated 90 degrees about x (as the d198 DLC samples): local y runs along world z and
+    // the extrusion (local z, half depth 50) along world -y. The outline is a line in xy,
+    // so the collider is the slab's side view: 4000 wide, 100 tall, z -100..100.
+    let mut world = matrix(0., -50., 0., 0., 1., 1.);
+    world[4..7].copy_from_slice(&[0., 0., 1.]);
+    world[8..11].copy_from_slice(&[0., -1., 0.]);
+    let mut shape = rect(4000., 200., 7);
+    shape.thickness = 50.;
+    let things = vec![
+        thing(0, world, Some(shape), false),
+        thing(
+            1,
+            matrix(0., 300., 0., 0., 1., 1.),
+            Some(rect(100., 100., 7)),
+            true,
+        ),
+    ];
+    let scene = build_scene(&things);
+    assert_eq!(scene.report.filled.get("sideways prism"), Some(&1));
+    assert!(
+        scene.report.rejected.is_empty(),
+        "{:?}",
+        scene.report.rejected
+    );
+    let floor = &scene.colliders[0];
+    assert!(floor.z.abs() < 1e-3 && (floor.half_thickness - 100.).abs() < 1e-3);
+    let p = run(&things, 120)[1].1;
+    assert!((p[1] - 50.).abs() < 5., "rests on top of the floor: {p:?}");
+}
