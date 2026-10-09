@@ -1,0 +1,2 @@
+# Viewer --help: one entry per line; adjacent additions from two branches both stay.
+crates/lbp-bevy-viewer/src/help.rs merge=union

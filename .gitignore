@@ -1,6 +1,7 @@
 # Default deny: only authored source, docs and synthetic fixture recipes.
 *
 !/.gitignore
+!/.gitattributes
 !/.claude/
 !/.claude/settings.json
 !/.github/
@@ -20,6 +21,7 @@
 !/scripts/
 !/scripts/*.py
 !/scripts/*.ps1
+!/scripts/*.sh
 !/scripts/ToolkitOracle.java
 !/scripts/TextureOracle.java
 !/scripts/MeshOracle.java

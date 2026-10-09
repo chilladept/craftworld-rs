@@ -52,6 +52,18 @@ The facts AGENTS.md requires stay; repetition goes.
 - MODLOG.md entry: at most 6 lines.
 - Overwrite `STATUS-CURRENT.md` (at most ~60 lines) with the current state.
 
+## Cloud (Linux) sessions
+
+- Before every push run `scripts/precheck.sh` (`--fast` while iterating). It uses
+  CI's pinned toolchain and crate list, adds the viewer `cargo check` CI skips on
+  PRs, and prints only failing tails. The cloud default Rust is older than CI's, so
+  plain `cargo clippy` passes locally and fails CI.
+- New viewer flags: add one entry to `crates/lbp-bevy-viewer/src/help.rs`, never a
+  long single-line string (it conflicted on every flag PR).
+- Requests to the PC and its results go by pointer, not by copy: a result longer
+  than ~10 lines is written once (PR comment or `results/` file, see
+  docs/workflow.md §9) and every relay carries the link plus a 1-3 line verdict.
+
 ## Build and test (Windows, PowerShell)
 
 The toolchain is project-local (Rust stable, x86_64-pc-windows-gnu, no MSVC).

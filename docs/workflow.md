@@ -89,9 +89,10 @@ Out of scope: <what not to touch>
 
 CI pins Rust 1.99.0 (the PC's `stable-x86_64-pc-windows-gnu` as of 2026-10-07). When
 the PC toolchain updates, bump `toolchain:` in `.github/workflows/ci.yml` in the same
-commit. Cloud containers may ship an older Rust; a cloud session must run
-`rustup toolchain install 1.99.0 -c clippy,rustfmt` and use `cargo +1.99.0` before
-pushing, or new Clippy lints fail CI after it stops (D79).
+commit. Cloud containers ship an older Rust (1.97 on 2026-10-09), so a cloud session runs
+`scripts/precheck.sh` before pushing: it installs the CI toolchain if missing and runs
+fmt, Clippy, tests, the viewer check and the Python tests with capped output (D79 and
+#67 failed CI on lints the cloud's default Clippy doesn't have).
 
 ## 8. Line endings
 
@@ -102,8 +103,8 @@ rewrites the whole file (D78 turned a 517-line change into 5,313 lines).
 One-time fix, by the Integrator, right after a batch merges and while no task branch
 is open (otherwise every open branch conflicts):
 
-1. In `.gitignore`, under `!/.gitignore`, add `!/.gitattributes`.
-2. Create `.gitattributes`:
+1. `.gitattributes` exists already (it marks the viewer help list `merge=union`).
+2. Add to `.gitattributes`:
    ```
    * text=auto eol=lf
    *.ps1 text eol=crlf
@@ -116,3 +117,25 @@ is open (otherwise every open branch conflicts):
    created afterwards need nothing special.
 
 After this, delete this section.
+
+## 9. Cloud threads, PC results and relays
+
+Since 2026-10-08 cloud research threads in the project open PRs on `claude/*` branches
+and the PC verifies them. Each hop through a long-running session (coordinator, PC
+thread) replays its whole context, ~300-370k tokens per model call on 2026-10-09, so
+the rules below keep hops few and messages small.
+
+1. **Results are written once.** The PC posts a PR's verification result as one
+   comment on that PR (`gh pr comment <n> --body-file <file>`): verdict, commands,
+   counts, RPCS3 deltas, follow-ups. The thread that opened the PR is subscribed to
+   it and gets the comment directly; nothing needs relaying.
+2. **Results with no PR** (measurements, RPCS3 runs, research questions) go to
+   `/mnt/project-files/lbp2/results/<YYYY-MM-DD>-<topic>.md` when the writer can
+   reach the project folder, otherwise into a PR comment on the requesting thread's
+   latest PR.
+3. **Relays carry pointers.** A relay is at most 3 lines: what, verdict, link. Never
+   paste a log, table or list of numbers into a relay; it gets copied 2-3 times.
+4. **Requests are batched.** A cloud thread sends the PC one request per PR (or per
+   batch of PRs), listing the exact commands, not one message per question.
+5. **Stacked PRs:** open the second PR against `main` after the first merges, or say
+   "merge after #N" in the PR body so the PC merges in that order.

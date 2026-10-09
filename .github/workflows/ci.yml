@@ -58,6 +58,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.99.0"
+      # Bevy/winit/rodio need these; fontconfig is for the text browser's OS font
+      # fallback (the viewers job was red on main from 2026-10-08 without it).
+      - name: System libraries
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends libudev-dev libasound2-dev libwayland-dev libxkbcommon-dev libfontconfig1-dev
       - uses: actions/cache@v4
         with:
           path: |
