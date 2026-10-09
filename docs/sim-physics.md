@@ -167,8 +167,16 @@ reads in Rookie Test, PC runs S9 and d190):
 
 Tests (`sackboy::tests`) reproduce the measured walk, tap/hold apexes and air time, air
 control cap, carried speed and lane rules. Not modelled: crouch and landing dips (about 35
-units, visual), slopes, analogue stick speed, grab, swim, terminal velocity. Not wired yet:
-the avian character body and the viewer.
+units, visual), slopes, analogue stick speed, grab, swim, terminal velocity.
+
+`character.rs` puts the controller on the avian world: a kinematic capsule (radius 35,
+half segment 34, so the centre rests 69 above the floor: INFERRED from Rookie Test; width
+PLACEHOLDER) in a thin z-slab (half depth 5, PLACEHOLDER) that follows the lane. Each tick
+shape casts against colliders in Sackboy's slab give ground (2-unit probe) and lane floor
+(400-unit probe below the target lane); the move is applied x then y, each stopped at the
+first surface facing the motion (move and stop, no slope slide). Tests (`tests/character.rs`)
+cover standing, walking into a wall, a 260 full-hold jump and a lane change refused without
+floor. Not wired yet: the viewer (pad input, spawn at the checkpoint).
 
 ## Next
 
