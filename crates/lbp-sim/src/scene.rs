@@ -173,6 +173,8 @@ pub struct SceneCollider {
     pub half_thickness: f32,
     /// Mass per unit area: massDepth × [`DENSITY`].
     pub density: f32,
+    /// Built by [`sideways`] (a shape turned on its side).
+    pub sideways: bool,
 }
 
 /// Counts for the PC report.
@@ -347,6 +349,7 @@ pub fn build_scene_with(
             triangles.push(if area > 0. { [a, b, c] } else { [a, c, b] });
         }
         let (mut z, mut half_thickness) = (m[14], shape.thickness.abs());
+        let mut turned = false;
         if triangles.is_empty() {
             // A shape turned on its side (its outline plane contains the z axis, e.g. rotated
             // 90 degrees about x): the 2D collider is the side view of its extruded slab.
@@ -357,6 +360,7 @@ pub fn build_scene_with(
                     .collect();
                 (z, half_thickness) = slab;
                 *scene.report.filled.entry("sideways prism").or_default() += 1;
+                turned = true;
             }
         }
         if triangles.is_empty() {
@@ -392,6 +396,7 @@ pub fn build_scene_with(
             triangles,
             z,
             half_thickness,
+            sideways: turned,
             density: shape.mass_depth.max(0.) * DENSITY,
         });
     }

@@ -13,12 +13,13 @@
 //! and BODY Thing with a collider (motion). Counts only; no game bytes. Output: a NEW JSON
 //! file under ignored `local-analysis/`.
 use avian2d::prelude::*;
+use bevy::ecs::system::RunSystemOnce;
 use bevy::prelude::*;
 use bevy::time::TimeUpdateStrategy;
 use lbp_catalog::{attachment::AttachedSource, LoadControl};
 use lbp_sim::{
     build_scene_with, scene::MaterialRule, spawn_scene, to_level, PhysicsScene, SimPlugin,
-    ThingIndex, TICK_HZ,
+    ThingIndex, ZSlab, TICK_HZ,
 };
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -56,7 +57,64 @@ struct Motion {
     first_moved: BTreeMap<usize, usize>,
     /// Bodies seen asleep, and the first tick each was awake again after that.
     asleep: std::collections::BTreeSet<usize>,
+    /// What a downward ray from each dynamic body meets after tick 1 (same slab, own
+    /// colliders skipped).
+    below: BTreeMap<usize, &'static str>,
     woke: BTreeMap<usize, usize>,
+}
+
+/// Ray this far below each dynamic body's origin (world units).
+const BELOW_RAY: f32 = 1000.;
+
+fn below_bodies(
+    spatial: &SpatialQuery,
+    bodies: &Query<(Entity, &ThingIndex, &RigidBody, &Position)>,
+    colliders: &Query<(Entity, &ColliderOf, &ZSlab, &ThingIndex)>,
+    sideways: &std::collections::BTreeSet<usize>,
+) -> BTreeMap<usize, &'static str> {
+    let mut out = BTreeMap::new();
+    for (e, t, rb, pos) in bodies {
+        if *rb != RigidBody::Dynamic {
+            continue;
+        }
+        let own: Vec<ZSlab> = colliders
+            .iter()
+            .filter(|c| c.1.body == e)
+            .map(|c| *c.2)
+            .collect();
+        let mut best: Option<(f32, Entity)> = None;
+        spatial.ray_hits_callback(
+            pos.0,
+            Dir2::NEG_Y,
+            BELOW_RAY * lbp_sim::UNIT_SCALE,
+            true,
+            &SpatialQueryFilter::default(),
+            |h| {
+                if let Ok((_, of, slab, _)) = colliders.get(h.entity) {
+                    if of.body != e
+                        && own.iter().any(|s| s.overlaps(slab))
+                        && best.is_none_or(|b| h.distance < b.0)
+                    {
+                        best = Some((h.distance, h.entity));
+                    }
+                }
+                true
+            },
+        );
+        let what = match best {
+            None => "nothing within 1000",
+            Some((_, c)) => {
+                let (_, of, _, ct) = colliders.get(c).expect("hit is a collider");
+                match bodies.get(of.body).map(|b| *b.2) {
+                    Ok(RigidBody::Dynamic) => "dynamic body",
+                    _ if sideways.contains(&ct.0) => "static, sideways shape",
+                    _ => "static",
+                }
+            }
+        };
+        out.insert(t.0, what);
+    }
+    out
 }
 
 fn simulate(scene: &PhysicsScene, ticks: usize) -> Motion {
@@ -82,8 +140,25 @@ fn simulate(scene: &PhysicsScene, ticks: usize) -> Motion {
         });
     app.finish();
     let mut m = Motion::default();
+    let sideways: std::collections::BTreeSet<usize> = scene
+        .colliders
+        .iter()
+        .filter(|c| c.sideways)
+        .map(|c| c.thing)
+        .collect();
     for tick in 1..=ticks {
         app.update();
+        if tick == 1 {
+            let side = sideways.clone();
+            m.below = app
+                .world_mut()
+                .run_system_once(move |spatial: SpatialQuery,
+                      bodies: Query<(Entity, &ThingIndex, &RigidBody, &Position)>,
+                      colliders: Query<(Entity, &ColliderOf, &ZSlab, &ThingIndex)>| {
+                    below_bodies(&spatial, &bodies, &colliders, &side)
+                })
+                .unwrap_or_default();
+        }
         let mut q = app
             .world_mut()
             .query_filtered::<(&ThingIndex, &Position, Has<Sleeping>), With<RigidBody>>();
@@ -312,6 +387,14 @@ fn run() -> Result<(), String> {
                 (true, Some(&t)) => bucket(t),
             };
             let keys = [
+                (
+                    "below_at_start",
+                    m.below
+                        .get(&b.thing)
+                        .copied()
+                        .unwrap_or("not a body")
+                        .to_string(),
+                ),
                 ("first_moved_tick", first.to_string()),
                 ("sleep", sleep.to_string()),
                 ("frozen", b.frozen.to_string()),
