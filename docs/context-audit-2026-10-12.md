@@ -76,3 +76,15 @@ Re-reading CLAUDE.md/AGENTS.md (already auto-loaded) cost ~43k tokens over the 1
    thread-only variant would save that on every turn.
 7. Long-run: `STATUS.md` (290 KB) is append-only history; archive everything older than the
    last ~10 entries to `docs/archive/` so grep hits stay small.
+
+## Parked: leaving GitHub / CI billing (2026-10-12, owner on hold for a restructure)
+
+- 2026-10-12 13:00 CT-ish: Actions jobs refused ("recent account payments have failed or your
+  spending limit needs to be increased"); the private repo's Actions minutes are metered. PR 143
+  ran green earlier the same day. PR 145 (deny Artifact tools) is unmerged for this reason.
+- Exit cost: repo is plain git, one remote, so mirroring/moving is one push. The only
+  GitHub-bound file is `.github/workflows/ci.yml` (87 lines: fmt, test, clippy, check, python
+  tests). Workflow-level ties: PR/`gh` flow, merge-on-green, PR attribution and PR panel,
+  cloud agents that open PRs.
+- Cheapest first step: a local pre-merge check script on the PC, GitHub kept as a push mirror;
+  or make the repo public (Actions free). Alternatives: Codeberg/GitLab/Gitea.
