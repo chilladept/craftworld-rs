@@ -105,7 +105,7 @@ fn blend_frame(
     frame: &AnimFrame,
 ) -> BlendPose {
     let mut pose = BlendPose::bind(&stand.rig);
-    for (k, l) in frame.layers.iter().enumerate() {
+    for l in &frame.layers {
         let (rig, animation) = if l.clip == ClipId::Stand {
             (&stand.rig, &stand.animation)
         } else {
@@ -119,11 +119,10 @@ fn blend_frame(
         };
         match l.blend {
             Blend::Lerp => {
-                let w = if k == 0 { 1. } else { l.weight };
                 if l.mirror {
-                    pose.lerp_mirrored(rig, &p, w);
+                    pose.lerp_mirrored(rig, &p, l.weight);
                 } else {
-                    pose.lerp(rig, &p, w);
+                    pose.lerp(rig, &p, l.weight);
                 }
             }
             Blend::Additive { reference } => {

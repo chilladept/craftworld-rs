@@ -1,5 +1,12 @@
 # Development log
 
+## 2026-10-12 - D244 idle weight reaches the viewer
+
+Owner: the idle still stretches vertically in the viewer. The viewer's pose blender forced the base layer to
+weight 1, so `STAND_BASE_WEIGHT` (D242) never changed the picture. Our dumped idle vertices: head top travelled
+18.5 units per breath (game 2.6); with the weight honoured 6.1 at 0.3 and about 4.6 at 0.25. `STAND_BASE_WEIGHT`
+= 0.25 (chest and head-top joint travel on the game's 2.2 / 2.9). docs/d242-idle-stretch.md. +0 / +0.
+
 ## 2026-10-12 — D242 idle breathing at half weight
 
 Owner: the body stretches vertically too much in the idle animation. Game idle vertices vs our stand clip,

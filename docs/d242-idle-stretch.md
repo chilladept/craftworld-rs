@@ -31,3 +31,11 @@ base is Stand; walks/jumps lerp over it as before). Weight INFERRED from the fit
   2.9/11.3, head 2.3/7.4), the means 0.3-0.6. `STAND_BASE_WEIGHT` lowered to 0.3 (amplitude-led; INFERRED).
 - Capture notes: pools are 2920 records big-endian at 0x329a8f00 / 0x396a8f00 / 0x39fa8f00 on this boot (they were
   16-byte BE floats all along; world x is about -19800, so a +-3000 filter hides them).
+
+## D244 (2026-10-12): the weight never reached the viewer
+- Owner: the stretch is still there. FOUND: `blend_frame` in the viewer lerped layer 0 at weight 1 whatever the
+  picker said, so 0.5 and 0.3 changed nothing on screen. It now uses every layer's own weight.
+- MEASURED (viewer `LBP_DUMP_VERTS`, standing): top vertex travel per breath 18.5 at full weight, 6.1 at 0.3,
+  about 4.6 at 0.25; game 2.6 (`d243-idle.bin`, height 198.3-200.9, feet fixed).
+- `STAND_BASE_WEIGHT` = 0.25: joint travel chest 2.6 / head top 2.8 (game 2.2 / 2.9). INFERRED weight. The top
+  vertex alone would ask for 0.14, which a single weight over the bind pose cannot give together with the joints.

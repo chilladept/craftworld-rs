@@ -492,8 +492,9 @@ pub enum Blend {
 /// Weight of the stand clip over the bind pose (D242). The game's idle vertices (d234 `idle.bin`)
 /// fit the stand clip at 0.3-0.8 over the bind pose, 0.5 on average: its head and chest joints
 /// move 2-3 units over the breathing cycle (ours 7-11) and sit 3-6 higher. INFERRED weight,
-/// MEASURED amplitude (docs/d242-idle-stretch.md); other base clips stay at 1.
-pub const STAND_BASE_WEIGHT: f32 = 0.3;
+/// MEASURED amplitude (docs/d242-idle-stretch.md); other base clips stay at 1. 0.25 puts the
+/// chest and head-top travel on the game's (2.2 and 2.9 of our 10.5 and 11.3).
+pub const STAND_BASE_WEIGHT: f32 = 0.25;
 
 /// One clip sampled at one frame with a weight.
 #[derive(Debug, Clone, Copy, PartialEq)]
