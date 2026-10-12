@@ -23,3 +23,11 @@ base is Stand; walks/jumps lerp over it as before). Weight INFERRED from the fit
 - Why the game's weight is below 1 (mood-stand layers? 0x294 clips at neutral?) and whether the idle
   chain clips need the same; the jump layer's "10-40% stand under it" (D234) may be the same effect.
 - Verify in RPCS3 with a tick-aligned idle capture right after spawn (stand, not idle chain).
+
+## Follow-up (2026-10-12, RPCS3 play mode on the ground, 98 vertex samples after a stop)
+- Fresh capture agrees with `idle.bin`: top vertex 1852.7-1855.2 (range 2.5), feet fixed at 1654.4.
+- ICP fit with the stand clip at bind-blend weights 0.1-1.0 is flat (RMS 5.3 for every weight; the Pod costume
+  adds geometry, so the fit cannot pick a weight). Per-joint amplitude gives 0.2-0.3 (chest 2.2/10.5, head top
+  2.9/11.3, head 2.3/7.4), the means 0.3-0.6. `STAND_BASE_WEIGHT` lowered to 0.3 (amplitude-led; INFERRED).
+- Capture notes: pools are 2920 records big-endian at 0x329a8f00 / 0x396a8f00 / 0x39fa8f00 on this boot (they were
+  16-byte BE floats all along; world x is about -19800, so a +-3000 filter hides them).
