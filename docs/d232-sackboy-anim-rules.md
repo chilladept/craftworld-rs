@@ -35,7 +35,7 @@ INFERRED = our choice; OPEN = not traced, not used or stubbed.
 | Stop | stick \|x\| < 0.1 with w_fast > 0.5: walk_fast_stop 21 frames, weight min(i/5, (n-i)/5); mirrored if vx < 0 | 0x20afc0 |
 | Turn | stick opposite to vx, \|x\| > 0.9, w_fast > 0.5: walk_fast_turn 19 frames, same ramps; end resets walk phase and idle frame. Input-mask test (0x1018) OPEN, treated as passing | 0x20ad14 |
 | Lane | \|lane - z\| >= 100: walk_z_forwards if dz > 0 else backwards (sign FOUND 0x21685c..0x216b74; game +z toward the camera INFERRED); frame i+3, weight clamp((i+1)/3) * clamp((n-3-i)/3), 10 ticks. One clip per slide (INFERRED); the dot test is OPEN | 0x216b0c, 0x201418 |
-| Jump weight | clamp(peak/10), peak = \|vy\| follower easing 0.125 per tick (rises at once: INFERRED), times clamp(airTicks / (1 + 4\|vx\|/20)); also used for an off-ledge fall (INFERRED) | 0x20a5f4 |
+| Jump weight | clamp(peak/10), peak = \|vy\| follower easing 0.125 per tick (a jump sets it to 10: FOUND; in a ledge fall it eases up from 0: MEASURED, D257), times clamp(airTicks / (1 + 4\|vx\|/20)); also used for an off-ledge fall (MEASURED, D257) | 0x20a5f4 |
 | Jump clip | pose = lerp(jump_small_*, jump_*, held ticks / 10) for each of stand and walk (hold count frozen on release; D245), then lerp(stand pair, walk pair, clamp(\|vx\|*0.045)), as sequential lerps; the walk clips mirrored if vx < 0 | 0x209fc8 |
 | Jump frame | take-off ticks 1..5: frame = tick; rising 8(1 - clamp(vy/73)); falling 8 + 6 clamp(-vy/30.26) | 0x20a5f4 |
 | Landing | jump clip plays on from int((airFrame + 15) / 2), 1 per tick to 30, weight x clamp(1 - (f-15)/16)^k, k = 1 (FOUND pass 2: bias(t, 0.5) = t, 0x20a7fc..0x20a888). No separate land clip; stretch_crouch is no longer a hard-cut squash | 0x20a5f4 |

@@ -1,5 +1,19 @@
 # Development log
 
+## 2026-10-12 - D257 ledge-fall jump layer weight
+
+Walking off a ledge, the game's jump layer is at full weight about 10 ticks after the edge; ours stopped at
+0.75 to 0.78 (the D234 ramp). MEASURED on three RPCS3 falls in Rookie Test (two at full speed, one leaving at
+about 12 per tick), lower-body vertex fits per tick of lerp(ground pose, jump pose, w): the fitted w follows
+the 0x20a5f4 rule with the peak as a plain eased follower from 0, peak += 0.125 (|vy| - peak), weight =
+clamp(peak/10) times the blend-in, with no tuned constant. Error in w over 35 fall ticks: 0.064 (D234 ramp
+0.276, the same rule with a peak that rises at once 0.323); lower-body vertex rms 1.76 against 4.12, free-fit
+floor 1.60. The landing tail then plays at full weight times its fade (MEASURED). INFERRED from the second
+drop in each capture (he leaves the ground again 5 to 9 ticks after landing and starts at 0.83 to 0.94): the
+follower holds while the landing tail plays and that fall has no new blend-in. A jump from the ground is
+unchanged (the take-off sets the peak to full). `JUMP_AIR_*` removed (`lbp-sim`); `pose_fit` has a `STACK`
+probe. Not viewed in the viewer: the blank level has no ledge. `docs/d250-air-lean-turn.md` (D257).
+
 ## 2026-10-12 - D256 standing foot placement
 
 The game's feet stand 43.4 apart, ours stood 51.9. FOUND in the EBOOT (foot pass 0x210dd8, solver 0x6c15b8):

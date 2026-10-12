@@ -411,6 +411,52 @@ fn run() -> Result<(), String> {
         }
         return Ok(());
     }
+    if let Ok(spec) = std::env::var("STACK") {
+        // STACK=SPEC,OUT: every SPEC line is one layer stack over the bind pose of clip 0,
+        // tokens CLIPHEX@FRAME*WEIGHT with an optional suffix m (mirrored lerp) or u (lerp
+        // on the upper-body mask), applied in order as the play figure does, root rotation
+        // held. OUT gets one pose per line in the viewer dump format (f32 LE xyz).
+        let (spec, out) = spec.split_once(',').ok_or("STACK=SPEC,OUT")?;
+        let stand = &clips[0].1;
+        let upper = stand.rig.bone_named("Bip01 Spine1").map(|s| {
+            stand
+                .rig
+                .subtree_mask(s, stand.rig.bone_named("Bip01 Head"))
+        });
+        let text = std::fs::read_to_string(spec).map_err(|e| e.to_string())?;
+        let mut buf = Vec::new();
+        for line in text.lines().filter(|l| !l.trim().is_empty()) {
+            let mut bp = skinned::BlendPose::bind(&stand.rig);
+            for tok in line.split_whitespace() {
+                let (body, kind) = match tok.as_bytes()[tok.len() - 1] {
+                    b'm' => (&tok[..tok.len() - 1], 'm'),
+                    b'u' => (&tok[..tok.len() - 1], 'u'),
+                    _ => (tok, 'l'),
+                };
+                let bad = || format!("STACK token {tok}");
+                let (name, rest) = body.split_once('@').ok_or_else(bad)?;
+                let (frame, weight) = rest.split_once('*').ok_or_else(bad)?;
+                let frame: f32 = frame.parse().map_err(|_| bad())?;
+                let weight: f32 = weight.parse().map_err(|_| bad())?;
+                let c = &clips.iter().find(|(g, _)| g == name).ok_or_else(bad)?.1;
+                let p = skinned::sample_pose(&c.animation, frame).ok_or_else(bad)?;
+                match (kind, &upper) {
+                    ('m', _) => bp.lerp_mirrored(&c.rig, &p, weight),
+                    ('u', Some(mask)) => bp.lerp_masked(&c.rig, &p, weight, mask),
+                    ('u', None) => {}
+                    _ => bp.lerp(&c.rig, &p, weight),
+                }
+            }
+            bp.hold_root_rotation(&stand.rig);
+            for p in stand.blended_positions(&bp) {
+                for v in p {
+                    buf.extend_from_slice(&v.to_le_bytes());
+                }
+            }
+        }
+        std::fs::write(out, buf).map_err(|e| e.to_string())?;
+        return Ok(());
+    }
     if let Ok(path) = std::env::var("RULE_DUMP") {
         // every frame of clip 0 over bind at each weight, per scale rule: viewer dump format
         let c = &clips[0].1;

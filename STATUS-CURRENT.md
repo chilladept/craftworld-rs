@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D256
+# Current state (overwrite each milestone) — after D257
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -11,7 +11,13 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D256 standing foot placement (2026-10-12)
+## Latest: D257 ledge-fall jump layer weight (2026-10-12)
+- MEASURED on three RPCS3 ledge falls (lower-body vertex fits): the jump layer eases in with the 0x20a5f4
+  follower from 0, peak += 0.125 (|vy| - peak), weight clamp(peak/10) times the blend-in; full weight about
+  10 ticks after the edge (ours stopped near 0.77). w error 0.064 (D234 ramp 0.276). Landing tail at full
+  weight. INFERRED: the follower holds under the landing tail. `docs/d250-air-lean-turn.md` (D257).
+
+## Before: D256 standing foot placement (2026-10-12)
 - FOUND in the EBOOT (foot pass 0x210dd8): standing (ground-relative speed under 1), each Foot joint is put
   on the floor point nearest its leg anchor, 25 to either side of the body, by a two-bone solve; in over 3
   ticks, out over 5. `FOOT_PLANT_*`, `Sackboy::foot_plant`, applied in `blend_frame`. MEASURED: foot spacing
@@ -60,7 +66,7 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
   used by the Sackboy play figure only; `STAND_BASE_WEIGHT` is 1 again. Clean D234 captures: standing height
   per tick 201.1..206.4, ours 200.8..206.1 (RMS 0.34, was 2.5); 6-tick jump heights within 2.3 for ticks
   1..20, feet within 1. The D243 idle capture used for D242-D244 is not the neutral stand (do not tune
-  against it). Open: landing dip after touchdown (game 195, ours 200), ledge-fall layer weight, stop/turn
+  against it). Open: landing dip after touchdown (game 195, ours 200), stop/turn
   poses, lean. `docs/d242-idle-stretch.md` (D246).
 
 ## Measured counts (distinct catalog GUID; Complete = manual, all textures + geometry)
@@ -82,7 +88,7 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
   color; Vita (0x4431) payloads refused.
 
 ## Next
-1. Ledge-fall capture; emote clip frames vs game.
+1. Emote clip frames vs game.
 2. Popit: compare more frames, cursor mode, inventory grid pages (submode 11).
 3. Camera lead, slopes (paused by the owner).
 

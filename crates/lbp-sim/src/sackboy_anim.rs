@@ -594,15 +594,12 @@ pub const LANE_TRIGGER: f32 = 100.;
 pub const LANE_SKIP: u32 = 3;
 pub const LANE_RAMP: f32 = 3.;
 /// Jump layer (FOUND, 0x20a5f4): weight = clamp(peak/10), the peak |vy| follower eases at
-/// 0.125 per tick (superseded in the air by JUMP_AIR_*, see below).
+/// 0.125 per tick. A jump from the ground is at full weight (FOUND: the take-off sets the
+/// peak to [`JUMP_PEAK_FULL`]; D245). A ledge fall eases the follower up from 0 (D257,
+/// MEASURED on three RPCS3 falls: full weight about 10 ticks after the edge; this replaced
+/// the D234 ramp of 0.7 rising to 0.9).
 pub const JUMP_PEAK_FULL: f32 = 10.;
 pub const JUMP_PEAK_EASE: f32 = 0.125;
-/// Jump layer weight in the air after a ledge fall (D234, RPCS3 vertex fits): 0.7 rising to
-/// 0.9 over 30 ticks. A jump from the ground is at full weight (FOUND: the take-off sets
-/// the peak to [`JUMP_PEAK_FULL`]; D245).
-pub const JUMP_AIR_START: f32 = 0.7;
-pub const JUMP_AIR_END: f32 = 0.9;
-pub const JUMP_AIR_RAMP: f32 = 30.;
 /// Stand-vs-walk jump mix per |vx| in the air (FOUND 0.045, full at 22.2).
 pub const JUMP_MIX_PER_VX: f32 = 0.045;
 /// Tap-vs-held jump mix (FOUND, 0x20a5f4 / 0x209fc8): a counter is 1 on the take-off tick
@@ -1123,9 +1120,13 @@ impl SackboyAnim {
         // jump. D245: those fits compared against jump_stand alone; the game mixes
         // jump_small_stand under it by the hold count (below), and with that mix the D243
         // capture fits a full-weight layer, which is what 0x20a5f4 does after a take-off.
-        // The D234 ramp is kept for ledge falls only (not re-measured; the 0x20a5f4 peak
-        // follower is still not modelled).
-        let _ = (vy, JUMP_PEAK_EASE);
+        // D257: a ledge fall runs the 0x20a5f4 peak follower from 0 instead.
+        // The follower holds while a landing tail plays and is back at 0 once it is over
+        // (INFERRED: a second fall a few ticks after a landing starts near full weight).
+        let tail = self.land.is_some();
+        if !airborne && self.air.is_none() && !tail {
+            self.peak = 0.;
+        }
         // Hold counter (FOUND): stopped by the first tick without the button; cleared on
         // the ground once no landing tail is playing (the game's test is its tail index
         // being unset, which in the air it is not).
@@ -1145,8 +1146,9 @@ impl SackboyAnim {
             let air = self.air.get_or_insert(Air {
                 since: 0,
                 takeoff: s.jump_tick() == Some(1),
-                // INFERRED: an off-ledge fall uses the same blend-in.
-                blend_in: 1. + 4. * vx.abs() / 20.,
+                // MEASURED (D257): an off-ledge fall uses the same blend-in. INFERRED: none
+                // when he leaves the ground again with the landing tail still playing.
+                blend_in: if tail { 0. } else { 1. + 4. * vx.abs() / 20. },
                 frame: 0.,
             });
             air.since += 1;
@@ -1165,15 +1167,18 @@ impl SackboyAnim {
             self.land = None;
             self.jump_mix = (vx * JUMP_MIX_PER_VX).abs().min(1.);
             self.jump_mirror = vx < 0.;
-            let level = if air.takeoff {
-                1.
+            if air.takeoff {
+                self.peak = JUMP_PEAK_FULL;
             } else {
-                JUMP_AIR_START
-                    + (JUMP_AIR_END - JUMP_AIR_START)
-                        * (air.since as f32 / JUMP_AIR_RAMP).clamp(0., 1.)
+                self.peak += JUMP_PEAK_EASE * (vy - self.peak);
+            }
+            let level = (self.peak / JUMP_PEAK_FULL).clamp(0., 1.);
+            let blend = if air.blend_in > 0. {
+                (air.since as f32 / air.blend_in).clamp(0., 1.)
+            } else {
+                1.
             };
-            self.peak = level * JUMP_PEAK_FULL;
-            let w = level * (air.since as f32 / air.blend_in).clamp(0., 1.);
+            let w = level * blend;
             jump = Some((air.frame, w));
         } else if let Some(air) = self.air.take() {
             self.land = Some(((air.frame + LAND_FADE_FROM) * 0.5).floor());
@@ -2303,6 +2308,30 @@ mod tests {
         // touchdown tick on 14 again, then one frame per tick.
         assert_eq!(jump[first_14..first_14 + 5], [14., 14., 15., 16., 17.]);
         assert!(jump[first_14 - 1] < 14.);
+    }
+
+    #[test]
+    fn ledge_fall_eases_the_jump_layer_in_and_lands_at_full_weight() {
+        // D257, MEASURED (ledgeR1, vx 32.2): fitted weights 0.00, 0.00, 0.06, 0.09, 0.23,
+        // 0.41, 0.57, 0.73, 0.84, 1.00, 1.00 over the fall, then the landing tail at 1.00.
+        let vys = [
+            -1.4, -2.5, -5.2, -7.9, -10.6, -13.3, -16.0, -18.7, -21.4, -24.1, -26.8,
+        ];
+        let game = [0., 0., 0.06, 0.09, 0.23, 0.41, 0.57, 0.73, 0.84, 1., 1.];
+        let mut a = SackboyAnim::new();
+        let mut s = moving(32.2);
+        for (vy, want) in vys.into_iter().zip(game) {
+            s.vy = vy;
+            let (w, _) = jump_parts(&a.tick(&s, false));
+            assert!((w - want).abs() < 0.08, "vy {vy}: {w} vs {want}");
+        }
+        s.vy = 0.;
+        let (w, _) = jump_parts(&a.tick(&s, true));
+        assert!(close(w, 1.));
+        // INFERRED: leaving the ground again under the tail keeps the weight.
+        s.vy = -1.4;
+        let (w, _) = jump_parts(&a.tick(&s, false));
+        assert!(w > 0.8, "{w}");
     }
 
     #[test]

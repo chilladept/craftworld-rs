@@ -135,5 +135,30 @@ Question: why does the left-to-right turn fit worse than the right-to-left one?
   change left out of the gate; the foot keeps the clip's rotation (the game sets one from the contact normal).
 - Open: slopes and steps, where the game's target follows the contact point; both feet 0.6 above the game's.
 
-Tools (local, not in the repository): `local-analysis/d251-air-lean/` (`lean.py`), `local-analysis/d252-turn/`
+## D257: ledge-fall jump layer weight
+
+- Captures (RPCS3, Rookie Test, no jump key): two walks off a 210 drop at full speed (vx 32.2 and 29.5) and
+  one leaving at about 12 per tick; each has a second, shorter drop 5 to 9 ticks after the first landing.
+- These captures have a head look running (spine 8 degrees, head 21 degrees off ours while walking), so the
+  fits use the lower body only: leg joints and pelvis vertices, free yaw and translation. Ground walk fits
+  0.6 to 0.9 rms there; ground and jump poses differ by 9 to 18 rms per unit weight, so w is good to 0.05.
+- MEASURED, first fall, w per tick from the first tick the body moves down (vx 32.2): 0.00, 0.00, 0.06, 0.09,
+  0.23, 0.41, 0.57, 0.73, 0.84, 1.00, 1.00. The second full-speed fall is within 0.1 of that on every tick.
+- Rules against the fitted w (35 ticks, three falls; w error rms / lower-body vertex rms):
+  D234 ramp 0.276 / 4.12; 0x20a5f4 with a peak that rises at once 0.323 / 4.44; 0x20a5f4 with
+  peak += 0.125 (|vy| - peak) from 0: 0.064 / 1.76. Free-fit floor 1.60.
+- The jump frame rule 8 + 6 clamp(-vy/30.26) holds in a fall (free-fit frame within the 0.5 grid step).
+- MEASURED: the landing tail starts on frame 14 at weight 1.00 and follows the fade alone (1.00, 1.00, 0.93,
+  0.87, 0.81, 0.74, 0.66, 0.59, 0.50).
+- Second drop: the game starts at 0.94, 0.83, 0.88 and is at 1.0 within 2 to 4 ticks. A follower restarted
+  from 0 scores 0.501; kept from the first fall with no new blend-in 0.048. INFERRED from that: the follower
+  holds while the landing tail plays, and a fall that starts under the tail has no blend-in. Its first-tick
+  value is not explained.
+- Applied: the non-take-off branch of the jump layer runs the follower; `peak` is 0 again on the ground once
+  no tail plays (INFERRED); `JUMP_AIR_START`, `JUMP_AIR_END`, `JUMP_AIR_RAMP` removed. A jump from the ground
+  is unchanged.
+- Open: one level, one direction, three falls. The slow fall is 0.1 to 0.2 under the rule for two ticks
+  mid-fall. Not viewed in the viewer (the blank level has no ledge).
+
+Tools (local, not in the repository): `local-analysis/d257-ledge/` (`stage1.py`, `rules.py`, `tail.py`), `local-analysis/d251-air-lean/` (`lean.py`), `local-analysis/d252-turn/`
 (captures), `local-analysis/d253-turn-cmp/` (`runall.ps1`, `cmp.py`, `feet.py`).
