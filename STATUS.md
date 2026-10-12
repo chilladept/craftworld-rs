@@ -4187,3 +4187,26 @@ Next: mirrored-pose fit (front torso bone in the left-to-right turn); walk start
   with other tables; mirrored morphs (`mirror_morphs`, not applied).
 **+0 newly viewable / +0 newly Complete (runtime feature).**
 Next: walk start; air ease arm terms; small items.
+
+## D255: Sackboy stick response, shortest jump, mirrored morphs (2026-10-12)
+
+- FOUND (EBOOT, read-only): left stick x = (byte - 128) / 128, no clamp (0x38a578); response per axis
+  max(|x| - d, 0) / (1 - d), squared, signed (0x38aa10); the walk and air caps are 30 and 22.5 times it.
+  d is read at run time (INFERRED 0.3). Full right (byte 255): 0.9778 -> 29.334 and 22.0006.
+- MEASURED (`local-analysis/d211-moon/walk-*.csv`, `jump-air-*.csv`): right 29.34 / 22.00, left 30.00 /
+  22.50; ramp 3 per tick both ways. `jump-tap-*.csv`: per-tick rise 12.0, 9.3, 6.6 (peak 33.1, two files)
+  and 12.0, 19.3, 16.6 (peak 90.4); `jump-hold-100ms-a` 143.3.
+- Change: `stick_response`, `STICK_DEAD_ZONE`, `STICK_FULL_RIGHT`, `JUMP_MIN_TICKS` 1 (`lbp-sim`
+  `sackboy.rs`); viewer keys, script `r` and the pad stick pass the stick value; `Rig::mirrored_morphs`,
+  `Rig::with_mirror_morphs` (`lbp-preview` `skinned.rs`; FOUND 0x1e42b4, dst morph i = src morph table[i]).
+- FOUND, no change: arm terms +0xae0/+0xae4 ease 0.2 per tick toward 1 while an arm button is held
+  (0x1fb0e4) or are raised while another creature holds him (0x2097e0); 0 in a plain jump.
+- MEASURED, open: standing foot spacing 43.4 (game, d234 Moon and d252 Rookie Test) against 51.9; resting
+  height after a landing 0.5 to 1.5 above spawn in a scripted run (five jumps).
+- Tests: `full_right_is_slower_than_full_left`, `mirrored_pose_swaps_morph_weights` (new),
+  `jump_heights_match_the_measured_tap_and_holds` (one- and two-tick presses added). fmt, tests, clippy:
+  see the PR checks.
+- Not tested: analogue stick values between the dead zone and full (rule read, no capture); the dead zone
+  value itself; a clip whose mirrored morphs differ (none checked); ledge fall (no capture).
+**+0 newly viewable / +0 newly Complete (runtime feature).**
+Next: foot placement while standing; ledge-fall capture.

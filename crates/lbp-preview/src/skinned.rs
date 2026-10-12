@@ -233,7 +233,7 @@ impl BlendPose {
     }
 
     /// [`BlendPose::lerp`] toward `pose` mirrored left/right ([`Rig::mirrored_trs`]).
-    /// Morph weights lerp unswapped (the mirror morph table is not used).
+    /// Morph weights lerp toward their mirror partners' ([`Rig::mirrored_morphs`]).
     pub fn lerp_mirrored(&mut self, rig: &Rig, pose: &Pose, w: f32) {
         if w <= 0. || !w.is_finite() {
             return;
@@ -246,7 +246,7 @@ impl BlendPose {
                 b.s = lerp3(b.s, p.s, w);
             }
         }
-        lerp_morphs(&mut self.morphs, &pose.morphs, w);
+        lerp_morphs(&mut self.morphs, &rig.mirrored_morphs(&pose.morphs), w);
     }
 
     /// Adds `w` times the difference `pose` minus `reference` (both from `rig`'s
@@ -521,6 +521,9 @@ pub struct Rig {
     pub mirror: Vec<usize>,
     /// The skeleton's mirror flip type per bone ([`flip_local`]); empty without the table.
     flip: Vec<u8>,
+    /// The skeleton's mirror morph table: the morph each morph takes its weight from in a
+    /// mirrored pose; empty without the table.
+    mirror_morphs: Vec<i16>,
     /// Bones named as 3ds Max Biped parts (`Bip...`); all false without a skeleton.
     biped: Vec<bool>,
     /// How scale passes down the hierarchy (default [`ScaleRule::Inherited`]).
@@ -597,6 +600,7 @@ impl Rig {
             unmatched_animation_bones,
             mirror,
             flip: Vec::new(),
+            mirror_morphs: Vec::new(),
         })
     }
 
@@ -627,6 +631,27 @@ impl Rig {
         self
     }
 
+    /// Sets the mirror morph table (`Skeleton::mirror_morphs`).
+    pub fn with_mirror_morphs(mut self, table: &[i16]) -> Self {
+        self.mirror_morphs = table.to_vec();
+        self
+    }
+
+    /// `morphs` as a mirrored pose carries them (the game's pose mirror, `0x1e42b4`, FOUND):
+    /// morph i takes the weight of morph `mirror_morphs[i]`. An entry outside the weights
+    /// (or no entry) keeps the morph's own weight.
+    pub fn mirrored_morphs(&self, morphs: &[f32]) -> Vec<f32> {
+        (0..morphs.len())
+            .map(|i| {
+                self.mirror_morphs
+                    .get(i)
+                    .and_then(|&j| morphs.get(usize::try_from(j).ok()?))
+                    .copied()
+                    .unwrap_or(morphs[i])
+            })
+            .collect()
+    }
+
     pub fn from_skeleton(skeleton: &Skeleton, animation_hashes: &[u32]) -> Result<Self, String> {
         let bones = skeleton
             .bones
@@ -640,7 +665,8 @@ impl Rig {
             .collect();
         let mut rig = Self::new(bones, animation_hashes)?
             .with_mirror(&skeleton.mirror_bones)
-            .with_flip_types(&skeleton.mirror_flip_types);
+            .with_flip_types(&skeleton.mirror_flip_types)
+            .with_mirror_morphs(&skeleton.mirror_morphs);
         rig.biped = skeleton
             .bones
             .iter()
@@ -655,6 +681,7 @@ impl Rig {
         let mut rig = Self::new(self.bones.clone(), animation_hashes)?;
         rig.mirror = self.mirror.clone();
         rig.flip = self.flip.clone();
+        rig.mirror_morphs = self.mirror_morphs.clone();
         rig.biped = self.biped.clone();
         rig.scale_rule = self.scale_rule;
         Ok(rig)
@@ -1613,6 +1640,33 @@ mod tests {
             ([4., 5., -6.], [-s, 0., 0., c], [2., 1., 3.])
         );
         assert_eq!((m[3].t, m[3].r), ([1., 1., 1.], [0., s, 0., c]));
+    }
+
+    #[test]
+    fn mirrored_pose_swaps_morph_weights() {
+        let bone = RigBone {
+            parent: -1,
+            anim_hash: 10,
+            skin_pose: IDENTITY,
+            inv_skin_pose: IDENTITY,
+        };
+        let r = Rig::new(vec![bone], &[10]).unwrap();
+        assert_eq!(r.mirrored_morphs(&[0.1, 0.2, 0.3]), [0.1, 0.2, 0.3]);
+        // Morphs 1 and 2 are a pair; entry 3 has no weight to take, entry 4 is unset.
+        let r = r.with_mirror_morphs(&[0, 2, 1, 9, -1]);
+        assert_eq!(
+            r.mirrored_morphs(&[0.1, 0.2, 0.3, 0.4, 0.5, 0.6]),
+            [0.1, 0.3, 0.2, 0.4, 0.5, 0.6]
+        );
+        let pose = Pose {
+            rotations: vec![[0., 0., 0., 1.]],
+            positions: vec![[0.; 3]],
+            scales: vec![[1.; 3]],
+            morphs: vec![0., 1., 0.],
+        };
+        let mut b = BlendPose::bind(&r);
+        b.lerp_mirrored(&r, &pose, 0.5);
+        assert_eq!(b.morphs, [0., 0., 0.5]);
     }
 
     /// Root, a bone at y = 1 and its child at y = 2 (world), all driven.

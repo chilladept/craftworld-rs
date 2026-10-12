@@ -58,11 +58,33 @@ pub const AIR_ACCEL: f32 = 2.4;
 /// Moon level 22.5 (Rookie Test read 22).
 pub const AIR_SPEED: f32 = 22.5;
 /// Upward speed per tick for each tick the jump button is held (index 0 = take-off tick).
-/// The first three ticks always play; after the button is released, or after the table,
-/// gravity takes over. A tap peaks at 143 units, a full hold at 260 (saturates by tick 10).
+/// The take-off tick always plays; after the button is released, or after the table,
+/// gravity takes over. A one-tick press peaks at 33 units, two ticks at 90, three at 143, a
+/// full hold at 260 (saturates by tick 10).
 pub const JUMP_PROFILE: [f32; 10] = [12.0, 19.3, 23.3, 25.1, 25.5, 24.8, 23.5, 21.8, 19.7, 17.4];
-/// Ticks of the jump profile that play even on a tap.
-pub const JUMP_MIN_TICKS: usize = 3;
+/// Ticks of the jump profile that play however short the press. MEASURED (d211 Moon reads,
+/// per-tick rise): a press seen for one tick rises 12.0 and then falls under gravity (9.3,
+/// 6.6, ...: peak 33.1, twice), one seen for two ticks 12.0, 19.3, 16.6 (peak 90.4), the
+/// 100 ms presses three or four ticks (143.3, 183.9). Was 3, which gave 143 for all three.
+pub const JUMP_MIN_TICKS: usize = 1;
+/// The left stick's dead zone (INFERRED: the game reads it from its settings at run time;
+/// 0.3 with the squared response below reproduces both measured caps).
+pub const STICK_DEAD_ZONE: f32 = 0.3;
+/// The stick value of a key or a stick held fully right. The pad byte is 0..255 around 128
+/// and the game divides by 128 with no clamp (FOUND, EBOOT 0x38a578), so full left is -1
+/// and full right is 127/128. Through [`stick_response`] that is 0.9778: MEASURED top speed
+/// to the right 29.34 on the ground and 22.00 in the air, against 30.00 and 22.50 to the
+/// left (d211 Moon reads; the same in Rookie Test).
+pub const STICK_FULL_RIGHT: f32 = 127. / 128.;
+
+/// How far the stick counts as pushed, -1..1, for a stick value x (FOUND, EBOOT 0x38aa10):
+/// the part of |x| past the dead zone, rescaled to 0..1 and squared, with x's sign. The
+/// ground and air speed caps are this times [`WALK_SPEED`] and [`AIR_SPEED`].
+pub fn stick_response(x: f32) -> f32 {
+    let m = ((x.abs() - STICK_DEAD_ZONE).max(0.) / (1. - STICK_DEAD_ZONE)).min(1.);
+    (m * m).copysign(x)
+}
+
 /// Distance between lanes (Moon and Rookie Test lanes at z -400, -200, 0).
 pub const LANE_SPACING: f32 = 200.0;
 /// Lane change speed per tick (linear slide, about 6 ticks per lane).
@@ -71,7 +93,8 @@ pub const LANE_SPEED: f32 = 35.0;
 /// Pad state for one tick.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Input {
-    /// Stick x: -1 left .. 1 right (its sign is used; analogue walk speed is not measured).
+    /// Stick x: -1 left .. 1 right, before the dead zone ([`stick_response`]); a key held
+    /// right is [`STICK_FULL_RIGHT`].
     pub x: f32,
     pub jump: bool,
     /// Lane behind (-z), the W key in the RPCS3 mapping.
@@ -182,22 +205,13 @@ impl Sackboy {
     /// Advances one tick and returns the displacement (dx, dy, dz) to apply.
     pub fn step(&mut self, input: Input, contact: &Contact) -> [f32; 3] {
         let grounded = contact.grounded && self.jump_tick.is_none();
-        let dir = if input.x > 0. {
-            1.
-        } else if input.x < 0. {
-            -1.
-        } else {
-            0.
-        };
-        // Horizontal.
+        // Horizontal: the caps scale with how far the stick is pushed; the acceleration
+        // does not (MEASURED: 3 per tick both ways, then 29.34 to the right).
+        let stick = stick_response(input.x);
         if grounded {
-            if dir != 0. {
-                self.vx = approach(self.vx, dir * WALK_SPEED, WALK_ACCEL);
-            } else {
-                self.vx = approach(self.vx, 0., WALK_ACCEL);
-            }
-        } else if dir != 0. && self.vx * dir < AIR_SPEED {
-            self.vx = approach(self.vx, dir * AIR_SPEED, AIR_ACCEL);
+            self.vx = approach(self.vx, stick * WALK_SPEED, WALK_ACCEL);
+        } else if stick != 0. && self.vx * stick.signum() < stick.abs() * AIR_SPEED {
+            self.vx = approach(self.vx, stick * AIR_SPEED, AIR_ACCEL);
         }
         // Vertical.
         let pressed = |now: bool, before: bool| now && !before;
@@ -308,6 +322,29 @@ mod tests {
     }
 
     #[test]
+    fn full_right_is_slower_than_full_left() {
+        assert_eq!(stick_response(-1.), -1.);
+        assert_eq!(stick_response(0.3), 0.);
+        assert!((stick_response(STICK_FULL_RIGHT) - 0.9778).abs() < 1e-4);
+        let top = |x: f32, jump: bool| {
+            let path = run(
+                move |t| Input {
+                    x,
+                    jump: jump && (1..=19).contains(&t),
+                    ..Default::default()
+                },
+                20,
+            );
+            path[19][0] - path[18][0]
+        };
+        assert!((top(STICK_FULL_RIGHT, false) - 29.334).abs() < 0.01);
+        assert_eq!(top(-1., false), -30.);
+        // In the air from a standing jump: 22.0 against 22.5 (less the drag).
+        assert!((top(STICK_FULL_RIGHT, true) - 22.0).abs() < 0.05);
+        assert!((top(-1., true) + 22.5).abs() < 0.05);
+    }
+
+    #[test]
     fn jump_heights_match_the_measured_tap_and_holds() {
         let jump_for = |held: usize| {
             run(
@@ -318,13 +355,16 @@ mod tests {
                 40,
             )
         };
-        // Tap: apex 143.4 at tick 11 after take-off; 7-tick hold 244.4; long hold 260.1.
-        let (t, h) = apex(&jump_for(2));
+        // One- and two-tick presses: apex 33.1 and 90.4. Three ticks: 143.4 at tick 11 after
+        // take-off; 7-tick hold 244.4; long hold 260.1.
+        assert!((apex(&jump_for(1)).1 - 33.1).abs() < 0.5);
+        assert!((apex(&jump_for(2)).1 - 90.4).abs() < 0.5);
+        let (t, h) = apex(&jump_for(3));
         assert!((h - 143.4).abs() < 1. && t - 1 == 11, "tap {t} {h}");
         assert!((apex(&jump_for(7)).1 - 244.4).abs() < 1.);
         assert!((apex(&jump_for(19)).1 - 260.1).abs() < 1.);
-        // Air time about 21 ticks for a tap.
-        let air = jump_for(2).iter().filter(|p| p[1] > 0.).count();
+        // Air time about 21 ticks for a three-tick press.
+        let air = jump_for(3).iter().filter(|p| p[1] > 0.).count();
         assert!((20..=22).contains(&air), "{air}");
     }
 

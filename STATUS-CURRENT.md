@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D254
+# Current state (overwrite each milestone) — after D255
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -11,7 +11,15 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D254 mirrored poses (2026-10-12)
+## Latest: D255 stick response, shortest jump, mirrored morphs (2026-10-12)
+- FOUND in the EBOOT (0x38a578, 0x38aa10): stick x = (byte - 128) / 128 unclamped, response past the dead
+  zone rescaled and squared, times both speed caps. Full right is 0.9778: MEASURED 29.34 / 22.00 to the
+  right against 30.00 / 22.50 (Moon and Rookie Test). `stick_response`, `STICK_FULL_RIGHT`.
+- MEASURED (d211): one- and two-tick presses peak at 33.1 and 90.4; `JUMP_MIN_TICKS` 1.
+- Mirrored morphs applied (FOUND 0x1e42b4). Arm terms read: 0 without the arm buttons, no change.
+  `docs/d250-air-lean-turn.md` (D255).
+
+## Before: D254 mirrored poses (2026-10-12)
 - FOUND in the EBOOT (pose mirror 0x1e42b4): a mirrored layer takes each bone's partner's local transform
   through one of six rules picked by the skeleton's mirror flip type; the zip-pull bones are copied, not
   reflected. `Rig::mirrored_trs` does the same. MEASURED on the left-to-right turn: vertex rms 2.3..4.2 ->
@@ -57,18 +65,18 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - D233: +0 newly viewable / +0 newly Complete (runtime feature).
 
 ## Open blockers
-- Turn: the game's top speed to the right was 29.33 in the captured level.
-- Landing: only a standing jump is captured (ledge fall, running jump: same tables, unchecked). Air ease:
-  arm terms (+0xae0/+0xae4) not modelled; upper arms 2 to 3 degrees off late in the flight.
+- Standing foot spacing: game 43.4, ours 51.9 (both levels); the game's foot placement pass is not modelled.
+- Landing: only a standing jump is captured (ledge fall, running jump: same tables, unchecked). Upper arms
+  2 to 3 degrees off late in the flight, unattributed (the arm terms are 0 there).
 - Head-top bones 22/23/24/27/28.
-- After a landing the body rests 1.6 above the spawn height (floor cast skin); not looked into.
+- After a landing the body rests 0.5 to 1.5 above the spawn height (shape cast distances).
 - Head-look inputs (right stick, creature+0xc20 target, tilt term, roll 0x808/0x810): OPEN.
-- Camera lead while walking; mirror flip types; arms mapping; face morph readers.
+- Camera lead while walking; arm buttons (the arm clips); face morph readers.
 - Non-diffuse channels (glow, reflection) only partly rendered; ThingColor needs a supplied
   color; Vita (0x4431) payloads refused.
 
 ## Next
-1. Air ease arm terms; arms; emote clip frames vs game.
+1. Foot placement while standing; ledge-fall capture; emote clip frames vs game.
 2. Popit: compare more frames, cursor mode, inventory grid pages (submode 11).
 3. Camera lead, slopes (paused by the owner).
 

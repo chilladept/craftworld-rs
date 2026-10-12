@@ -91,5 +91,30 @@ Question: why does the left-to-right turn fit worse than the right-to-left one?
   capture (`turnRL3`) fits at 2.4 .. 5.4 on ticks 1..9 and 1.1 .. 1.2 after, with the game's figure already
   8 off its stand pose on the tick before it moved.
 
+## D255: stick response, shortest jump, mirrored morphs, arm terms
+
+- Speed to the right. MEASURED in the Moon reads too (d211): 29.34 on the ground and 22.00 in the air to the
+  right, 30.00 and 22.50 to the left, the same 3 and 2.4 per tick on the way up. FOUND (EBOOT 0x38a578,
+  0x38aa10): stick x = (byte - 128) / 128 with no clamp, so full left is -1 and full right 127/128; the
+  response is max(|x| - d, 0) / (1 - d), squared, with x's sign, and both caps are multiplied by it. d is read
+  from the game's settings at run time; with 0.3 (INFERRED) full right gives 0.9778, which is 29.334 and
+  22.0006. Now `stick_response`; a key held right passes `STICK_FULL_RIGHT`.
+- Shortest jump. MEASURED (d211 `jump-tap`, `jump-hold-100ms`): a press seen for one tick rises 12.0 and then
+  falls under gravity (peak 33.1), two ticks 12.0 and 19.3 (peak 90.4), three 143.3. `JUMP_MIN_TICKS` was 3
+  and is 1.
+- Mirrored morphs. FOUND at the end of the pose mirror (0x1e42b4): morph i of the mirrored pose takes the
+  weight of morph `mirrorMorphs[i]`. Sackboy's table pairs 1/2, 3/4, 5/6, 9/10 .. 17/18. Now applied
+  (`Rig::mirrored_morphs`).
+- Arm terms (+0xae0, +0xae4). FOUND: each eases 0.2 per tick toward 1 while its arm button is held and
+  toward 0 otherwise (0x1fb0e4), or is raised while another creature holds him (0x2097e0). In the arm pass
+  the weight is clamp(max(u, both terms)) and the per-arm clips come in only above 0.01. In a plain jump
+  both are 0 and the weight is u (1 - u) as modelled. They do not explain the 2 to 3 degrees left on the
+  upper arms late in the flight, which stay unattributed.
+- Open, MEASURED: the game's feet stand 43.4 apart on every standing tick of every capture (Moon and Rookie
+  Test), ours 51.9: left foot 4.1 further out and 2.5 further back, right foot 3.3 further out, calves the
+  same way; walking matches. After a landing our body rests 0.5 to 1.5 above the spawn height depending on
+  the jump (shape cast distances); ending the fall with no gap made him sink 2.7 on some landings, so the
+  gap stays.
+
 Tools (local, not in the repository): `local-analysis/d251-air-lean/` (`lean.py`), `local-analysis/d252-turn/`
 (captures), `local-analysis/d253-turn-cmp/` (`runall.ps1`, `cmp.py`).

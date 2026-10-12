@@ -1,5 +1,22 @@
 # Development log
 
+## 2026-10-12 - D255 stick response, shortest jump, mirrored morphs; arm terms read
+
+Four of the open Sackboy items, three from data already on disk. Speed to the right: MEASURED again in the
+d211 Moon reads, not level-specific (29.34 on the ground, 22.00 in the air, against 30.00 and 22.50 to the
+left; same acceleration). FOUND in the EBOOT (0x38a578, 0x38aa10): the stick byte less 128 is divided by 128
+with no clamp, then the part past the dead zone is rescaled and squared, and the result scales both speed
+caps; with the dead zone 0.3 (INFERRED, a run-time setting) full right gives 0.9778, which is both measured
+ratios. `stick_response`, `STICK_FULL_RIGHT`; the keys, the script and the pad stick use it. Shortest jump:
+the d211 presses seen for one and two ticks rise 12.0 and 12.0 + 19.3 and then fall (peaks 33.1 and 90.4);
+`JUMP_MIN_TICKS` 3 -> 1. Mirrored morphs: FOUND in the pose mirror (0x1e42b4), morph i takes the weight of
+morph `mirrorMorphs[i]`; `Rig::mirrored_morphs`, used by `lerp_mirrored`. Air ease arm terms: FOUND (0x1fb0e4,
+0x2097e0), they are the eased held-arm-button weights (0.2 per tick) and stay 0 without those buttons or a
+second player holding him, so they are not the 2 to 3 degrees left on the upper arms; no change. MEASURED,
+open: standing foot spacing is 43.4 in every game capture (both levels) against our 51.9 (feet 4.1 and 3.3
+further out); the resting height after a landing varies 0.5 to 1.5 above the spawn height (shape cast
+distances; landing with no gap sank him 2.7 at times, not kept). `docs/d250-air-lean-turn.md` (D255).
+
 ## 2026-10-12 - D254 mirrored poses use the game's per-bone flip types
 
 The left-to-right turn fitted worse than the right-to-left one (a front torso bone, the zip pull, up to 15

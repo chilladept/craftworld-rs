@@ -389,7 +389,7 @@ fn parse_script(text: &str) -> Result<Vec<(Input, usize)>, String> {
             for c in keys.trim().chars() {
                 match c {
                     'l' => input.x = -1.,
-                    'r' => input.x = 1.,
+                    'r' => input.x = lbp_sim::sackboy::STICK_FULL_RIGHT,
                     'j' => input.jump = true,
                     'b' => input.back = true,
                     'f' => input.front = true,
@@ -647,7 +647,12 @@ fn read_pad(
     }
     let pad = pads.iter().next();
     let held = |k: KeyCode, b: GamepadButton| keys.pressed(k) || pad.is_some_and(|p| p.pressed(b));
-    let mut x = pad.map_or(0., |p| p.left_stick().x);
+    // A pad's stick is a signed byte over 128 in the game: full right stops short of 1.
+    let mut x = pad.map_or(0., |p| {
+        p.left_stick()
+            .x
+            .clamp(-1., lbp_sim::sackboy::STICK_FULL_RIGHT)
+    });
     if x.abs() < 0.3 {
         x = 0.;
     }
@@ -655,7 +660,7 @@ fn read_pad(
         x = -1.;
     }
     if held(KeyCode::ArrowRight, GamepadButton::DPadRight) {
-        x = 1.;
+        x = lbp_sim::sackboy::STICK_FULL_RIGHT;
     }
     // Moods (D233): I/K/L/J as the mood d-pad up/down/right/left. The pad's own d-pad
     // already walks and changes lanes here, so it is not the mood pad.
