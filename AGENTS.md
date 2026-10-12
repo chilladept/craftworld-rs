@@ -12,7 +12,7 @@ Since 2026-10-08 the user has approved gameplay runtime work (physics, logic, sc
 - Never publish or commit proprietary game files, assets, decompiler output, reference-repository binaries, or unknown-provenance fixtures. Local diagnostic JSON and byte samples belong only under ignored `local-analysis/`; game trees under ignored `game-data/`.
 - Keep the default-deny `.gitignore`. Check prospective tracked files before publication; extensions alone do not prove provenance. Never force-add game data.
 - Reference repositories remain ignored under `references/`. Do not blindly copy their bundled assets or templates.
-- No commit, push, release, or publishing unless requested. The project's own distribution license is undecided.
+- No commit, push, release, or publishing unless requested. The project's own authored source is licensed MIT OR Apache-2.0.
 - Decompiled/recovered proprietary code is research evidence, never implementation source. Record independently expressed format/behavior findings and implement from those findings; do not copy, adapt or translate recovered game code into the product. Keep raw decompiler output segregated under ignored `local-analysis/`. Do not claim a strict clean-room process solely because the delivered code contains no copied source.
 - The delivered product must contain no original LBP code, assets or bundled game-specific decryption keys. Runtime assets come from the user's own ISO/game data. Research outputs, decrypted files and local caches are not distributable product files. Direct ISO loading remains a later input feature; current extracted-directory support is a development input path.
 

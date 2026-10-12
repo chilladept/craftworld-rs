@@ -2,14 +2,14 @@
 
 No third-party implementation source or binary asset is vendored into our source
 tree. Ignored `references/` contains local upstream checkouts, each with its own
-licensing/provenance. Do not package that directory. Our authored source's license
-has not been selected by the owner.
+licensing/provenance. Do not package that directory. Our authored source is
+licensed MIT OR Apache-2.0 (LICENSE-MIT, LICENSE-APACHE).
 
 B1 adds Cargo dependencies eframe/egui 0.36.2, its wgpu 30.0.1 backend, and image
 0.25.10 (local QA PNG encoding). These crates declare MIT OR Apache-2.0; Cargo.lock
 pins their transitive dependency tree. Crate license declarations are not a complete
 binary-distribution notice audit. Before any authorized distribution, collect notices
-for every resolved dependency/backend and select the project's own license. No GUI
+for every resolved dependency/backend. No GUI
 crate source or compiled dependency is vendored in the authored tree.
 
 The layout rules used by the independent Python probes and Rust A1 readers were learned

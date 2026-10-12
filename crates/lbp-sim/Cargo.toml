@@ -3,6 +3,7 @@ name = "lbp-sim"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 
 # Runtime only (docs/runtime-research.md, R2): the parsing crates never depend on this.
 [dependencies]

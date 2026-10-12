@@ -3,6 +3,7 @@ name = "lbp-texture"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [dependencies]
 flate2 = "1"

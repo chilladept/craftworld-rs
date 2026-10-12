@@ -18,8 +18,9 @@ executables, keys, saves or emulator captures, and none have ever been committed
 `.gitignore` is default-deny, so only authored source, docs and synthetic test
 recipes can be tracked. To use the tools you supply your own disc dump of
 LittleBigPlanet 2. Asset names, GUIDs and hashes in the docs are identifiers
-only. No license has been chosen yet, so all rights to the authored code are
-reserved for now. LittleBigPlanet is a trademark of Sony Interactive Entertainment.
+only. The authored code is licensed under either of [MIT](LICENSE-MIT) or
+[Apache-2.0](LICENSE-APACHE) at your option; that license does not cover any
+game data. LittleBigPlanet is a trademark of Sony Interactive Entertainment.
 
 Current milestone: **D40 first material-linked textured mesh preview complete**;
 B2 metadata explorer supports validated source attachment and hex inspection.
@@ -134,7 +135,7 @@ so multi-extent logical files require consolidation before file-size totals.
 [Community projects](docs/community-projects.md): ranked references and reuse limits.
 [Local inventory](docs/local-data.md): exact input and container facts.
 
-License for this project's own authored source is not selected yet. No third-party
+This project's own authored source is licensed MIT OR Apache-2.0. No third-party
 source is vendored into the implementation. See [notices](THIRD-PARTY-NOTICES.md).
 ## Texture research (C1 complete)
 
