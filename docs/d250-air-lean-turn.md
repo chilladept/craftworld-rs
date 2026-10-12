@@ -47,8 +47,38 @@ comes up. Aligned on the first tick the body's speed drops (N = 0).
 - The game's own three runs differ by 0.4 .. 1.6 on the pure turn frames and by up to 25 where the walk
   phase at the reversal differed.
 - Open: the 29.33 top speed to the right in that level; the game's yaw 0.8 .. 1.5 degrees ahead of the model
-  on N = 16..18; mirrored poses fit at 2.5 against 0.7 unmirrored (left-to-right turn: a front torso bone up
-  to 15 units off on frames 6..12); standing foot spacing 43.4 in that level against our 51.9.
+  on N = 16..18; standing foot spacing 43.4 in that level against our 51.9.
+
+## D254: mirrored poses
+
+Question: why does the left-to-right turn fit worse than the right-to-left one?
+
+- MEASURED: with the old mirror our left-to-right pose is the exact reflection of our right-to-left pose; the
+  game's is not. Joint 17 (`bone_zip_pull02`) was 15.1 off at turn frame 9, the hands and fingers about 5.
+- FOUND (EBOOT `0x1e42b4`, the pose mirror called from `0x1ebb48`): no matrices and no hierarchy walk. Bone i
+  takes the local position, rotation and scale of its partner (`mirrorBones`), changed by its flip type
+  (`mirrorBoneFlipTypes`; names from the Toolkit). With partner position (x, y, z) and quaternion (x, y, z, w):
+
+  | Type | Position | Quaternion |
+  |---|---|---|
+  | 0 MAX | (-x, y, z) | (x, -y, -z, w) |
+  | 1 BIP_ROOT | (-x, y, z) | (y, x, -w, -z) |
+  | 2 BIP_PELVIS | (x, -y, z) | (-w, z, y, -x) |
+  | 3 BIP_BONE, 4 PARENT_WAS_BIP_BONE | (x, y, -z) | (-x, -y, z, w) |
+  | 5 GRANDPARENT_WAS_BIP_BONE | (x, y, -z) | (-z, w, -x, y) |
+  | 6 and up | copied | copied |
+
+  Scale is always copied. The rules were checked by running the routine on random poses.
+- Sackboy's table: the Biped bones are type 3, the root 1, the pelvis 2; both zip-pull bones are type 6, so
+  their sway keeps its side under the mirrored spine. The bind pose is not left/right symmetric (hands 6.2
+  apart from their reflections, fingers 6.4..7.0, forearms 4.3), which the old skin-matrix reflection assumed.
+- Result (capture `turnLR`, vertex rms with free yaw): turn frames 5..14 were 2.3 .. 4.2, now 0.5 .. 1.4; the
+  blended frames at both ends 0.4 .. 1.3; the mirrored steady walk before the turn 0.7 .. 1.6. The
+  right-to-left run is unchanged.
+- INFERRED: the job-queue path of the mirror does the same as the direct routine. Not applied: mirrored
+  morphs.
+- Test note: the scripted run's walk phase at the reversal depends on when the figure appears; the
+  left-to-right script now walks through a right-to-left turn first, which fixes the phase.
 
 Tools (local, not in the repository): `local-analysis/d251-air-lean/` (`lean.py`), `local-analysis/d252-turn/`
 (captures), `local-analysis/d253-turn-cmp/` (`runall.ps1`, `cmp.py`).

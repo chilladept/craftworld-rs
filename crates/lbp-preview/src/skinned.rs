@@ -519,10 +519,28 @@ pub struct Rig {
     /// Each bone's left/right partner (the skeleton's mirror table; itself on the centre
     /// line, and for every bone when the table is missing or out of range).
     pub mirror: Vec<usize>,
+    /// The skeleton's mirror flip type per bone ([`flip_local`]); empty without the table.
+    flip: Vec<u8>,
     /// Bones named as 3ds Max Biped parts (`Bip...`); all false without a skeleton.
     biped: Vec<bool>,
     /// How scale passes down the hierarchy (default [`ScaleRule::Inherited`]).
     pub scale_rule: ScaleRule,
+}
+
+/// One bone's local transform mirrored by its flip type (the game's pose mirror, EBOOT
+/// `0x1e42b4`; type names from the Toolkit): the parent's frame and the bone's own frame
+/// are each reflected on the axis the type names, scale is kept, and types 6 and up copy.
+fn flip_local(kind: u8, p: Trs) -> Trs {
+    let ([x, y, z], [qx, qy, qz, qw]) = (p.t, p.r);
+    let (t, r) = match kind {
+        0 => ([-x, y, z], [qx, -qy, -qz, qw]),     // MAX
+        1 => ([-x, y, z], [qy, qx, -qw, -qz]),     // BIP_ROOT
+        2 => ([x, -y, z], [-qw, qz, qy, -qx]),     // BIP_PELVIS
+        3 | 4 => ([x, y, -z], [-qx, -qy, qz, qw]), // BIP_BONE, PARENT_WAS_BIP_BONE
+        5 => ([x, y, -z], [-qz, qw, -qx, qy]),     // GRANDPARENT_WAS_BIP_BONE
+        _ => (p.t, p.r),
+    };
+    Trs { t, r, s: p.s }
 }
 
 /// Reflection across the model's x = 0 plane (left/right; Z-up, front -Y).
@@ -578,6 +596,7 @@ impl Rig {
             driven_by,
             unmatched_animation_bones,
             mirror,
+            flip: Vec::new(),
         })
     }
 
@@ -599,6 +618,15 @@ impl Rig {
         self
     }
 
+    /// Sets the mirror flip types (`Skeleton::mirror_flip_types`); ignored unless there is
+    /// one per bone.
+    pub fn with_flip_types(mut self, table: &[u8]) -> Self {
+        if table.len() == self.bones.len() {
+            self.flip = table.to_vec();
+        }
+        self
+    }
+
     pub fn from_skeleton(skeleton: &Skeleton, animation_hashes: &[u32]) -> Result<Self, String> {
         let bones = skeleton
             .bones
@@ -610,7 +638,9 @@ impl Rig {
                 inv_skin_pose: b.inv_skin_pose,
             })
             .collect();
-        let mut rig = Self::new(bones, animation_hashes)?.with_mirror(&skeleton.mirror_bones);
+        let mut rig = Self::new(bones, animation_hashes)?
+            .with_mirror(&skeleton.mirror_bones)
+            .with_flip_types(&skeleton.mirror_flip_types);
         rig.biped = skeleton
             .bones
             .iter()
@@ -624,6 +654,7 @@ impl Rig {
     pub fn rebind(&self, animation_hashes: &[u32]) -> Result<Self, String> {
         let mut rig = Self::new(self.bones.clone(), animation_hashes)?;
         rig.mirror = self.mirror.clone();
+        rig.flip = self.flip.clone();
         rig.biped = self.biped.clone();
         rig.scale_rule = self.scale_rule;
         Ok(rig)
@@ -640,17 +671,27 @@ impl Rig {
             .collect()
     }
 
-    /// `pose` mirrored left/right (the game's layer mirror flag, `0x1ebb48` mode 5): bone
-    /// i takes its partner j's motion reflected across x = 0, so its skinning matrix is
-    /// `X * S_j * X` (S = world x inverse bind). That is the world `X W_j B_j^-1 X B_i`,
-    /// returned as local transforms; None where neither bone is driven. Assumes a
-    /// left/right symmetric bind (INFERRED for Sackboy; the flip-type table is not used).
+    /// `pose` mirrored left/right (the game's layer mirror flag, `0x1ebb48` mode 5); None
+    /// where neither a bone nor its partner is driven. With the skeleton's flip types
+    /// (D254, FOUND in the game's routine) bone i takes its partner's local transform
+    /// through [`flip_local`], scale copied. Without them bone i takes its partner j's
+    /// motion reflected across x = 0, so its skinning matrix is `X * S_j * X` (S = world x
+    /// inverse bind), which assumes a left/right symmetric bind.
     /// Under [`ScaleRule::Biped`] the compensating bones are mirrored at bind scale and
     /// then take their partner's scale ratio per axis (partners share their local axes
     /// up to sign), so the result composes under the same rule.
     pub fn mirrored_trs(&self, pose: &Pose) -> Vec<Option<Trs>> {
-        let bind = self.bind_trs();
         let posed = self.pose_locals(Some(pose));
+        if !self.flip.is_empty() {
+            return (0..self.bones.len())
+                .map(|i| {
+                    let j = self.mirror[i];
+                    (self.driven_by[i].is_some() || self.driven_by[j].is_some())
+                        .then(|| flip_local(self.flip[i], posed[j]))
+                })
+                .collect();
+        }
+        let bind = self.bind_trs();
         let rigid: Vec<Mat4> = (0..self.bones.len())
             .map(|i| {
                 if self.compensates(i) {
@@ -1528,6 +1569,50 @@ mod tests {
         let (left, right) = (m[1].unwrap(), m[2].unwrap());
         assert!(close(right.s, [2., 1., 3.]) && close(left.s, [1.; 3]));
         assert!(close(right.t, [-1., 0., 2.]) && near(right.r, [0., -s, 0., c]));
+    }
+
+    #[test]
+    fn mirrored_pose_follows_the_flip_types() {
+        let bone = |parent: i32, hash: u32| RigBone {
+            parent,
+            anim_hash: hash,
+            skin_pose: IDENTITY,
+            inv_skin_pose: IDENTITY,
+        };
+        // A pelvis-type root, a left/right pair of Biped bones and a copied centre bone.
+        let r = Rig::new(
+            vec![bone(-1, 10), bone(0, 20), bone(0, 30), bone(0, 40)],
+            &[10, 20, 30, 40],
+        )
+        .unwrap()
+        .with_mirror(&[0, 2, 1, 3])
+        .with_flip_types(&[2, 3, 3, 6]);
+        assert!(r.clone().with_flip_types(&[3]).flip == r.flip);
+        let (s, c) = (0.3f32.sin(), 0.3f32.cos());
+        let pose = Pose {
+            rotations: vec![
+                [0., 0., 0., 1.],
+                [s, 0., 0., c],
+                [0., 0., s, c],
+                [0., s, 0., c],
+            ],
+            positions: vec![[1., 2., 3.], [4., 5., 6.], [7., 8., 9.], [1., 1., 1.]],
+            scales: vec![[1.; 3], [2., 1., 3.], [1.; 3], [1.; 3]],
+            morphs: vec![],
+        };
+        let m: Vec<Trs> = r.mirrored_trs(&pose).into_iter().flatten().collect();
+        assert_eq!((m[0].t, m[0].r), ([1., -2., 3.], [-1., 0., 0., 0.]));
+        // A Biped bone takes its partner's z turn as it is and its x turn negated, with
+        // the offset reflected on z and the scale copied.
+        assert_eq!(
+            (m[1].t, m[1].r, m[1].s),
+            ([7., 8., -9.], [0., 0., s, c], [1.; 3])
+        );
+        assert_eq!(
+            (m[2].t, m[2].r, m[2].s),
+            ([4., 5., -6.], [-s, 0., 0., c], [2., 1., 3.])
+        );
+        assert_eq!((m[3].t, m[3].r), ([1., 1., 1.], [0., s, 0., c]));
     }
 
     /// Root, a bone at y = 1 and its child at y = 2 (world), all driven.

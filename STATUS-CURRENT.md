@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D251
+# Current state (overwrite each milestone) — after D254
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -11,7 +11,13 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D250 jump air lean, D251 turn (2026-10-12)
+## Latest: D254 mirrored poses (2026-10-12)
+- FOUND in the EBOOT (pose mirror 0x1e42b4): a mirrored layer takes each bone's partner's local transform
+  through one of six rules picked by the skeleton's mirror flip type; the zip-pull bones are copied, not
+  reflected. `Rig::mirrored_trs` does the same. MEASURED on the left-to-right turn: vertex rms 2.3..4.2 ->
+  0.5..1.4 on the turn frames, mirrored walk 0.7..1.6. `docs/d250-air-lean-turn.md` (D254).
+
+## Before: D250 jump air lean, D251 turn (2026-10-12)
 - Air lean: FOUND in the EBOOT and applied. In the air and through the landing tail the upper body (Spine1
   and below, without the head) is lerped back toward stand frame 0 by s (1 - s), s easing 0.1 per tick
   (`AIR_EASE`, `Blend::UpperBody`). MEASURED on d234 `jump.bin`: Spine1 pitch within 0.05 degrees of the game
@@ -49,8 +55,7 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - D233: +0 newly viewable / +0 newly Complete (runtime feature).
 
 ## Open blockers
-- Turn: left-to-right (mirrored) poses fit at 2.5 against 0.7 unmirrored, a front torso bone up to 15
-  units off on turn frames 6..12; the game's top speed to the right was 29.33 in the captured level.
+- Turn: the game's top speed to the right was 29.33 in the captured level.
 - Landing: only a standing jump is captured (ledge fall, running jump: same tables, unchecked). Air ease:
   arm terms (+0xae0/+0xae4) not modelled; upper arms 2 to 3 degrees off late in the flight.
 - Walk start: our cycle is 2 frames ahead of the game on one capture. Head-top bones 22/23/24/27/28.
@@ -61,7 +66,7 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
   color; Vita (0x4431) payloads refused.
 
 ## Next
-1. Mirrored-pose fit; walk start (2 frames, second capture); arms; emote clip frames vs game.
+1. Walk start (2 frames, second capture); arms; emote clip frames vs game.
 2. Popit: compare more frames, cursor mode, inventory grid pages (submode 11).
 3. Camera lead, slopes (paused by the owner).
 

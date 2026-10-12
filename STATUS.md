@@ -4166,3 +4166,21 @@ Next: jump air lean; turn pose against the new game capture.
   and ledge fall for the air ease (no capture); a mood stand as the ease target.
 **+0 newly viewable / +0 newly Complete (runtime feature).**
 Next: mirrored-pose fit (front torso bone in the left-to-right turn); walk start; arms.
+
+## D254: mirrored poses from the game's flip types (2026-10-12)
+- Changed: `lbp-preview` `skinned.rs` (`flip_local`, `Rig::with_flip_types`, `Rig::mirrored_trs` takes the
+  partner bone's local transform through the skeleton's mirror flip type; the old skin-matrix reflection
+  stays for rigs without the table). `Rig::from_skeleton` passes `Skeleton::mirror_flip_types`.
+- FOUND: EBOOT pose mirror `0x1e42b4` (from `0x1ebb48`), six rules by flip type on local position and
+  quaternion, scale copied, types 6 and up copy. Sackboy (mesh 0000043f): Biped bones type 3, root 1, pelvis
+  2, jaw and eye positions 4, tongue 5 and 0, both zip-pull bones 6.
+- MEASURED (`local-analysis/d252-turn/turnLR` against the release viewer, vertex rms, free yaw): turn frames
+  N = 5..14 2.3..4.2 -> 0.5..1.4; blended frames N = 0..4 and 15..18 1.2..1.3 and 0.4..0.5; mirrored steady
+  walk 0.7..1.6; zip-pull joint at N = 9 15.1 -> under 1.7. Right-to-left run unchanged (0.6..1.8).
+- Commands: `local-analysis/d253-turn-cmp/runall.ps1 lr rl`, `python local-analysis/d253-turn-cmp/cmp.py
+  turnLR lr`, `python local-analysis/d253-turn-cmp/perjoint.py`.
+- Tests: `mirrored_pose_follows_the_flip_types` (new). fmt, tests, clippy: see the PR checks.
+- Not tested: the game's job-queue path of the mirror (only the direct routine was read); costume meshes
+  with other tables; mirrored morphs (`mirror_morphs`, not applied).
+**+0 newly viewable / +0 newly Complete (runtime feature).**
+Next: walk start; air ease arm terms; small items.

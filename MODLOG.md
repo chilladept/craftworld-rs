@@ -1,5 +1,17 @@
 # Development log
 
+## 2026-10-12 - D254 mirrored poses use the game's per-bone flip types
+
+The left-to-right turn fitted worse than the right-to-left one (a front torso bone, the zip pull, up to 15
+units off; hands and fingers about 5). FOUND in the EBOOT (pose mirror 0x1e42b4, called from 0x1ebb48): the
+game mirrors each bone in its own local frame, taking the partner bone's local position, rotation and scale
+through one of six rules picked by the skeleton's mirror flip type; types 6 and up copy the partner unchanged
+(the two zip-pull bones). Ours reflected skinning matrices across x = 0, which needs a left/right symmetric
+bind (Sackboy's hands differ by 6 units) and reflected the zip pull. `Rig::mirrored_trs` now applies the
+game's rule when the skeleton has flip types. MEASURED on the left-to-right turn capture: vertex rms (free
+yaw) on the turn frames 2.3..4.2 -> 0.5..1.4, mirrored steady walk 0.7..1.6, the zip-pull joint 15.1 -> under
+1.7. `docs/d250-air-lean-turn.md` (D254).
+
 ## 2026-10-12 - D250 jump air lean (upper body eased toward stand in the air); D251 turn facing and walk restart
 
 D250: the +4 degree air lean was one joint (Spine1, up to 5.5 degrees) plus the upper arms. FOUND in the EBOOT
