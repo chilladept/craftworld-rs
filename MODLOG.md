@@ -1,5 +1,17 @@
 # Development log
 
+## 2026-10-12 - D250 jump air lean (upper body eased toward stand in the air); D251 turn facing and walk restart
+
+D250: the +4 degree air lean was one joint (Spine1, up to 5.5 degrees) plus the upper arms. FOUND in the EBOOT
+(0x20e28c state +0x6ec easing 0.1 toward 1 in the air, arm pass 0x208dec, masked lerp 0x1eaccc toward stand
+frame 0 with weight s (1 - s) on Spine1 and below except the head). In `sackboy_anim.rs` as `AIR_EASE` and
+`Blend::UpperBody`; `lbp-preview` has `lerp_masked` / `subtree_mask`. MEASURED: Spine1 pitch now within 0.05
+degrees of the game on all 27 flight ticks. D251: first game captures of a direction reversal (three
+right-to-left, one left-to-right, one stop). Pose, speed and clip timing already matched; the facing did not
+(the game eases toward the speed angle through the turn, ours held 72 degrees on the stick's side, up to 111
+degrees off) and the walk restarts on frame 1, not 0. Both fixed; vertex rms through the turn 1.9..3.8 (was
+48..98). `docs/d250-air-lean-turn.md`.
+
 ## 2026-10-12 - D249 short legs after a landing: two-bone leg solver, landing tables to twelve ticks
 
 `BlendPose::move_chain_end` (lbp-preview) moves a thigh-calf-foot chain's end joint, keeping the bone lengths,

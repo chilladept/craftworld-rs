@@ -4148,3 +4148,21 @@ jump air lean.
   path by eye (same pose data as the measured CPU dump).
 **+0 newly viewable / +0 newly Complete (runtime feature).**
 Next: jump air lean; turn pose against the new game capture.
+
+## D250 / D251: jump air lean, turn facing and walk restart (2026-10-12)
+- Changed: `lbp-sim` `sackboy_anim.rs` (`AIR_EASE`, `Blend::UpperBody`, the upper-body layer; the 72-degree
+  yaw hold is for the stop and lane change only; the turn's end leaves the walk phase at 1); `lbp-preview`
+  `BlendPose::lerp_masked`, `Rig::subtree_mask`; the Bevy viewer's `blend_frame` and layer log (`^clip`).
+- MEASURED: jump (d234 `jump.bin`), Spine1 pitch against Spine ours minus game max 5.5 -> 0.05 degrees over
+  the 27 flight ticks, upper arms 14.7 -> 2.9. Turn (`local-analysis/d252-turn/turnRL2`), vertex rms at our
+  yaw N = 0..18 48..98 -> 1.9..3.6, N = 19..23 6..16 -> 3.5..3.8. Tables in `docs/d250-air-lean-turn.md`.
+- Commands: `local-analysis/d250-crouch/run.ps1 -name lean1 -secs 60`, `python
+  local-analysis/d251-air-lean/lean.py leg1 lean1`; `local-analysis/d253-turn-cmp/runall.ps1 rl lr`,
+  `python local-analysis/d253-turn-cmp/cmp.py turnRL2 rl`.
+- Tests: `upper_body_eases_back_toward_stand_in_the_air`, `masked_lerp_moves_only_the_flagged_subtree` (new);
+  `stop_holds_72_degrees_and_turn_follows_the_speed`, `turn_plays_19_frames_then_resets_the_walk_phase`
+  (changed). fmt, tests, clippy: see the PR checks.
+- Not tested: left-to-right turn and stop re-measured after the change (same rule, mirrored); running jump
+  and ledge fall for the air ease (no capture); a mood stand as the ease target.
+**+0 newly viewable / +0 newly Complete (runtime feature).**
+Next: mirrored-pose fit (front torso bone in the left-to-right turn); walk start; arms.

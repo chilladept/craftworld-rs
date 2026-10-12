@@ -115,6 +115,12 @@ fn blend_frame(
     squash: f32,
 ) -> BlendPose {
     let mut pose = BlendPose::bind(&stand.rig);
+    // The game's upper-body mask: Spine1 and below, without the head and what hangs on it.
+    let upper = stand.rig.bone_named("Bip01 Spine1").map(|spine1| {
+        stand
+            .rig
+            .subtree_mask(spine1, stand.rig.bone_named("Bip01 Head"))
+    });
     for l in &frame.layers {
         let (rig, animation) = if l.clip == ClipId::Stand {
             (&stand.rig, &stand.animation)
@@ -138,6 +144,11 @@ fn blend_frame(
             Blend::Additive { reference } => {
                 if let Some(r) = sample_pose(animation, reference) {
                     pose.add(rig, &p, &r, l.weight);
+                }
+            }
+            Blend::UpperBody => {
+                if let Some(mask) = &upper {
+                    pose.lerp_masked(rig, &p, l.weight, mask);
                 }
             }
         }
@@ -711,6 +722,9 @@ fn layer_summary(a: &AnimFrame) -> String {
             Blend::Additive { reference } if l.frame == reference => None,
             Blend::Additive { .. } => {
                 Some(format!("+{}@{:.1}*{:.2}", l.clip.name(), l.frame, l.weight))
+            }
+            Blend::UpperBody if l.weight > 0.01 => {
+                Some(format!("^{}@{:.1}*{:.2}", l.clip.name(), l.frame, l.weight))
             }
             _ => None,
         })

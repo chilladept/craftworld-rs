@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D248, 2026-10-12
+# Current state (overwrite each milestone) — after D251
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -11,28 +11,25 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D249 short legs after a landing (2026-10-12)
-- The pose blender has a two-bone leg solver (`BlendPose::move_chain_end`, `lbp-preview`); the play figure
-  raises both ankles by `LANDING_SQUASH` (7.6 .. 0.5 on touchdown +3..+8) and `LANDING_DIP` runs twelve ticks
-  (two under the floor, then the body's settle). MEASURED against d234 `jump.bin`: height, pelvis height and
-  lowest vertex within 0.4 on touchdown +3..+8 (height was 8 off). Both tables are one standing jump's
-  series; the game's foot pass (0x210dd8) inputs are untraced. `docs/d241-landing-dip.md` (D249), tools
-  `local-analysis/d250-crouch/` (`run.ps1`, `final2.py`).
+## Latest: D250 jump air lean, D251 turn (2026-10-12)
+- Air lean: FOUND in the EBOOT and applied. In the air and through the landing tail the upper body (Spine1
+  and below, without the head) is lerped back toward stand frame 0 by s (1 - s), s easing 0.1 per tick
+  (`AIR_EASE`, `Blend::UpperBody`). MEASURED on d234 `jump.bin`: Spine1 pitch within 0.05 degrees of the game
+  on all flight ticks (was up to 5.5 off).
+- Turn: first game captures of a direction reversal (`local-analysis/d252-turn/`, story level, flat). Pose,
+  speed and clip timing matched already. Fixed: facing through the turn follows the speed angle (the
+  72-degree hold is for the stop and lane change only), and the walk restarts on frame 1. Vertex rms through
+  the turn 1.9..3.8 (was 48..98). `docs/d250-air-lean-turn.md`.
+
+## Before: D249 short legs after a landing (2026-10-12)
+- Two-bone leg solver (`BlendPose::move_chain_end`); `LANDING_SQUASH` and a twelve-tick `LANDING_DIP`,
+  within 0.4 of the game on touchdown +3..+8 (one standing jump). `docs/d241-landing-dip.md` (D249).
 
 ## Before: D248 crouch spring found, not the landing squash (2026-10-12)
 - `stretch_crouch` spring (EBOOT 0x2011d4) is in `sackboy_anim.rs` (`CrouchSpring`, tested) but unfed; as a
   landing kick it does not fit. Idle, steady walk and stop match the game within 0.4 deg lean / 0.4 height.
   No extra in-air body layer in the EBOOT. Vertex dumps log `sackboy pose N`; the stand phase at a script
   tick varies between viewer runs (+-1 height).
-
-## Before: D247 landing timing and dip; stop pose measured (2026-10-12)
-- Stop pose measured tick-aligned: fit mean 1.56 against the steady-walk floor 1.51, matches the game, no
-  change (the old "fit 3-5" was the fit tool not converging at 72 deg yaw). Turn: no game capture yet.
-- Landing: the tail now starts on the tick the feet reach the floor (`SackboyBody::grounded` is the contact
-  after the move; controller step unchanged) and `LANDING_DIP` = -25.9, -15.9, 0. Touchdown +1/+2 against
-  d234 `jump.bin`: height game 206.0/202.9, ours 206.3/202.6; lowest point game -29.0/-16.2, ours
-  -29.0/-16.1. Flight ticks unchanged (height max 2.3, lowest max 1.1). `docs/d241-landing-dip.md`,
-  tools `local-analysis/d249-landing/` (`run_ours.ps1`, `land.py`).
 
 ## Before: D246 idle stretch fixed at the cause (2026-10-12)
 - The stretch was scale inheritance, not the clip weight: the stand clip breathes by scaling the spine bones
@@ -52,10 +49,10 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - D233: +0 newly viewable / +0 newly Complete (runtime feature).
 
 ## Open blockers
-- Stop pose: done (matches the game, D247). Turn pose needs a game capture with a direction reversal.
-- Landing: only a standing jump is captured (ledge fall, running jump: same tables, unchecked).
-  Jump air lean: ours +4 deg forward of the game; candidates are the head-look tilt from the physical
-  body's rotation (0x200c6c) and the 0x20a5f4 peak follower.
+- Turn: left-to-right (mirrored) poses fit at 2.5 against 0.7 unmirrored, a front torso bone up to 15
+  units off on turn frames 6..12; the game's top speed to the right was 29.33 in the captured level.
+- Landing: only a standing jump is captured (ledge fall, running jump: same tables, unchecked). Air ease:
+  arm terms (+0xae0/+0xae4) not modelled; upper arms 2 to 3 degrees off late in the flight.
 - Walk start: our cycle is 2 frames ahead of the game on one capture. Head-top bones 22/23/24/27/28.
 - After a landing the body rests 1.6 above the spawn height (floor cast skin); not looked into.
 - Head-look inputs (right stick, creature+0xc20 target, tilt term, roll 0x808/0x810): OPEN.
@@ -64,7 +61,7 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
   color; Vita (0x4431) payloads refused.
 
 ## Next
-1. Turn pose (game capture with a direction reversal); air lean; arms; emote clip frames vs game.
+1. Mirrored-pose fit; walk start (2 frames, second capture); arms; emote clip frames vs game.
 2. Popit: compare more frames, cursor mode, inventory grid pages (submode 11).
 3. Camera lead, slopes (paused by the owner).
 

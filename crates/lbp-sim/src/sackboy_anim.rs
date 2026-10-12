@@ -500,6 +500,10 @@ pub enum Blend {
     /// pose += weight * (clip at `frame` - clip at `reference`) (`0x1eafc0`, FOUND; how the
     /// rotation difference is composed is INFERRED in the viewer).
     Additive { reference: f32 },
+    /// pose = lerp(pose, clip at `frame`, weight) on the upper body only: `Bip01 Spine1` and
+    /// every bone below it except `Bip01 Head` and the bones below the head (`0x1eaccc`, mask
+    /// at skeleton+0x3a0 built in `0x1e79d8`, FOUND).
+    UpperBody,
 }
 
 /// Weight of the stand clip over the bind pose: full (D246). D242-D244 lowered it to 0.25
@@ -618,6 +622,13 @@ pub const JUMP_FALL_FRAMES: f32 = 6.;
 /// Perlin's bias(t, 0.5) = t, 0x20a7fc..0x20a888).
 pub const LAND_FADE_FROM: f32 = 15.;
 pub const LAND_FADE_POW: f32 = 1.;
+/// Per-tick ease of the in-air state s toward 1 while the jump layer runs (in the air and
+/// through the landing tail) and toward 0 otherwise (FOUND, dispatcher 0x20e28c, 0xd99394 =
+/// 0.9 kept). The arm pass (0x2097e0 -> 0x208dec) then pulls the upper body back toward
+/// frame 0 of the stand clip by s (1 - s), s being the value before the tick's ease: nothing
+/// on the ground, a quarter at most. D250: this is the "air lean": without it our Spine1
+/// pitched up to 4.4 degrees further than the game's through a jump.
+pub const AIR_EASE: f32 = 0.1;
 /// Ticks between blinks: `30 + rand(70)` (FOUND, 0x2040a0).
 /// Crouch spring (FOUND, 0x2011d4 and its input 0x6c56c): contact depth that gives input 1
 /// (0xd937f8), the exponent of bias(x, 0.2) = x^(ln 0.2 / ln 0.5), the cut below which the
@@ -771,6 +782,8 @@ pub struct SackboyAnim {
     jump_holding: bool,
     air: Option<Air>,
     land: Option<f32>,
+    /// The eased in-air state 0x6ec ([`AIR_EASE`]).
+    air_ease: f32,
     crouch: CrouchSpring,
     /// The deepest contact's depth for the next tick's crouch spring (the caller's to set;
     /// 0 unless set, and cleared by each tick).
@@ -821,6 +834,7 @@ impl SackboyAnim {
             jump_holding: false,
             air: None,
             land: None,
+            air_ease: 0.,
             crouch: CrouchSpring::default(),
             contact_depth: 0.,
             lane: None,
@@ -1095,8 +1109,10 @@ impl SackboyAnim {
             if sh.i < u32::from(n) {
                 self.shot = Some(sh);
             } else if sh.clip == ClipId::WalkFastTurn {
-                // The turn's end resets the walk phase and the idle frame (FOUND).
-                self.walk_tick = 0;
+                // The turn's end resets the walk phase and the idle frame (FOUND). The tick
+                // after the turn's last frame the game's mesh is on walk frame 1, not 0
+                // (MEASURED, D251, three captures), so the phase is already one on.
+                self.walk_tick = 1;
                 self.idle_frame = 0;
             }
         }
@@ -1234,6 +1250,26 @@ impl SackboyAnim {
             }
         }
 
+        // Upper body back toward stand (FOUND, 0x208dec, after the jump and lane layers):
+        // weight max(u, arm terms) (1 - u) with u = 1 - s; the arm terms (0xae0, 0xae4) are
+        // not modelled (0), so s (1 - s). The target is frame 0 of the stand clip, or of the
+        // mood stand while one is held (0x2022b8; that it is exactly our `mood_stand` is
+        // INFERRED).
+        let s0 = self.air_ease;
+        self.air_ease += AIR_EASE * (if jump.is_some() { 1. } else { 0. } - s0);
+        let upper = s0 * (1. - s0);
+        if upper > 0.001 {
+            layers.push(Layer {
+                clip: self
+                    .mood_stand
+                    .map_or(ClipId::Stand, |m| MOOD_STANDS[m.index()]),
+                frame: 0.,
+                weight: upper,
+                mirror: false,
+                blend: Blend::UpperBody,
+            });
+        }
+
         // stretch_crouch: an additive spring (FOUND, 0x2011d4, run by the dispatcher after
         // jump, lane and grab) driven by the deepest contact's depth over 350 (0x6c56c; 0 in
         // the wall-cling state, which is not modelled). Applied as frame (0.5 v + 0.5) n
@@ -1287,7 +1323,15 @@ impl SackboyAnim {
         // +-1 the grab branch turns into +-90 degrees). Holding the side matters for the
         // stop: its body turns to the camera within the clip (-90 relative to its root by
         // frame 20), so easing to 0 underneath it overshot to a three-quarter left view.
-        let target = if lane_active || self.shot.is_some() {
+        // D251, MEASURED on three captured reversals: through walk_fast_turn the game's
+        // facing eases 0.4 toward the plain speed angle (within 0.4 degrees for the first 16
+        // ticks), with no hold; holding 72 degrees on the stick's side had him up to 111
+        // degrees off. So for our purposes 0x77c >= 0 means the stop clip only (INFERRED).
+        let stopping = self
+            .shot
+            .as_ref()
+            .is_some_and(|sh| sh.clip == ClipId::WalkFastStop);
+        let target = if lane_active || stopping {
             let side = if stick != 0. {
                 stick
             } else if vx != 0. {
@@ -1542,7 +1586,7 @@ mod tests {
     }
 
     #[test]
-    fn stop_and_turn_hold_72_degrees_on_the_side_faced() {
+    fn stop_holds_72_degrees_and_turn_follows_the_speed() {
         // Stop moving left: the target stays -72 while walk_fast_stop plays, then 0.
         let mut a = SackboyAnim::new();
         for _ in 0..30 {
@@ -1562,18 +1606,22 @@ mod tests {
         assert!(close(during[19], -LANE_YAW), "{}", during[19]);
         assert!(close(during[20], -LANE_YAW * 0.6), "{}", during[20]);
         assert!(after.last().unwrap().abs() < 0.01);
-        // Turn: stick pushed right while running left, the target flips to +72 at once.
+        // Turn: stick pushed right while running left. The facing keeps easing toward the
+        // speed angle (D251): 3 per tick through zero, as the controller decelerates.
         let mut a = SackboyAnim::new();
         for _ in 0..30 {
             a.tick(&holding(-30., -1.), true);
         }
-        let mut yaw = 0.;
-        for _ in 0..18 {
-            let f = a.tick(&holding(-30., 1.), true);
+        let mut want = a.yaw();
+        for i in 0..18 {
+            let vx = -27. + 3. * i as f32;
+            let f = a.tick(&holding(vx, 1.), true);
             assert!(layer(&f, ClipId::WalkFastTurn).is_some());
-            yaw = f.yaw;
+            want += FACING_EASE * (facing_target(vx) - want);
+            assert!(close(f.yaw, want), "{i} {} {want}", f.yaw);
         }
-        assert!((yaw - LANE_YAW).abs() < 1e-3, "{yaw}");
+        // Moving right at 24 by now: well past the camera, not held at 72 degrees.
+        assert!(want > 0.6 && (want - LANE_YAW).abs() > 0.05, "{want}");
     }
 
     #[test]
@@ -1644,9 +1692,9 @@ mod tests {
         }
         assert_eq!(turn, 19);
         assert_eq!(layer(&last, ClipId::WalkFastTurn).unwrap().frame, 18.);
-        // The tick after the turn ends shows walk phase 0 again (and a new turn starts).
+        // The tick after the turn ends shows walk frame 1 (and a new turn starts).
         let f = push(&mut a, &mut s, -1.);
-        assert_eq!(layer(&f, ClipId::WalkFast).unwrap().frame, 0.);
+        assert_eq!(layer(&f, ClipId::WalkFast).unwrap().frame, 1.);
     }
 
     #[test]
@@ -2125,6 +2173,44 @@ mod tests {
         assert!(tail.last().unwrap().0 <= 30.);
         // Standing still: no jump_walk.
         assert!(frames.iter().all(|f| layer(f, ClipId::JumpWalk).is_none()));
+    }
+
+    #[test]
+    fn upper_body_eases_back_toward_stand_in_the_air() {
+        let frames = run(
+            |t| Input {
+                jump: (5..11).contains(&t),
+                ..Default::default()
+            },
+            150,
+        );
+        let upper = |f: &AnimFrame| {
+            let l: Vec<_> = f
+                .layers
+                .iter()
+                .filter(|l| l.blend == Blend::UpperBody)
+                .collect();
+            assert!(l.len() <= 1);
+            l.first().map_or(0., |l| {
+                assert_eq!((l.clip, l.frame, l.mirror), (ClipId::Stand, 0., false));
+                l.weight
+            })
+        };
+        let air = |f: &AnimFrame| JUMP_CLIPS.iter().any(|&c| weight_of(f, c) > 0.);
+        let first = frames.iter().position(air).expect("jumps");
+        // Standing: no layer. The first jump tick still reads s = 0, then s = 0.1, 0.19, ...
+        assert!(frames[..=first].iter().all(|f| upper(f) == 0.));
+        let mut s = 0f32;
+        for f in &frames[first..first + 12] {
+            assert!(close(upper(f), s * (1. - s)), "{} {s}", upper(f));
+            s += AIR_EASE * (1. - s);
+        }
+        // Never more than a quarter, and gone again some ticks after the landing.
+        assert!(frames.iter().all(|f| upper(f) <= 0.25));
+        assert_eq!(upper(frames.last().unwrap()), 0.);
+        // It is not a lerp layer for the shares.
+        let f = &frames[first + 8];
+        assert!(close(f.effective_weights().iter().sum::<f32>(), 1.));
     }
 
     #[test]

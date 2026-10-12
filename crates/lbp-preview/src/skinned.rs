@@ -213,6 +213,25 @@ impl BlendPose {
         lerp_morphs(&mut self.morphs, &pose.morphs, w);
     }
 
+    /// [`BlendPose::lerp`] on the bones flagged in `mask` only (one flag per mesh bone; a
+    /// missing flag is false). Morph weights are left alone.
+    pub fn lerp_masked(&mut self, rig: &Rig, pose: &Pose, w: f32, mask: &[bool]) {
+        if w <= 0. || !w.is_finite() {
+            return;
+        }
+        let w = w.min(1.);
+        for (i, b) in self.bones.iter_mut().enumerate() {
+            if !mask.get(i).copied().unwrap_or(false) {
+                continue;
+            }
+            if let Some(p) = rig.pose_trs(pose, i) {
+                b.t = lerp3(b.t, p.t, w);
+                b.r = nlerp(b.r, p.r, w);
+                b.s = lerp3(b.s, p.s, w);
+            }
+        }
+    }
+
     /// [`BlendPose::lerp`] toward `pose` mirrored left/right ([`Rig::mirrored_trs`]).
     /// Morph weights lerp unswapped (the mirror morph table is not used).
     pub fn lerp_mirrored(&mut self, rig: &Rig, pose: &Pose, w: f32) {
@@ -844,6 +863,15 @@ impl Rig {
     pub fn bone_named(&self, name: &str) -> Option<usize> {
         let hash = lbp_mesh::anim_hash(name);
         self.bones.iter().position(|b| b.anim_hash == hash)
+    }
+
+    /// One flag per bone: true for bone `root` and every bone below it, except bone `cut`
+    /// and the bones below that.
+    pub fn subtree_mask(&self, root: usize, cut: Option<usize>) -> Vec<bool> {
+        self.chains
+            .iter()
+            .map(|chain| chain.contains(&root) && cut.is_none_or(|c| !chain.contains(&c)))
+            .collect()
     }
 
     pub fn parents(&self) -> Vec<i32> {
@@ -1568,6 +1596,32 @@ mod tests {
             let reach = 2. * len3([0., 0.2, 1.]);
             assert!((joint(&far, 3)[2] - (3. - reach)).abs() < 0.01);
         }
+    }
+
+    #[test]
+    fn masked_lerp_moves_only_the_flagged_subtree() {
+        // Root -> a -> b -> c: the subtree of a without c's.
+        let at = |parent: i32, hash: u32| RigBone {
+            parent,
+            anim_hash: hash,
+            skin_pose: IDENTITY,
+            inv_skin_pose: IDENTITY,
+        };
+        let r = Rig::new(vec![at(-1, 1), at(0, 2), at(1, 3), at(2, 4)], &[1, 2, 3, 4]).unwrap();
+        let mask = r.subtree_mask(1, Some(3));
+        assert_eq!(mask, [false, true, true, false]);
+        assert_eq!(r.subtree_mask(2, None), [false, false, true, true]);
+        let pose = Pose {
+            rotations: vec![[0., 0., 0., 1.]; 4],
+            positions: vec![[4., 0., 0.]; 4],
+            scales: vec![[1.; 3]; 4],
+            morphs: vec![1.],
+        };
+        let mut p = BlendPose::bind(&r);
+        p.lerp_masked(&r, &pose, 0.5, &mask);
+        let x: Vec<f32> = p.bones.iter().map(|b| b.t[0]).collect();
+        assert_eq!(x, [0., 2., 2., 0.]);
+        assert!(p.morphs.is_empty());
     }
 
     #[test]
