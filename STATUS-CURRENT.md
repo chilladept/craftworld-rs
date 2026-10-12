@@ -11,13 +11,25 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D245 jump pose (2026-10-12)
+## Latest: D246 idle stretch fixed at the cause (2026-10-12)
+- The stretch was scale inheritance, not the clip weight: the stand clip breathes by scaling the spine bones
+  and our skinning passed that scale to every bone below (legs, head, arms). `lbp-preview` skinning has
+  `ScaleRule::Biped` (a `Bip...` bone keeps its parent's scale out of its own shape; its offset still moves),
+  used by the Sackboy play figure only; `STAND_BASE_WEIGHT` is 1 again. Clean D234 captures: standing height
+  per tick 201.1..206.4, ours 200.8..206.1 (RMS 0.34, was 2.5); 6-tick jump heights within 2.3 for ticks
+  1..20, feet within 1. The D243 idle capture used for D242-D244 is not the neutral stand (do not tune
+  against it). Open: landing dip after touchdown (game 195, ours 200), ledge-fall layer weight, stop/turn
+  poses, lean. `docs/d242-idle-stretch.md` (D246).
+
+## Before: D245 jump pose (2026-10-12)
 - Take-off tucked the legs early. From the EBOOT jump layer: the frame rule was right; the pose is
   `lerp(jump_small_*, jump_*, held ticks / 10)` (count frozen on release) at full layer weight after a
   take-off. `sackboy_anim.rs`: clips jump_small_stand / jump_small_walk (bank is 56), `JUMP_HOLD_FULL`.
-  D243 capture (6-tick hold): mesh height per tick within 4.6, rms 2.3 (was 20 low). Not yet seen in the
-  viewer next to the game. Open: ledge-fall layer weight (still the D234 ramp), ticks 3 and 5 are 4 off,
-  our jump arc vs the capture's (root, not centroid), then stop/turn poses and lean/stretch.
+  D243 capture: mesh height per tick within 4.6, rms 2.3 (was 20 low) with the capture's vertical speed; in
+  the viewer (our 6-tick arc) max 7.0 / rms 4.8. That capture is not a clean 6-tick jump (feet apex +277,
+  106 units sideways); against the clean D234 capture the viewer is within 2.4 (feet rise within 1.8), so
+  the jump arc is unchanged. Not yet seen in the viewer next to the game. Open: ledge-fall layer weight
+  (still the D234 ramp), a fresh capture with a known hold length, then stop/turn poses and lean/stretch.
 
 ## Before: D244 idle weight reaches the viewer (2026-10-12, #5)
 - The viewer's pose blender forced the base layer to weight 1, so D242's weight never showed. Honoured now;

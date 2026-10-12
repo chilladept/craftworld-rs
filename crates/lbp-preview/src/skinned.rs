@@ -154,6 +154,17 @@ pub fn nlerp(a: [f32; 4], b: [f32; 4], w: f32) -> [f32; 4] {
     normalize(std::array::from_fn(|i| a[i] + (b[i] * sign - a[i]) * w))
 }
 
+/// Per-axis `s / bind`, 1 where the bind scale is zero.
+fn scale_ratio(s: [f32; 3], bind: [f32; 3]) -> [f32; 3] {
+    std::array::from_fn(|c| {
+        if bind[c].abs() > 1e-6 {
+            s[c] / bind[c]
+        } else {
+            1.
+        }
+    })
+}
+
 fn lerp3(a: [f32; 3], b: [f32; 3], w: f32) -> [f32; 3] {
     std::array::from_fn(|i| a[i] + (b[i] - a[i]) * w)
 }
@@ -321,6 +332,20 @@ fn transform(m: &Mat4, p: [f32; 3]) -> [f32; 3] {
     std::array::from_fn(|r| m[r] * p[0] + m[4 + r] * p[1] + m[8 + r] * p[2] + m[12 + r])
 }
 
+/// How a bone's animated scale reaches the bones below it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScaleRule {
+    /// Plain matrix hierarchy: a bone's scale scales everything below it.
+    #[default]
+    Inherited,
+    /// The bones named as 3ds Max Biped parts (`Bip...`) do not take their parent's scale:
+    /// a scaled Biped bone stretches its own vertices and moves its children's joints
+    /// (their offsets are scaled), but a Biped child keeps its own size and shape. Every
+    /// other bone inherits as in [`ScaleRule::Inherited`]. MEASURED for Sackboy (D246,
+    /// docs/d242-idle-stretch.md); the game's own composition is not traced.
+    Biped,
+}
+
 /// One mesh bone as the rig needs it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RigBone {
@@ -344,6 +369,10 @@ pub struct Rig {
     /// Each bone's left/right partner (the skeleton's mirror table; itself on the centre
     /// line, and for every bone when the table is missing or out of range).
     pub mirror: Vec<usize>,
+    /// Bones named as 3ds Max Biped parts (`Bip...`); all false without a skeleton.
+    biped: Vec<bool>,
+    /// How scale passes down the hierarchy (default [`ScaleRule::Inherited`]).
+    pub scale_rule: ScaleRule,
 }
 
 /// Reflection across the model's x = 0 plane (left/right; Z-up, front -Y).
@@ -391,6 +420,8 @@ impl Rig {
             .count();
         let mirror = (0..bones.len()).collect();
         Ok(Self {
+            biped: vec![false; bones.len()],
+            scale_rule: ScaleRule::default(),
             bones,
             chains,
             bind_local,
@@ -429,7 +460,13 @@ impl Rig {
                 inv_skin_pose: b.inv_skin_pose,
             })
             .collect();
-        Ok(Self::new(bones, animation_hashes)?.with_mirror(&skeleton.mirror_bones))
+        let mut rig = Self::new(bones, animation_hashes)?.with_mirror(&skeleton.mirror_bones);
+        rig.biped = skeleton
+            .bones
+            .iter()
+            .map(|b| b.name.starts_with("Bip"))
+            .collect();
+        Ok(rig)
     }
 
     /// The same mesh bones bound to another animation's bone list (clip banks share one
@@ -437,6 +474,8 @@ impl Rig {
     pub fn rebind(&self, animation_hashes: &[u32]) -> Result<Self, String> {
         let mut rig = Self::new(self.bones.clone(), animation_hashes)?;
         rig.mirror = self.mirror.clone();
+        rig.biped = self.biped.clone();
+        rig.scale_rule = self.scale_rule;
         Ok(rig)
     }
 
@@ -456,8 +495,27 @@ impl Rig {
     /// `X * S_j * X` (S = world x inverse bind). That is the world `X W_j B_j^-1 X B_i`,
     /// returned as local transforms; None where neither bone is driven. Assumes a
     /// left/right symmetric bind (INFERRED for Sackboy; the flip-type table is not used).
+    /// Under [`ScaleRule::Biped`] the compensating bones are mirrored at bind scale and
+    /// then take their partner's scale ratio per axis (partners share their local axes
+    /// up to sign), so the result composes under the same rule.
     pub fn mirrored_trs(&self, pose: &Pose) -> Vec<Option<Trs>> {
-        let world = self.worlds(&self.local_matrices(Some(pose)));
+        let bind = self.bind_trs();
+        let posed = self.pose_locals(Some(pose));
+        let rigid: Vec<Mat4> = (0..self.bones.len())
+            .map(|i| {
+                if self.compensates(i) {
+                    trs(posed[i].t, posed[i].r, bind[i].s)
+                } else {
+                    posed[i].matrix()
+                }
+            })
+            .collect();
+        // Plain inheritance keeps the bind matrices as they are (no TRS round trip).
+        let world = if self.scale_rule == ScaleRule::Inherited {
+            self.worlds(&self.local_matrices(Some(pose)))
+        } else {
+            self.worlds(&rigid)
+        };
         let mirrored: Vec<Mat4> = (0..self.bones.len())
             .map(|i| {
                 let j = self.mirror[i];
@@ -482,7 +540,12 @@ impl Rig {
                         mul(&inv, &mirrored[i])
                     }
                 };
-                Some(Trs::from_matrix(&local))
+                let mut out = Trs::from_matrix(&local);
+                if self.compensates(i) {
+                    let k = scale_ratio(posed[j].s, bind[j].s);
+                    out.s = std::array::from_fn(|c| bind[i].s[c] * k[c]);
+                }
+                Some(out)
             })
             .collect()
     }
@@ -498,6 +561,9 @@ impl Rig {
     /// Per mesh bone: world(pose) × inverse skin pose. Undriven bones keep their bind
     /// local transform, so a pose without matches reproduces the bind pose.
     pub fn skin_matrices(&self, pose: Option<&Pose>) -> Vec<Mat4> {
+        if self.scale_rule != ScaleRule::Inherited {
+            return self.skin_matrices_from_trs(&self.pose_locals(pose));
+        }
         self.skin_matrices_from_locals(&self.local_matrices(pose))
     }
 
@@ -512,6 +578,105 @@ impl Rig {
                 });
                 mul(&world, &bone.inv_skin_pose)
             })
+            .collect()
+    }
+
+    /// Marks the bones [`ScaleRule::Biped`] treats as Biped parts (one flag per bone;
+    /// [`Rig::from_skeleton`] sets them from the bone names). Ignored on a length mismatch.
+    pub fn set_biped_bones(&mut self, flags: &[bool]) {
+        if flags.len() == self.bones.len() {
+            self.biped = flags.to_vec();
+        }
+    }
+
+    /// True when bone `j` does not take its parent's scale under the rig's rule.
+    fn compensates(&self, j: usize) -> bool {
+        match self.scale_rule {
+            ScaleRule::Inherited => false,
+            ScaleRule::Biped => self.biped[j],
+        }
+    }
+
+    fn bind_trs(&self) -> Vec<Trs> {
+        self.bind_local.iter().map(Trs::from_matrix).collect()
+    }
+
+    /// World matrix per mesh bone from local transforms under the rig's [`ScaleRule`]
+    /// (missing entries are bind). A compensating bone sits in its parent's unscaled
+    /// frame, its offset multiplied by the parent's scale over bind scale.
+    pub fn worlds_from_trs(&self, local: &[Trs]) -> Vec<Mat4> {
+        let bind = self.bind_trs();
+        self.chains
+            .iter()
+            .map(|chain| {
+                // frame: the bone's world with its bind scale; world: with its pose scale.
+                let (mut frame, mut world, mut k) = (IDENTITY, IDENTITY, [1f32; 3]);
+                for &j in chain {
+                    let l = local.get(j).copied().unwrap_or(bind[j]);
+                    if self.compensates(j) {
+                        let t = std::array::from_fn(|c| l.t[c] * k[c]);
+                        world = mul(&frame, &trs(t, l.r, l.s));
+                        frame = mul(&frame, &trs(t, l.r, bind[j].s));
+                        k = scale_ratio(l.s, bind[j].s);
+                    } else {
+                        world = mul(&world, &l.matrix());
+                        frame = world;
+                        k = [1.; 3];
+                    }
+                }
+                world
+            })
+            .collect()
+    }
+
+    /// Per mesh bone: world under the rig's [`ScaleRule`] x inverse skin pose.
+    pub fn skin_matrices_from_trs(&self, local: &[Trs]) -> Vec<Mat4> {
+        self.worlds_from_trs(local)
+            .iter()
+            .zip(&self.bones)
+            .map(|(w, b)| mul(w, &b.inv_skin_pose))
+            .collect()
+    }
+
+    /// For a joint hierarchy that reproduces [`Rig::worlds_from_trs`] with plain
+    /// parent-child transforms: each bone is a frame node with a scale node under it
+    /// (the scale node is the skinning joint). Returns per bone whether its frame node
+    /// hangs under the parent's scale node (an inheriting bone) or the parent's frame
+    /// node (a compensating bone). All true under [`ScaleRule::Inherited`].
+    pub fn joint_inherits(&self) -> Vec<bool> {
+        (0..self.bones.len())
+            .map(|j| !self.compensates(j))
+            .collect()
+    }
+
+    /// The frame node's local matrix and the scale node's scale per bone, for the
+    /// hierarchy of [`Rig::joint_inherits`].
+    pub fn joint_locals(&self, local: &[Trs]) -> Vec<(Mat4, [f32; 3])> {
+        let bind = self.bind_trs();
+        let at = |j: usize| local.get(j).copied().unwrap_or(bind[j]);
+        (0..self.bones.len())
+            .map(|j| {
+                let l = at(j);
+                if !self.compensates(j) {
+                    return (l.matrix(), [1.; 3]);
+                }
+                let k = usize::try_from(self.bones[j].parent)
+                    .ok()
+                    .filter(|&p| self.compensates(p))
+                    .map_or([1.; 3], |p| scale_ratio(at(p).s, bind[p].s));
+                (
+                    trs(std::array::from_fn(|c| l.t[c] * k[c]), l.r, bind[j].s),
+                    scale_ratio(l.s, bind[j].s),
+                )
+            })
+            .collect()
+    }
+
+    /// Every bone's local transform in `pose` (bind where the animation does not drive it).
+    pub fn pose_locals(&self, pose: Option<&Pose>) -> Vec<Trs> {
+        let bind = self.bind_trs();
+        (0..self.bones.len())
+            .map(|i| pose.and_then(|p| self.pose_trs(p, i)).unwrap_or(bind[i]))
             .collect()
     }
 
@@ -760,7 +925,11 @@ impl SkinnedClip {
     /// Skinned positions for a blended pose (CPU path).
     pub fn blended_positions(&self, pose: &BlendPose) -> Vec<[f32; 3]> {
         let base = self.morphed_bind_weights(&pose.morphs);
-        let matrices = self.rig.skin_matrices_from_locals(&pose.local_matrices());
+        let matrices = if self.rig.scale_rule == ScaleRule::Inherited {
+            self.rig.skin_matrices_from_locals(&pose.local_matrices())
+        } else {
+            self.rig.skin_matrices_from_trs(&pose.bones)
+        };
         skin_positions(&base, &self.skin.joints, &self.skin.weights, &matrices)
     }
 
@@ -1181,6 +1350,129 @@ mod tests {
         for (t, (q, p)) in twice.iter().zip(pose.rotations.iter().zip(&pose.positions)) {
             let t = t.unwrap();
             assert!(close(t.t, *p) && near(t.r, *q));
+        }
+        // D246: under the Biped rule a scaled bone's partner takes the scale, and only it.
+        let mut biped = r.clone();
+        biped.set_biped_bones(&[true; 3]);
+        biped.scale_rule = ScaleRule::Biped;
+        let scaled = Pose {
+            scales: vec![[1.; 3], [2., 1., 3.], [1.; 3]],
+            ..pose.clone()
+        };
+        let m = biped.mirrored_trs(&scaled);
+        let (left, right) = (m[1].unwrap(), m[2].unwrap());
+        assert!(close(right.s, [2., 1., 3.]) && close(left.s, [1.; 3]));
+        assert!(close(right.t, [-1., 0., 2.]) && near(right.r, [0., -s, 0., c]));
+    }
+
+    /// Root, a bone at y = 1 and its child at y = 2 (world), all driven.
+    fn chain() -> Rig {
+        let at = |parent: i32, hash: u32, y: f32| RigBone {
+            parent,
+            anim_hash: hash,
+            skin_pose: translate([0., y, 0.]),
+            inv_skin_pose: translate([0., -y, 0.]),
+        };
+        Rig::new(
+            vec![at(-1, 10, 0.), at(0, 20, 1.), at(1, 30, 2.)],
+            &[10, 20, 30],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn biped_scale_stays_on_the_scaled_bone() {
+        // The middle bone doubles along y; its child turns 90 degrees about z.
+        let h = std::f32::consts::FRAC_1_SQRT_2;
+        let pose = Pose {
+            rotations: vec![[0., 0., 0., 1.], [0., 0., 0., 1.], [0., 0., h, h]],
+            positions: vec![[0.; 3], [0., 1., 0.], [0., 1., 0.]],
+            scales: vec![[1.; 3], [1., 2., 1.], [1.; 3]],
+            morphs: vec![],
+        };
+        let positions = [[0., 1.5, 0.], [0.5, 2.5, 0.]];
+        let joints = [[1, 0, 0, 0], [2, 0, 0, 0]];
+        let weights = [[1., 0., 0., 0.]; 2];
+        let skinned =
+            |r: &Rig| skin_positions(&positions, &joints, &weights, &r.skin_matrices(Some(&pose)));
+        // Plain inheritance: the child is stretched and sheared by its parent's scale.
+        let plain = chain();
+        let out = skinned(&plain);
+        assert!(close(out[0], [0., 2., 0.]) && close(out[1], [-0.5, 4., 0.]));
+        let mut wide = plain.clone();
+        wide.set_biped_bones(&[true; 3]);
+        // The flags do nothing until the rule is chosen.
+        assert_eq!(skinned(&wide), out);
+        wide.scale_rule = ScaleRule::Biped;
+        // The scaled bone's own vertex doubles its offset; the child's joint moves out to
+        // y = 3 and its vertex keeps its bind offset (0.5, 0.5), turned by the child only.
+        let out = skinned(&wide);
+        assert!(close(out[0], [0., 2., 0.]) && close(out[1], [-0.5, 3.5, 0.]));
+        // Same child, a quarter turn the other way round an x-scaled parent: no shear.
+        let across = Pose {
+            scales: vec![[1.; 3], [3., 1., 1.], [1.; 3]],
+            ..pose.clone()
+        };
+        let w = wide.worlds_from_trs(&wide.pose_locals(Some(&across)));
+        let col = |m: &Mat4, c: usize| [m[c * 4], m[c * 4 + 1], m[c * 4 + 2]];
+        assert!(close(col(&w[1], 0), [3., 0., 0.]));
+        assert!(close(col(&w[2], 0), [0., 1., 0.]) && close(col(&w[2], 1), [-1., 0., 0.]));
+        assert!(close(col(&w[2], 3), [0., 2., 0.]));
+        let inherited = plain.worlds_from_trs(&plain.pose_locals(Some(&across)));
+        assert!(close(col(&inherited[2], 1), [-3., 0., 0.]));
+        // A bone that is not a Biped part still inherits (Sackboy's zip pull under the chest).
+        let mut mixed = wide.clone();
+        mixed.set_biped_bones(&[true, true, false]);
+        let w = mixed.worlds_from_trs(&mixed.pose_locals(Some(&across)));
+        assert!(close(col(&w[2], 1), [-3., 0., 0.]));
+        // Bind stays bind under either rule.
+        for r in [&wide, &mixed] {
+            for m in r.skin_matrices(None) {
+                assert!(m.iter().zip(IDENTITY).all(|(a, b)| (a - b).abs() < 1e-6));
+            }
+        }
+    }
+
+    #[test]
+    fn frame_and_scale_nodes_reproduce_the_biped_worlds() {
+        let h = std::f32::consts::FRAC_1_SQRT_2;
+        let pose = Pose {
+            rotations: vec![[0., 0.6, 0., 0.8], [0.6, 0., 0., 0.8], [0., 0., h, h]],
+            positions: vec![[0.5, 0., 0.], [0., 1., 0.2], [0.3, 1., 0.]],
+            scales: vec![[1.2, 1., 0.8], [0.9, 2., 1.], [1., 0.5, 1.5]],
+            morphs: vec![],
+        };
+        for flags in [[true; 3], [true, true, false], [false, true, true]] {
+            let mut r = chain();
+            r.set_biped_bones(&flags);
+            r.scale_rule = ScaleRule::Biped;
+            let local = r.pose_locals(Some(&pose));
+            let inherits = r.joint_inherits();
+            assert_eq!(inherits, flags.map(|f| !f));
+            // The joint hierarchy a renderer builds: frame node, then its scale node.
+            let (mut frames, mut scaled) = (Vec::<Mat4>::new(), Vec::<Mat4>::new());
+            for (i, (m, k)) in r.joint_locals(&local).into_iter().enumerate() {
+                let above = match (r.parents()[i], inherits[i]) {
+                    (-1, _) => IDENTITY,
+                    (p, true) => scaled[p as usize],
+                    (p, false) => frames[p as usize],
+                };
+                frames.push(mul(&above, &m));
+                scaled.push(mul(&frames[i], &trs([0.; 3], [0., 0., 0., 1.], k)));
+            }
+            for (a, b) in scaled.iter().zip(r.worlds_from_trs(&local)) {
+                assert!(
+                    a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-5),
+                    "{flags:?}"
+                );
+            }
+        }
+        // Plain inheritance: one node per bone does it (unit scale nodes, all inheriting).
+        let r = chain();
+        let local = r.pose_locals(Some(&pose));
+        assert!(r.joint_inherits().iter().all(|&i| i));
+        for ((m, k), l) in r.joint_locals(&local).iter().zip(&local) {
+            assert_eq!((*m, *k), (l.matrix(), [1.; 3]));
         }
     }
 

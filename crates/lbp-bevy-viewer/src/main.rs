@@ -77,6 +77,10 @@ struct Playing {
 struct GpuRig {
     root: Entity,
     joints: Vec<Entity>,
+    /// One scale node under each joint when the rig's scale rule is not plain
+    /// inheritance (`Rig::joint_inherits`); these are then the skinning joints. Empty
+    /// otherwise.
+    scales: Vec<Entity>,
     /// Morph weights are applied on the CPU into positions; skip when there are none.
     morphs: bool,
 }
@@ -2998,20 +3002,56 @@ fn gpu_rig(
             Visibility::default(),
         ))
         .id();
-    let local = rig.local_matrices(None);
+    let inherits = rig.joint_inherits();
+    let split = inherits.iter().any(|i| !i);
+    let local: Vec<_> = if split {
+        rig.joint_locals(&rig.pose_locals(None))
+    } else {
+        let bind = rig.local_matrices(None);
+        bind.into_iter().map(|m| (m, [1.; 3])).collect()
+    };
     let mut joints: Vec<Entity> = local
         .iter()
-        .map(|m| {
+        .map(|(m, _)| {
             commands
                 .spawn(Transform::from_matrix(Mat4::from_cols_array(m)))
                 .id()
         })
         .collect();
+    // Scale nodes only for a rig whose bones do not all inherit scale (D246).
+    let mut scales: Vec<Entity> = if split {
+        local
+            .iter()
+            .zip(&joints)
+            .map(|((_, k), joint)| {
+                commands
+                    .spawn((Transform::from_scale(Vec3::from_array(*k)), ChildOf(*joint)))
+                    .id()
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     for (i, parent) in rig.parents().into_iter().enumerate() {
-        let parent = usize::try_from(parent).map_or(root, |p| joints[p]);
+        let parent = usize::try_from(parent).map_or(root, |p| {
+            if split && inherits[i] {
+                scales[p]
+            } else {
+                joints[p]
+            }
+        });
         commands.entity(joints[i]).insert(ChildOf(parent));
     }
-    joints.push(commands.spawn((Transform::IDENTITY, ChildOf(root))).id());
+    let fixed = commands.spawn((Transform::IDENTITY, ChildOf(root))).id();
+    joints.push(fixed);
+    let skin_joints_entities = if split {
+        let mut skin = scales.clone();
+        skin.push(fixed);
+        skin
+    } else {
+        joints.clone()
+    };
+    scales.shrink_to_fit();
     let inverse_bindposes = bindposes.add(SkinnedMeshInverseBindposes::from(inverse));
     let (joint_index, joint_weight) =
         lbp_preview::skinned::gpu_skin_attributes(skin_joints, skin_weights, bones);
@@ -3026,7 +3066,7 @@ fn gpu_rig(
             SkinnedMesh {
                 // Strong handles: the asset is freed with the scene entities.
                 inverse_bindposes: inverse_bindposes.clone(),
-                joints: joints.clone(),
+                joints: skin_joints_entities.clone(),
             },
             bevy::camera::visibility::NoFrustumCulling,
         ));
@@ -3034,8 +3074,26 @@ fn gpu_rig(
     Ok(GpuRig {
         root,
         joints,
+        scales,
         morphs: false,
     })
+}
+/// Writes one pose (a local transform per bone) into the joint and scale nodes of a rig
+/// built with scale nodes (`GpuRig::scales`, D246).
+fn pose_joints(
+    gpu: &GpuRig,
+    rig: &lbp_preview::skinned::Rig,
+    local: &[lbp_preview::skinned::Trs],
+    transforms: &mut Query<&mut Transform>,
+) {
+    for (i, (m, k)) in rig.joint_locals(local).into_iter().enumerate() {
+        if let Some(mut t) = gpu.joints.get(i).and_then(|j| transforms.get_mut(*j).ok()) {
+            *t = Transform::from_matrix(Mat4::from_cols_array(&m));
+        }
+        if let Some(mut t) = gpu.scales.get(i).and_then(|j| transforms.get_mut(*j).ok()) {
+            *t = Transform::from_scale(Vec3::from_array(k));
+        }
+    }
 }
 fn animate(
     time: Res<Time>,
@@ -3053,10 +3111,14 @@ fn animate(
             return;
         };
         let posed = if let Some(gpu) = &playing.gpu {
-            for (joint, m) in gpu.joints.iter().zip(pose.local_matrices()) {
-                if let Ok(mut t) = transforms.get_mut(*joint) {
-                    *t = Transform::from_matrix(Mat4::from_cols_array(&m));
+            if gpu.scales.is_empty() {
+                for (joint, m) in gpu.joints.iter().zip(pose.local_matrices()) {
+                    if let Ok(mut t) = transforms.get_mut(*joint) {
+                        *t = Transform::from_matrix(Mat4::from_cols_array(&m));
+                    }
                 }
+            } else {
+                pose_joints(gpu, &playing.clip.rig, &pose.bones, &mut transforms);
             }
             if !gpu.morphs {
                 return;
@@ -3087,14 +3149,15 @@ fn animate(
         let Some(pose) = playing.clip.frame_pose(frame) else {
             return;
         };
-        for (joint, m) in gpu
-            .joints
-            .iter()
-            .zip(playing.clip.rig.local_matrices(Some(&pose)))
-        {
-            if let Ok(mut t) = transforms.get_mut(*joint) {
-                *t = Transform::from_matrix(Mat4::from_cols_array(&m));
+        let rig = &playing.clip.rig;
+        if gpu.scales.is_empty() {
+            for (joint, m) in gpu.joints.iter().zip(rig.local_matrices(Some(&pose))) {
+                if let Ok(mut t) = transforms.get_mut(*joint) {
+                    *t = Transform::from_matrix(Mat4::from_cols_array(&m));
+                }
             }
+        } else {
+            pose_joints(gpu, rig, &rig.pose_locals(Some(&pose)), &mut transforms);
         }
         if !gpu.morphs {
             return;
@@ -3786,9 +3849,22 @@ mod tests {
             scales: vec![[1.; 3], [1.5; 3]],
             morphs: vec![],
         };
+        // D246: the same with both bones compensating scale (no shear from the root's
+        // non-uniform scale reaches the child), through the frame + scale node pairs.
+        let mut biped = rig.clone();
+        biped.set_biped_bones(&[true, true]);
+        biped.scale_rule = lbp_preview::skinned::ScaleRule::Biped;
+        let squash = lbp_preview::skinned::Pose {
+            scales: vec![[0.8, 1., 1.2], [1.5, 0.5, 2.]],
+            ..pose.clone()
+        };
         let frame = ([1., 2., 3.], 4.);
         // Raw axes and the D148 Z-up rotation on the root.
-        for up in [model_up(false), model_up(true)] {
+        for (up, rig, pose) in [
+            (model_up(false), &rig, &pose),
+            (model_up(true), &rig, &pose),
+            (model_up(true), &biped, &squash),
+        ] {
             let mut app = App::new();
             app.add_plugins(bevy::transform::TransformPlugin);
             let world = app.world_mut();
@@ -3800,23 +3876,35 @@ mod tests {
                 &mut commands,
                 &mut meshes,
                 &mut bindposes,
-                &rig,
+                rig,
                 (&[], &[]),
                 (frame, up),
                 &[],
             )
             .unwrap();
             queue.apply(world);
-            for (joint, m) in gpu.joints.iter().zip(rig.local_matrices(Some(&pose))) {
-                *world.get_mut::<Transform>(*joint).unwrap() =
+            assert_eq!(gpu.scales.len(), if rig == &biped { 2 } else { 0 });
+            let local: Vec<_> = if gpu.scales.is_empty() {
+                let plain = rig.local_matrices(Some(pose));
+                plain.into_iter().map(|m| (m, [1.; 3])).collect()
+            } else {
+                rig.joint_locals(&rig.pose_locals(Some(pose)))
+            };
+            for (i, (m, k)) in local.into_iter().enumerate() {
+                *world.get_mut::<Transform>(gpu.joints[i]).unwrap() =
                     Transform::from_matrix(Mat4::from_cols_array(&m));
+                if let Some(scale) = gpu.scales.get(i) {
+                    *world.get_mut::<Transform>(*scale).unwrap() =
+                        Transform::from_scale(Vec3::from_array(k));
+                }
             }
             app.update();
             let (_, inverse) = bindposes.iter().next().unwrap();
             let n = Mat4::from_scale(Vec3::splat(0.25))
                 * Mat4::from_translation(-Vec3::new(1., 2., 3.));
-            for (i, cpu) in rig.skin_matrices(Some(&pose)).iter().enumerate() {
-                let global = app.world().get::<GlobalTransform>(gpu.joints[i]).unwrap();
+            for (i, cpu) in rig.skin_matrices(Some(pose)).iter().enumerate() {
+                let joint = gpu.scales.get(i).unwrap_or(&gpu.joints[i]);
+                let global = app.world().get::<GlobalTransform>(*joint).unwrap();
                 let got = global.to_matrix() * inverse[i];
                 let want = Mat4::from_quat(up) * n * Mat4::from_cols_array(cpu) * n.inverse();
                 assert!(got.abs_diff_eq(want, 1e-4), "{i}: {got} vs {want}");

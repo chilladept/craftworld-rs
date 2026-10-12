@@ -502,12 +502,13 @@ pub enum Blend {
     Additive { reference: f32 },
 }
 
-/// Weight of the stand clip over the bind pose (D242). The game's idle vertices (d234 `idle.bin`)
-/// fit the stand clip at 0.3-0.8 over the bind pose, 0.5 on average: its head and chest joints
-/// move 2-3 units over the breathing cycle (ours 7-11) and sit 3-6 higher. INFERRED weight,
-/// MEASURED amplitude (docs/d242-idle-stretch.md); other base clips stay at 1. 0.25 puts the
-/// chest and head-top travel on the game's (2.2 and 2.9 of our 10.5 and 11.3).
-pub const STAND_BASE_WEIGHT: f32 = 0.25;
+/// Weight of the stand clip over the bind pose: full (D246). D242-D244 lowered it to 0.25
+/// because the idle stretched far too much, but the stretch was the viewer passing the
+/// spine bones' breathing scale on to every bone below them. With that scale kept to the
+/// scaled bone (`ScaleRule::Biped` in lbp-preview), the full-weight stand clip follows the
+/// game's standing mesh height tick for tick (201.3..206.4 against our 200.8..206.1, RMS 0.4;
+/// MEASURED, docs/d242-idle-stretch.md).
+pub const STAND_BASE_WEIGHT: f32 = 1.;
 
 /// One clip sampled at one frame with a weight.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -2091,30 +2092,32 @@ mod tests {
 
     /// Height (lowest to highest vertex) of the Sackboy mesh posed by
     /// `lerp(jump_small_stand, jump_stand, h)` at clip frames 1..=10, rows h = 0.1..=0.6
-    /// (MEASURED on our own skinned mesh with the pose_fit example, D245).
+    /// (MEASURED on our own skinned mesh with the pose_fit example, `JUMP_TABLE=1`; D245,
+    /// recomputed with the Biped scale rule in D246: the jump clips carry no body scale,
+    /// so the rule moves these by 0.1 to 0.2 only).
     const JUMP_POSE_HEIGHT: [[f32; 10]; 6] = [
         [
-            214.3, 217.5, 219.0, 218.9, 217.2, 214.7, 211.3, 203.7, 194.7, 189.4,
+            214.4, 217.7, 219.1, 219.1, 217.4, 214.9, 211.5, 203.9, 194.8, 189.6,
         ],
         [
-            214.6, 217.7, 218.9, 217.9, 215.7, 212.8, 208.3, 200.8, 192.5, 188.9,
+            214.7, 217.8, 219.1, 218.0, 215.8, 212.9, 208.4, 200.9, 192.6, 189.0,
         ],
         [
-            214.9, 218.3, 218.8, 216.7, 213.7, 210.2, 204.9, 198.1, 191.2, 187.5,
+            215.0, 218.5, 218.9, 216.8, 213.8, 210.3, 205.0, 198.2, 191.3, 187.6,
         ],
         [
-            215.1, 219.1, 218.5, 215.2, 211.2, 207.4, 202.3, 195.0, 188.4, 185.1,
+            215.2, 219.2, 218.7, 215.3, 211.3, 207.5, 202.4, 195.1, 188.5, 185.3,
         ],
         [
-            215.4, 219.7, 218.2, 213.5, 208.6, 204.9, 198.8, 190.8, 184.3, 181.2,
+            215.6, 219.8, 218.3, 213.7, 208.7, 205.1, 198.9, 190.9, 184.4, 181.3,
         ],
         [
-            216.1, 220.2, 217.8, 211.7, 206.5, 201.9, 194.6, 186.6, 180.4, 175.9,
+            216.2, 220.4, 217.9, 211.8, 206.6, 202.0, 194.7, 186.7, 180.5, 176.0,
         ],
     ];
     /// The same for jump_stand alone (h = 1), which is what we drew before D245.
     const JUMP_STAND_HEIGHT: [f32; 10] = [
-        218.3, 221.6, 215.2, 204.8, 195.8, 188.4, 178.6, 167.5, 161.3, 161.2,
+        218.4, 221.7, 215.3, 204.9, 195.9, 188.5, 178.7, 167.6, 161.4, 161.3,
     ];
 
     fn between(row: &[f32; 10], frame: f32) -> f32 {
@@ -2134,25 +2137,20 @@ mod tests {
 
     #[test]
     fn six_tick_jump_follows_the_games_mesh_height() {
-        // D243 capture (RPCS3, jump button held 200 ms = 6 ticks, standing): mesh height
-        // per tick from the take-off, and the upward speed (centroid for ticks 1..9, feet
-        // after; the last four continue at gravity). MEASURED.
+        // D234 capture `jump.bin` (RPCS3, jump button held 200 ms = 6 ticks, standing, no
+        // sideways drift): mesh height per tick from the take-off, one vertex buffer per
+        // tick. MEASURED. Our own controller flies the same arc (feet within 1 unit of the
+        // game's on every tick up to the apex at 242), so it drives the pose here.
         let game = [
-            216.0, 219.6, 214.8, 213.4, 213.2, 209.3, 206.4, 205.1, 204.7, 203.6, 202.1, 200.0,
-            197.9, 195.8, 193.6, 191.1, 187.4, 183.3, 180.2, 177.6,
-        ];
-        let vy = [
-            12.6, 20.1, 24.9, 27.5, 29.5, 26.6, 24.5, 22.2, 19.8, 17.1, 15.5, 13.2, 10.5, 7.8, 5.2,
-            2.7, 0.0, -3.3, -6.0, -8.7,
+            214.5, 217.9, 219.0, 216.1, 209.8, 206.9, 205.6, 204.1, 202.3, 200.4, 198.4, 196.2,
+            193.8, 191.5, 189.1, 185.6, 181.6, 178.9, 176.9, 176.4,
         ];
         let lanes = |_: f32| true;
         let mut s = Sackboy::at_lane(0.);
         let mut a = SackboyAnim::new();
         let mut ours = Vec::new();
         let mut before = Vec::new();
-        for (t, &v) in vy.iter().enumerate() {
-            // The real controller for the button and the take-off tick; the speed is then
-            // the capture's, so this tests the pose rule and not our jump arc.
+        for t in 0..game.len() {
             s.step(
                 Input {
                     jump: t < 6,
@@ -2163,7 +2161,6 @@ mod tests {
                     lane_has_floor: &lanes,
                 },
             );
-            s.vy = v;
             let f = a.tick(&s, false);
             let (w, parts) = jump_parts(&f);
             // Standing jump: full weight, no walk clips, both stand clips on one frame.
@@ -2190,10 +2187,12 @@ mod tests {
                 / v.len() as f32)
                 .sqrt()
         };
-        assert!(worst(&ours) < 5., "{ours:?}");
-        assert!(rms(&ours) < 2.6, "{ours:?}");
+        // Ticks 1..=19 within 2.4 (the viewer's own skinned heights: 2.3, RMS 1.4); tick 20
+        // is past the table's last frame.
+        assert!(worst(&ours) < 3.5, "{ours:?}");
+        assert!(rms(&ours) < 1.8, "{ours:?}");
         // jump_stand alone tucks the legs early: 16 below the game on tick 10, 20 at worst.
         assert!(game[9] - before[9] > 15. && worst(&before) > 20.);
-        assert!(ours[9] > 200.);
+        assert!(ours[9] > 198.);
     }
 }

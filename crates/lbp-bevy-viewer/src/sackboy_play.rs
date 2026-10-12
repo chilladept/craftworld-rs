@@ -21,7 +21,7 @@
 use bevy::prelude::*;
 use lbp_catalog::{attachment::AttachedSource, LoadControl};
 use lbp_preview::level_scene;
-use lbp_preview::skinned::{sample_pose, BlendPose, BoundAnimation, SkinnedClip};
+use lbp_preview::skinned::{sample_pose, BlendPose, BoundAnimation, ScaleRule, SkinnedClip};
 use lbp_sim::avian2d::prelude::*;
 use lbp_sim::character::{
     spawn_sackboy, SackboyBody, SackboyPlugin, CENTRE_ABOVE, FLOOR_REST, HALF_SEGMENT, HEIGHT,
@@ -86,7 +86,15 @@ pub(crate) fn load_bank(
     control: &LoadControl,
 ) -> Result<(SkinnedClip, Vec<Result<BoundAnimation, String>>), String> {
     let guids = ClipId::ALL.map(ClipId::guid);
-    lbp_preview::skinned::load_clip_bank(source, catalog, mesh_key, &guids, control)
+    let (mut clip, mut bank) =
+        lbp_preview::skinned::load_clip_bank(source, catalog, mesh_key, &guids, control)?;
+    // D246: Sackboy's Biped bones do not pass their scale on (the stand clip breathes by
+    // scaling the spine; inherited, that stretched the whole upper body).
+    clip.rig.scale_rule = ScaleRule::Biped;
+    for bound in bank.iter_mut().flatten() {
+        bound.rig.scale_rule = ScaleRule::Biped;
+    }
+    Ok((clip, bank))
 }
 
 /// True when the viewer was started with `--play-sackboy`.

@@ -193,6 +193,55 @@ fn run() -> Result<(), String> {
         let c = skinned::load_clip(&source, &mesh, &anim, &control)?;
         clips.push((g.to_string(), c));
     }
+    if std::env::var("BIPED").is_ok() {
+        // the Sackboy play figure's scale rule (D246) for every pose built below
+        for (_, c) in &mut clips {
+            c.rig.scale_rule = skinned::ScaleRule::Biped;
+        }
+    }
+    if std::env::var("MORPHS").is_ok() {
+        // per clip: morph weight range over the clip, and how many vertices each mesh
+        // morph moves by more than 0.05 (with the largest offset)
+        for (name, c) in &clips {
+            let n = c.frame_pose(0).map_or(0, |p| p.morphs.len());
+            for m in 0..n {
+                let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+                for f in 0..i64::from(c.report.frames.max(1)) {
+                    if let Some(w) = c.frame_pose(f).and_then(|p| p.morphs.get(m).copied()) {
+                        lo = lo.min(w);
+                        hi = hi.max(w);
+                    }
+                }
+                let len = |o: &[f32; 3]| (o[0] * o[0] + o[1] * o[1] + o[2] * o[2]).sqrt();
+                let (moved, far) = c.skin.morphs.get(m).map_or((0, 0.), |t| {
+                    (
+                        t.offsets.iter().filter(|o| len(o) > 0.05).count(),
+                        t.offsets.iter().map(len).fold(0f32, f32::max),
+                    )
+                });
+                println!("{name} morph {m}: weight {lo:.3}..{hi:.3}, moves {moved} vertices, largest {far:.1}");
+                if let (true, Some(t)) = (hi > 0., c.skin.morphs.get(m)) {
+                    // where the moved vertices are (bind x, depth, up), their mean offset and bones
+                    let (mut lo3, mut hi3, mut mean) = ([f32::MAX; 3], [f32::MIN; 3], [0f32; 3]);
+                    let mut bones = std::collections::BTreeMap::<u8, u32>::new();
+                    for ((o, p), j) in t.offsets.iter().zip(&c.bind_positions).zip(&c.skin.joints) {
+                        if len(o) > 0.05 {
+                            for k in 0..3 {
+                                lo3[k] = lo3[k].min(p[k]);
+                                hi3[k] = hi3[k].max(p[k]);
+                                mean[k] += o[k] / moved as f32;
+                            }
+                            *bones.entry(j[0]).or_default() += 1;
+                        }
+                    }
+                    println!(
+                        "   bind lo {lo3:.1?} hi {hi3:.1?} mean offset {mean:.2?} bones {bones:?}"
+                    );
+                }
+            }
+        }
+        return Ok(());
+    }
     if std::env::var("DEBUG_ROOT").is_ok() {
         for (name, c) in &clips {
             for f in [0i64, 3, 6] {
@@ -232,6 +281,154 @@ fn run() -> Result<(), String> {
                 t[1] / n as f32
             );
         }
+    }
+    if std::env::var("TREE").is_ok() {
+        // bone, parent, bind world position, bind local translation, stand-clip local
+        // translation range per axis
+        let c = &clips[0].1;
+        let parents = c.rig.parents();
+        let bind = skinned::BlendPose::bind(&c.rig);
+        let w = c.rig.worlds_from_trs(&bind.bones);
+        for i in 0..c.rig.bone_count() {
+            let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+            for f in 0..i64::from(c.report.frames.max(1)) {
+                if let Some(t) = c.frame_pose(f).and_then(|p| c.rig.pose_trs(&p, i)) {
+                    for k in 0..3 {
+                        lo[k] = lo[k].min(t.t[k]);
+                        hi[k] = hi[k].max(t.t[k]);
+                    }
+                }
+            }
+            println!(
+                "bone {i} parent {} world [{:.1} {:.1} {:.1}] bind t [{:.1} {:.1} {:.1}] clip t lo [{:.1} {:.1} {:.1}] hi [{:.1} {:.1} {:.1}]",
+                parents[i], w[i][12], w[i][13], w[i][14],
+                bind.bones[i].t[0], bind.bones[i].t[1], bind.bones[i].t[2],
+                lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]
+            );
+        }
+        return Ok(());
+    }
+    if std::env::var("SCALES").is_ok() {
+        // per clip: every bone whose local scale leaves bind by over 0.5% in any frame
+        // (bone, parent, child count, weighted vertex count, min..max scale ratio per axis)
+        for (name, c) in &clips {
+            let parents = c.rig.parents();
+            let bind = skinned::BlendPose::bind(&c.rig);
+            for i in 0..c.rig.bone_count() {
+                let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+                for f in 0..i64::from(c.report.frames.max(1)) {
+                    let Some(t) = c.frame_pose(f).and_then(|p| c.rig.pose_trs(&p, i)) else {
+                        continue;
+                    };
+                    for k in 0..3 {
+                        let r = t.s[k] / bind.bones[i].s[k];
+                        lo[k] = lo[k].min(r);
+                        hi[k] = hi[k].max(r);
+                    }
+                }
+                if (0..3).any(|k| lo[k] < 0.995 || hi[k] > 1.005) {
+                    println!("  bind local scale {:?}", bind.bones[i].s);
+                    let kids = parents.iter().filter(|&&p| p == i as i32).count();
+                    let verts = c
+                        .skin
+                        .joints
+                        .iter()
+                        .zip(&c.skin.weights)
+                        .filter(|(j, w)| (0..4).any(|k| j[k] as usize == i && w[k] > 0.))
+                        .count();
+                    println!(
+                        "{name} bone {i} parent {} kids {kids} verts {verts} scale x {:.3}..{:.3} y {:.3}..{:.3} z {:.3}..{:.3}",
+                        parents[i], lo[0], hi[0], lo[1], hi[1], lo[2], hi[2]
+                    );
+                }
+            }
+        }
+        return Ok(());
+    }
+    if std::env::var("JUMP_TABLE").is_ok() {
+        // clips "small,held": mesh height of lerp(small, held, h) at frames 1..=10 for
+        // h = 0.1..=0.6, then of each clip alone, under both scale rules
+        for rule in [skinned::ScaleRule::Inherited, skinned::ScaleRule::Biped] {
+            println!("{rule:?}");
+            let height = |bp: &skinned::BlendPose| {
+                let c = &clips[0].1;
+                let mut rig = c.rig.clone();
+                rig.scale_rule = rule;
+                let base = c.morphed_bind_weights(&bp.morphs);
+                let m = rig.skin_matrices_from_trs(&bp.bones);
+                let p = skinned::skin_positions(&base, &c.skin.joints, &c.skin.weights, &m);
+                let lo = p.iter().map(|q| q[2]).fold(f32::MAX, f32::min);
+                let hi = p.iter().map(|q| q[2]).fold(f32::MIN, f32::max);
+                hi - lo
+            };
+            let row = |h: Option<f32>, only: usize| -> Vec<String> {
+                (1..=10)
+                    .map(|f| {
+                        let mut bp = skinned::BlendPose::bind(&clips[0].1.rig);
+                        let (a, b) = (&clips[0].1, &clips[only].1);
+                        match h {
+                            Some(h) => {
+                                bp.lerp(&a.rig, &a.frame_pose(f).unwrap(), 1.);
+                                bp.lerp(&b.rig, &b.frame_pose(f).unwrap(), h);
+                            }
+                            None => bp.lerp(&b.rig, &b.frame_pose(f).unwrap(), 1.),
+                        }
+                        bp.hold_root_rotation(&a.rig);
+                        format!("{:.1}", height(&bp))
+                    })
+                    .collect()
+            };
+            for k in 1..=6 {
+                let h = k as f32 / 10.;
+                println!("  h {h:.1}: {}", row(Some(h), 1).join(", "));
+            }
+            for (i, (name, _)) in clips.iter().enumerate() {
+                println!("  {name} alone: {}", row(None, i).join(", "));
+            }
+        }
+        return Ok(());
+    }
+    if let Ok(path) = std::env::var("RULE_DUMP") {
+        // every frame of clip 0 over bind at each weight, per scale rule: viewer dump format
+        let c = &clips[0].1;
+        for (tag, rule) in [
+            ("inh", skinned::ScaleRule::Inherited),
+            ("bip", skinned::ScaleRule::Biped),
+        ] {
+            let mut rig = c.rig.clone();
+            rig.scale_rule = rule;
+            for w in [0.0f32, 0.25, 0.3, 0.35, 0.5, 0.75, 1.0] {
+                let mut buf = Vec::new();
+                for f in 0..i64::from(c.report.frames.max(1)) {
+                    let Some(pose) = c.frame_pose(f) else {
+                        continue;
+                    };
+                    let mut bp = skinned::BlendPose::bind(&c.rig);
+                    bp.lerp(&c.rig, &pose, w);
+                    bp.hold_root_rotation(&c.rig);
+                    let base = c.morphed_bind_weights(&bp.morphs);
+                    let m = rig.skin_matrices_from_trs(&bp.bones);
+                    for p in skinned::skin_positions(&base, &c.skin.joints, &c.skin.weights, &m) {
+                        for v in p {
+                            buf.extend_from_slice(&v.to_le_bytes());
+                        }
+                    }
+                }
+                std::fs::write(format!("{path}_{tag}_{w}.bin"), buf).map_err(|e| e.to_string())?;
+            }
+        }
+        return Ok(());
+    }
+    if let Ok(path) = std::env::var("DUMP_SKIN") {
+        // per vertex: 4 joint bytes then 4 f32 LE weights
+        let mut buf = Vec::new();
+        for (j, w) in clips[0].1.skin.joints.iter().zip(&clips[0].1.skin.weights) {
+            buf.extend_from_slice(j);
+            for v in w {
+                buf.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        std::fs::write(path, buf).map_err(|e| e.to_string())?;
     }
     if let Ok(path) = std::env::var("DUMP_JOINTS") {
         let j: Vec<u8> = clips[0].1.skin.joints.iter().map(|j| j[0]).collect();
@@ -333,6 +530,9 @@ fn run() -> Result<(), String> {
     if let Ok(path) = std::env::var("OURS_DUMP") {
         // viewer dump (LBP_DUMP_VERTS): f32 LE xyz, one pose after another
         let raw = std::fs::read(path).map_err(|e| e.to_string())?;
+        if std::env::var("ONLY_DUMP").is_ok() {
+            table.clear();
+        }
         let ax: u32 = std::env::var("AXIS")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -417,7 +617,14 @@ fn run() -> Result<(), String> {
         }
         return Ok(());
     }
-    for s in 0..samples {
+    // STEP=n fits every nth sample; SUMMARY=1 prints only the mean of the best fits
+    let step: usize = std::env::var("STEP")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1);
+    let summary = std::env::var("SUMMARY").is_ok();
+    let mut sum = (0f32, 0u32, [0f32; 5]);
+    for s in (0..samples).step_by(step.max(1)) {
         let g: Vec<[f32; 3]> = (0..gn)
             .map(|v| {
                 let o = s * rec + v * 16;
@@ -493,7 +700,12 @@ fn run() -> Result<(), String> {
                 .zip(acc)
                 .map(|(n, (t, c))| format!("{n} {:.1}", (t / c.max(1) as f32).sqrt()))
                 .collect();
-            println!("  groups {}", g.join(" "));
+            for (k, (t, c)) in acc.iter().enumerate() {
+                sum.2[k] += (t / (*c).max(1) as f32).sqrt();
+            }
+            if !summary {
+                println!("  groups {}", g.join(" "));
+            }
         }
         if std::env::var("SIGNED").is_ok() {
             // mean signed vertical offset game - ours per joint (ours placed by the fit)
@@ -532,10 +744,24 @@ fn run() -> Result<(), String> {
             .map(|(r, i)| format!("{}@{} {:.1}", table[*i].0, table[*i].1, r))
             .collect();
         let ty = LAST_T.with(|c| c.get())[1];
+        sum.0 += b.0;
+        sum.1 += 1;
+        if summary {
+            continue;
+        }
         println!(
             "sample {s}: {} | worst {} | ty {ty:.1}",
             t.join(" ; "),
             w.join(" ")
+        );
+    }
+    if summary && sum.1 > 0 {
+        let n = sum.1 as f32;
+        println!(
+            "mean best rms {:.2} over {} samples; headx arm hand leg body {:.2?}",
+            sum.0 / n,
+            sum.1,
+            sum.2.map(|v| v / n)
         );
     }
     Ok(())

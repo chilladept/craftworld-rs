@@ -1,5 +1,31 @@
 # Development log
 
+## 2026-10-12 - D246 body scale stays on the scaled bone; stand clip at full weight
+
+Owner: the idle still stretches the body too much. Cause FOUND in the rig data: the stand clip breathes by
+scaling the two spine bones (up to 9% along the spine) and the viewer multiplied plain matrices, so both
+legs, the chest, neck, head and arms inherited that scale (head and hands 0.87..1.12 over a breath at full
+weight). Sackboy's skeleton is a 3ds Max Biped (bones named `Bip...`) plus plain bones (zip pulls, eyes,
+jaw, tongue); Biped links do not pass scale on. New `ScaleRule::Biped` in `lbp-preview` skinning: a Biped
+bone sits in its parent's unscaled frame with its offset multiplied by the parent's scale, and its own scale
+applies to its own vertices only; other bones inherit as before (the zip pull's clip scale is the inverse of
+the chest's, so it has to). Used by the Sackboy play figure only; every other preview keeps plain
+inheritance. GPU skinning gets a scale node under each joint for such a rig. `STAND_BASE_WEIGHT` is back to
+1: D242-D244 lowered it to hide this stretch, and the capture they tuned against (D243 idle: height
+198.3..200.9) is not the neutral stand (right hand 51 units above the pelvis, body leaning; no stand or
+mood-stand clip fits it better than 14 units per vertex).
+
+MEASURED against the clean D234 captures (one vertex buffer per tick): standing mesh height per tick, game
+201.1..206.4, ours 200.8..206.1, tick-aligned RMS 0.34 (before: 198.3..204.4, RMS 2.5; order-free vertex
+fit of the stand clip 0.73 against 1.62 with inherited scale, noise floor 0.7). Jump, 6-tick press, ticks
+1..20: max 2.3 / RMS 1.4 (before 2.4 / 1.5; the jump clips carry no body scale), feet within 1 unit of the
+game's on every tick up to the apex (242.9 / 241.9), take-off step 201.3 -> 214.4 (game 201.3 -> 214.5).
+Rigid-bone check on our dump: thighs, feet, head, hands at scale 1.000 (before 0.96..1.03), eyelids still
+close to 0.08 in a blink. The D245 height test now uses the clean capture and our own controller. Open: the
+landing (the game dips to 195 for three ticks after touchdown, ours stays at 200; unchanged by this), what
+the D243 idle pose is, and the game's own bone composition is not traced (rule INFERRED from vertex data).
+`docs/d242-idle-stretch.md`. +2 tests.
+
 ## 2026-10-12 - D245 jump pose mixes the tap and held clips
 
 Owner: the take-off tucks the legs too early. The EBOOT jump layer (0x20a5f4, 0x209fc8) confirms our frame
@@ -7,8 +33,11 @@ rule (tick 1..5, then `8 * (1 - vy / 73)`), so the handoff's guess of a differen
 lacked: the pose is `lerp(jump_small_*, jump_*, held ticks / 10)`, the count frozen when the button is
 released, and the layer is at full weight after a take-off. We drew jump_stand alone at 0.7-0.9. Added
 jump_small_stand / jump_small_walk (56 clips), `JUMP_HOLD_FULL` = 10. Against the D243 capture (6-tick hold)
-the mesh height per tick is now within 4.6 (rms 2.3; jump_stand alone was 20 low). Ledge falls keep the D234
-weight ramp (not re-measured). +0 / +0.
+the mesh height per tick is within 4.6 (rms 2.3; jump_stand alone was 20 low) when the pose is driven with the
+capture's vertical speed; in the viewer, on our own 6-tick arc, it measured max 7.0 / rms 4.8. Later check: the
+D243 capture is not a clean 6-tick standing jump (feet apex +277, 106 units of sideways drift); against the
+clean D234 capture (same 200 ms press) the viewer's height is within 2.4 and its feet rise within 1.8, so the
+arc was left alone. Ledge falls keep the D234 weight ramp (not re-measured). +0 / +0.
 
 ## 2026-10-12 - D244 idle weight reaches the viewer
 
