@@ -48,6 +48,16 @@ pub const LANDING_DIP: [f32; 12] = [
 /// (EBOOT 0x210dd8, foot target from the floor contact distance, only while the body moved
 /// 15 or less in the tick); its inputs are not traced, so this is the measured series.
 pub const LANDING_SQUASH: [f32; 12] = [0., 0., 7.6, 6.0, 4.4, 3.0, 1.6, 0.5, 0., 0., 0., 0.];
+/// Standing foot placement (the game's foot pass, EBOOT 0x210dd8). FOUND: while he is on the
+/// ground and slower than [`FOOT_PLANT_SPEED`], each Foot joint is put by a two-bone leg solve
+/// on the floor point nearest its leg anchor (the character settings' LimbAnchorPos, 25 to
+/// either side of the body); the placement eases in over [`FOOT_PLANT_IN`] ticks (1/3, 2/3,
+/// full) and out over [`FOOT_PLANT_OUT`] (4/5 .. 1/5). MEASURED: the stand clip has the
+/// joints at +29.9 and -28.7; placed at +-25 the feet stand 43.3 apart (game 43.4, was 51.9).
+pub const FOOT_PLANT_X: f32 = 25.0;
+pub const FOOT_PLANT_SPEED: f32 = 1.0;
+pub const FOOT_PLANT_IN: u8 = 3;
+pub const FOOT_PLANT_OUT: u8 = 5;
 /// Ground acceleration and deceleration per tick² (linear: 3, 6, ... 30).
 pub const WALK_ACCEL: f32 = 3.0;
 /// Ground top speed per tick (900 u/s), reached in 10 ticks.
@@ -164,6 +174,9 @@ pub struct Sackboy {
     prev: Input,
     /// Ticks since touch-down while the landing dip plays.
     dip_tick: Option<usize>,
+    /// Ticks the foot placement has held (up to [`FOOT_PLANT_IN`]) and ticks since it let go.
+    plant_in: u8,
+    plant_out: u8,
 }
 
 impl Sackboy {
@@ -175,6 +188,12 @@ impl Sackboy {
     /// How much shorter his legs are drawn this tick (0 outside a landing).
     pub fn landing_squash(&self) -> f32 {
         self.dip_tick.map_or(0., |t| LANDING_SQUASH[t])
+    }
+
+    /// How far the feet are moved onto their standing spots this tick, 0..1.
+    pub fn foot_plant(&self) -> f32 {
+        f32::from(self.plant_in) / f32::from(FOOT_PLANT_IN)
+            * (1. - f32::from(self.plant_out) / f32::from(FOOT_PLANT_OUT))
     }
 
     /// Ticks of the jump profile played so far (`Some(1)` right after the take-off tick);
@@ -258,9 +277,54 @@ impl Sackboy {
         }
         let dz = approach(self.z, self.lane, LANE_SPEED) - self.z;
         self.z += dz;
+        // Foot placement. The lane change is left out of it (INFERRED: the game's gate has
+        // more state flags than the speed; they are not traced).
+        if grounded && self.vx.abs() < FOOT_PLANT_SPEED && dz == 0. {
+            self.plant_in = (self.plant_in + 1).min(FOOT_PLANT_IN);
+            self.plant_out = 0;
+        } else if self.plant_in > 0 {
+            self.plant_out += 1;
+            if self.plant_out >= FOOT_PLANT_OUT {
+                (self.plant_in, self.plant_out) = (0, 0);
+            }
+        }
         self.was_grounded = grounded;
         self.prev = input;
         [self.vx, self.vy, dz]
+    }
+}
+
+#[cfg(test)]
+mod foot_plant_tests {
+    use super::*;
+
+    #[test]
+    fn foot_plant_eases_in_standing_and_out_when_he_moves() {
+        let floor = |_: f32| true;
+        let ground = Contact {
+            grounded: true,
+            lane_has_floor: &floor,
+        };
+        let mut s = Sackboy::at_lane(0.);
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            s.step(Input::default(), &ground);
+            seen.push(s.foot_plant());
+        }
+        assert_eq!(seen, [1. / 3., 2. / 3., 1., 1.]);
+        let right = Input {
+            x: STICK_FULL_RIGHT,
+            ..Input::default()
+        };
+        seen.clear();
+        for _ in 0..6 {
+            s.step(right, &ground);
+            seen.push(s.foot_plant());
+        }
+        let want = [0.8, 0.6, 0.4, 0.2, 0., 0.];
+        for (a, b) in seen.iter().zip(want) {
+            assert!((a - b).abs() < 1e-6, "{seen:?}");
+        }
     }
 }
 

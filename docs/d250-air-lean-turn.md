@@ -116,5 +116,24 @@ Question: why does the left-to-right turn fit worse than the right-to-left one?
   the jump (shape cast distances); ending the fall with no gap made him sink 2.7 on some landings, so the
   gap stays.
 
+## D256: standing foot placement
+
+- FOUND (foot pass 0x210dd8): per leg, the target is the point on nearby collision closest to the leg anchor
+  (character settings LimbAnchorPos, x -25 and +25 in body space; 0x82f20, 0x86e18), carried into model space
+  with (0,0,3) added; the Foot joint is put there by a two-bone solve (0x6c15b8: knee angle from the two bone
+  lengths and the distance, the knee keeps its bend plane). Gate: ground-relative speed over scale under 1,
+  the body moved 15 or less in the tick, a contact within 1.5 leg rests, and state flags not traced. Ease:
+  in at count/3 for three solved ticks, out at 1 - k/5 on each tick the gate is off (0x6c1528).
+- MEASURED: our stand clip has the Foot joints at x +29.88 and -28.70 (58.6 apart), depth +2.77 and -0.31.
+  At +-25 on the body's depth line the foot centroids stand 43.6 apart against the game's 43.4 (51.9
+  before); per-foot offset after a whole-mesh fit 0.3 / 0.0 in x and -0.4 / 0.1 in depth (4.9 / -3.6 and
+  -3.0 / 0.5 before); whole-mesh rms 0.79 (1.30), leg vertices 1.52 (4.63).
+- Applied: `FOOT_PLANT_X`, `FOOT_PLANT_SPEED`, `FOOT_PLANT_IN`, `FOOT_PLANT_OUT`, `Sackboy::foot_plant`;
+  `blend_frame` moves each Foot joint by that weight with `BlendPose::move_chain_end`, together with the
+  landing squash.
+- INFERRED: the depth target (it fits the measured feet; the frame of the game's +3 is not traced); the lane
+  change left out of the gate; the foot keeps the clip's rotation (the game sets one from the contact normal).
+- Open: slopes and steps, where the game's target follows the contact point; both feet 0.6 above the game's.
+
 Tools (local, not in the repository): `local-analysis/d251-air-lean/` (`lean.py`), `local-analysis/d252-turn/`
-(captures), `local-analysis/d253-turn-cmp/` (`runall.ps1`, `cmp.py`).
+(captures), `local-analysis/d253-turn-cmp/` (`runall.ps1`, `cmp.py`, `feet.py`).

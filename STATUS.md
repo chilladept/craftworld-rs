@@ -4210,3 +4210,22 @@ Next: walk start; air ease arm terms; small items.
   value itself; a clip whose mirrored morphs differ (none checked); ledge fall (no capture).
 **+0 newly viewable / +0 newly Complete (runtime feature).**
 Next: foot placement while standing; ledge-fall capture.
+
+## D256 standing foot placement (2026-10-12)
+- FOUND (EBOOT 0x210dd8, 0x82f20, 0x86e18, 0x6c15b8, 0x6c1528): on the ground with ground-relative speed
+  under 1, each Foot joint goes to the collision point nearest its leg anchor (LimbAnchorPos x -25 / +25) by
+  a two-bone solve; ease in count/3 over 3 ticks, out 1 - k/5 over 5.
+- MEASURED: stand clip Foot joints at x +29.88 / -28.70, depth +2.77 / -0.31 (`pose_fit` env `FEET`).
+- Change: `FOOT_PLANT_X`, `FOOT_PLANT_SPEED`, `FOOT_PLANT_IN`, `FOOT_PLANT_OUT`, `Sackboy::foot_plant`
+  (`lbp-sim` `sackboy.rs`); `blend_frame` moves both Foot joints by that weight (`lbp-bevy-viewer`
+  `sackboy_play.rs`).
+- MEASURED after (scripted stand, game `stopR` standing pose): foot spacing 43.6 (game 43.4, was 51.9);
+  whole-mesh rms 0.79 (was 1.30), legs 1.52 (was 4.63); per-foot offset within 0.4 in x and depth.
+- INFERRED: the depth target is the body's depth line (fits the measured feet; the game adds (0,0,3) to a
+  target in a frame not traced); the lane change is kept out of the gate; the foot keeps the clip's rotation
+  (the game builds one from the contact normal, the same on flat ground).
+- Tests: `foot_plant_eases_in_standing_and_out_when_he_moves` (new). fmt, tests, clippy: see the PR checks.
+- Not tested: slopes and steps (the target is a fixed model-space spot, not the contact point); the ease
+  against game ticks (rule read, no per-tick comparison); both feet stay 0.6 higher than the game's.
+**+0 newly viewable / +0 newly Complete (runtime feature).**
+Next: ledge-fall capture.

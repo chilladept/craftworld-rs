@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D255
+# Current state (overwrite each milestone) — after D256
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -11,7 +11,13 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D255 stick response, shortest jump, mirrored morphs (2026-10-12)
+## Latest: D256 standing foot placement (2026-10-12)
+- FOUND in the EBOOT (foot pass 0x210dd8): standing (ground-relative speed under 1), each Foot joint is put
+  on the floor point nearest its leg anchor, 25 to either side of the body, by a two-bone solve; in over 3
+  ticks, out over 5. `FOOT_PLANT_*`, `Sackboy::foot_plant`, applied in `blend_frame`. MEASURED: foot spacing
+  43.6 (game 43.4, was 51.9), standing rms 0.79 (was 1.30). `docs/d250-air-lean-turn.md` (D256).
+
+## Before: D255 stick response, shortest jump, mirrored morphs (2026-10-12)
 - FOUND in the EBOOT (0x38a578, 0x38aa10): stick x = (byte - 128) / 128 unclamped, response past the dead
   zone rescaled and squared, times both speed caps. Full right is 0.9778: MEASURED 29.34 / 22.00 to the
   right against 30.00 / 22.50 (Moon and Rookie Test). `stick_response`, `STICK_FULL_RIGHT`.
@@ -65,7 +71,7 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - D233: +0 newly viewable / +0 newly Complete (runtime feature).
 
 ## Open blockers
-- Standing foot spacing: game 43.4, ours 51.9 (both levels); the game's foot placement pass is not modelled.
+- Foot placement on slopes and steps (the standing spot is fixed in model space, not the contact point).
 - Landing: only a standing jump is captured (ledge fall, running jump: same tables, unchecked). Upper arms
   2 to 3 degrees off late in the flight, unattributed (the arm terms are 0 there).
 - Head-top bones 22/23/24/27/28.
@@ -76,7 +82,7 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
   color; Vita (0x4431) payloads refused.
 
 ## Next
-1. Foot placement while standing; ledge-fall capture; emote clip frames vs game.
+1. Ledge-fall capture; emote clip frames vs game.
 2. Popit: compare more frames, cursor mode, inventory grid pages (submode 11).
 3. Camera lead, slopes (paused by the owner).
 

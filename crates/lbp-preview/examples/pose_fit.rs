@@ -308,6 +308,29 @@ fn run() -> Result<(), String> {
         }
         return Ok(());
     }
+    if std::env::var("FEET").is_ok() {
+        // per clip, a few frames: model-space joint of each leg bone (x, depth, up)
+        for (name, c) in &clips {
+            let last = i64::from(c.report.frames.max(1)) - 1;
+            for f in [0, last / 2, last] {
+                let Some(p) = c.frame_pose(f) else { continue };
+                let mut pose = skinned::BlendPose::bind(&c.rig);
+                pose.lerp(&c.rig, &p, 1.);
+                let w = c.rig.worlds_from_trs(&pose.bones);
+                for side in ["L", "R"] {
+                    for part in ["Thigh", "Calf", "Foot", "Toe0"] {
+                        if let Some(i) = c.rig.bone_named(&format!("Bip01 {side} {part}")) {
+                            println!(
+                                "{name} f{f} {side} {part} (bone {i}): x {:.2} depth {:.2} up {:.2}",
+                                w[i][12], w[i][13], w[i][14]
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        return Ok(());
+    }
     if std::env::var("SCALES").is_ok() {
         // per clip: every bone whose local scale leaves bind by over 0.5% in any frame
         // (bone, parent, child count, weighted vertex count, min..max scale ratio per axis)

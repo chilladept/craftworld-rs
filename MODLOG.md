@@ -1,5 +1,16 @@
 # Development log
 
+## 2026-10-12 - D256 standing foot placement
+
+The game's feet stand 43.4 apart, ours stood 51.9. FOUND in the EBOOT (foot pass 0x210dd8, solver 0x6c15b8):
+while he is on the ground and his ground-relative speed is under 1, each Foot joint is put by a two-bone leg
+solve on the floor point nearest its leg anchor (LimbAnchorPos, 25 to either side of the body); the placement
+eases in over 3 ticks and out over 5. MEASURED: our stand clip has the Foot joints at +29.9 and -28.7 (58.6
+apart), which is what the rule needs to explain the gap. `FOOT_PLANT_*` and `Sackboy::foot_plant` (`lbp-sim`),
+applied in the viewer's `blend_frame` with the D249 leg solver. MEASURED after: spacing 43.6, standing vertex
+rms against the game 1.30 -> 0.79, legs 4.63 -> 1.52. Depth target (the body's depth line) is MEASURED, the
+lane-change gate INFERRED. `docs/d250-air-lean-turn.md` (D256).
+
 ## 2026-10-12 - D255 stick response, shortest jump, mirrored morphs; arm terms read
 
 Four of the open Sackboy items, three from data already on disk. Speed to the right: MEASURED again in the

@@ -27,7 +27,7 @@ use lbp_sim::character::{
     spawn_sackboy, SackboyBody, SackboyPlugin, CENTRE_ABOVE, FLOOR_REST, HALF_SEGMENT, HEIGHT,
     RADIUS,
 };
-use lbp_sim::sackboy::{Input, Mood, WALK_SPEED};
+use lbp_sim::sackboy::{Input, Mood, FOOT_PLANT_X, WALK_SPEED};
 use lbp_sim::sackboy_anim::{AnimFrame, Blend, ClipId, SackboyAnim};
 use lbp_sim::scene::{material_rule_for_path, MaterialRule};
 use lbp_sim::{
@@ -107,12 +107,15 @@ pub(crate) fn enabled() -> bool {
 /// minus its reference frame. Stand is the playing clip; a clip missing from the bank is
 /// skipped. A layer with the game's mirror flag is mirrored left/right through the
 /// skeleton's mirror table (moving left: walk, jump_walk, stop/turn). Last, `squash` raises
-/// both ankles toward the pelvis by that much (the short legs after a landing, D249).
+/// both ankles toward the pelvis by that much (the short legs after a landing, D249) and
+/// `plant` (0..1) moves each Foot joint that far onto its standing spot, [`FOOT_PLANT_X`] to
+/// its side of the body (D256).
 fn blend_frame(
     stand: &SkinnedClip,
     bank: &[Option<BoundAnimation>],
     frame: &AnimFrame,
     squash: f32,
+    plant: f32,
 ) -> BlendPose {
     let mut pose = BlendPose::bind(&stand.rig);
     // The game's upper-body mask: Spine1 and below, without the head and what hangs on it.
@@ -157,14 +160,22 @@ fn blend_frame(
     // and idle-chain clips +90 degrees): kept, it doubled the picker's yaw (walking right
     // showed his back) and snapped 90 degrees wherever stand met another clip.
     pose.hold_root_rotation(&stand.rig);
-    if squash != 0. {
-        for side in ["L", "R"] {
+    if squash != 0. || plant != 0. {
+        let worlds = stand.rig.worlds_from_trs(&pose.bones);
+        // Raw model space: his left at +X, depth Y, Z up.
+        for (side, x) in [("L", FOOT_PLANT_X), ("R", -FOOT_PLANT_X)] {
             let bone = |part: &str| stand.rig.bone_named(&format!("Bip01 {side} {part}"));
             if let (Some(thigh), Some(calf), Some(foot)) =
                 (bone("Thigh"), bone("Calf"), bone("Foot"))
             {
-                // Raw model space is Z-up.
-                pose.move_chain_end(&stand.rig, [thigh, calf, foot], [0., 0., squash]);
+                // The standing spot is on the body's depth line (MEASURED against the
+                // game's standing feet); the joint's height stays the clip's.
+                let to = [
+                    plant * (x - worlds[foot][12]),
+                    plant * -worlds[foot][13],
+                    squash,
+                ];
+                pose.move_chain_end(&stand.rig, [thigh, calf, foot], to);
             }
         }
     }
@@ -853,8 +864,14 @@ pub(crate) fn show_sackboy(
             // Clip bank: one blended pose per picked tick (stand stays the playing clip).
             if f.posed != f.picked {
                 if let (Some(a), Some(playing)) = (&f.anim, &mut v.playing) {
-                    let pose =
-                        blend_frame(&playing.clip, &f.bank, a, body.controller.landing_squash());
+                    let c = &body.controller;
+                    let pose = blend_frame(
+                        &playing.clip,
+                        &f.bank,
+                        a,
+                        c.landing_squash(),
+                        c.foot_plant(),
+                    );
                     dump_pose(&playing.clip.blended_positions(&pose), f.picked);
                     playing.blended = Some(pose);
                 }
