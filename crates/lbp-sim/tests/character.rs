@@ -121,6 +121,41 @@ fn full_jump_peaks_260_above_standing() {
 }
 
 #[test]
+fn grounded_is_reported_on_the_touchdown_tick() {
+    // D247: the tick whose move is stopped by the floor reports contact (the animation's
+    // landing starts there); the controller's own landing (dip, lanes) is the tick after.
+    let mut app = world(|_| {});
+    for _ in 0..5 {
+        tick(&mut app, Input::default());
+    }
+    let mut seen = Vec::new();
+    for t in 0..40 {
+        let (p, _, grounded) = tick(
+            &mut app,
+            Input {
+                jump: t < 6,
+                ..Default::default()
+            },
+        );
+        let world = app.world_mut();
+        let mut q = world.query::<&SackboyBody>();
+        let dip = q.single(world).expect("one Sackboy").controller.dip_tick();
+        seen.push((p[1], grounded, dip));
+    }
+    let down = (1..seen.len())
+        .find(|&t| seen[t].1 && !seen[t - 1].1)
+        .expect("lands");
+    assert!(
+        seen[down - 1].0 > seen[down].0 + 20.,
+        "still falling before"
+    );
+    assert!((seen[down].0 - STAND).abs() < 1., "on the floor: {seen:?}");
+    assert_eq!(seen[down].2, None);
+    assert_eq!(seen[down + 1].2, Some(0));
+    assert_eq!(seen[down + 1].0, seen[down].0);
+}
+
+#[test]
 fn lane_change_needs_floor_in_the_target_lane() {
     let mut app = world(|_| {});
     for _ in 0..5 {

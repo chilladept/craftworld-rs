@@ -1,5 +1,16 @@
 # Development log
 
+## 2026-10-12 - D247 landing starts on the touchdown tick, two-tick dip; stop pose measured
+
+Stop pose MEASURED tick-aligned against the D234 walk capture: fit mean 1.56 against 1.51 for the steady walk
+(the floor of the method), so it matches the game and nothing changed; the old "fit 3-5" was the fit tool not
+converging at 72 deg yaw. The turn still needs a game capture with a direction reversal. Landing (d234
+`jump.bin`): the game starts the tail on the tick the feet reach the floor, ours a tick later because
+`SackboyBody::grounded` was the floor probe taken before the move; it is now the contact after the move
+(controller step unchanged). `LANDING_DIP` = -25.9, -15.9, 0 (was -21.2, -23.5, -10.7, 0). Touchdown +1/+2:
+height game 206.0/202.9, ours 206.3/202.6 (was 201.9/206.3); lowest point game -29.0/-16.2, ours -29.0/-16.1
+(was -20.2/-26.6, then -10.9 where the game is at 0). Flight ticks unchanged. `docs/d241-landing-dip.md`.
+
 ## 2026-10-12 - D246 body scale stays on the scaled bone; stand clip at full weight
 
 Owner: the idle still stretches the body too much. Cause FOUND in the rig data: the stand clip breathes by

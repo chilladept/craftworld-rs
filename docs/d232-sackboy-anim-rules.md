@@ -36,7 +36,7 @@ INFERRED = our choice; OPEN = not traced, not used or stubbed.
 | Turn | stick opposite to vx, \|x\| > 0.9, w_fast > 0.5: walk_fast_turn 19 frames, same ramps; end resets walk phase and idle frame. Input-mask test (0x1018) OPEN, treated as passing | 0x20ad14 |
 | Lane | \|lane - z\| >= 100: walk_z_forwards if dz > 0 else backwards (sign FOUND 0x21685c..0x216b74; game +z toward the camera INFERRED); frame i+3, weight clamp((i+1)/3) * clamp((n-3-i)/3), 10 ticks. One clip per slide (INFERRED); the dot test is OPEN | 0x216b0c, 0x201418 |
 | Jump weight | clamp(peak/10), peak = \|vy\| follower easing 0.125 per tick (rises at once: INFERRED), times clamp(airTicks / (1 + 4\|vx\|/20)); also used for an off-ledge fall (INFERRED) | 0x20a5f4 |
-| Jump clip | lerp(jump_stand, jump_walk, clamp(\|vx\|*0.045)) as two sequential lerps; jump_walk mirrored if vx < 0 | 0x209fc8 |
+| Jump clip | pose = lerp(jump_small_*, jump_*, held ticks / 10) for each of stand and walk (hold count frozen on release; D245), then lerp(stand pair, walk pair, clamp(\|vx\|*0.045)), as sequential lerps; the walk clips mirrored if vx < 0 | 0x209fc8 |
 | Jump frame | take-off ticks 1..5: frame = tick; rising 8(1 - clamp(vy/73)); falling 8 + 6 clamp(-vy/30.26) | 0x20a5f4 |
 | Landing | jump clip plays on from int((airFrame + 15) / 2), 1 per tick to 30, weight x clamp(1 - (f-15)/16)^k, k = 1 (FOUND pass 2: bias(t, 0.5) = t, 0x20a7fc..0x20a888). No separate land clip; stretch_crouch is no longer a hard-cut squash | 0x20a5f4 |
 | Idle chain | at each stand end, if idle allowed: LCG `seed*0x2e90edd + 0xe908fc1 & 0x3fffffff`, roll 0..249 (`mulli 0xfa`, pass 2, 0x20e0ac..0x20e288): 0-2 sit, 3-4 yawn, 5-6 bored, 7-9 fidget, 10 shift_feet, else stand (odds 3/2/2/3/1 in 250). Sit stands up when a 0..999 roll > 950 (0x20e044) or when idle stops, and resets the no-input counter (0x20e05c); bored after > 10 loops or when idle stops. Seed 42 (ctor 0x1ff5d4 stores 0x2a at 0x1ff64c) | 0x20dee0 |
@@ -91,7 +91,7 @@ Traced but not implemented (FOUND in the pass, out of scope here):
 - Face morph readers: not found. `this+0x960 > 0.01` calls 0x1f8d9c (untraced).
 - The game's "input" mask 0x7feff and states {0, 1, 7, 10} are mapped to our controller
   as above (INFERRED); the stand-path counter reset at 0x20e100 is not modelled.
-- Not modelled: jump_small_* (flag 0x78a), grab_jump_*, bouncepad, jump_jet, wall idle,
+- Not modelled: grab_jump_*, (jump_small_* is modelled since D245), bouncepad, jump_jet, wall idle,
   the riding/holding walk-weight gate (0x64dc4), plus the traced items above.
 
 ## Verification
@@ -149,6 +149,8 @@ A QA pass (`local-analysis/sackboy-clips-2026-10-11/`) found four defects. Cause
    tail at int((8 + 15) / 2) = 11 (air pose on the floor for 4 ticks). Past the apex the
    frame now only moves on, so the tail starts at 13-14 (FOUND formula). The legs-forward
    air pose is the clip itself at the FOUND frames 6..13 (one contact tick still shows it).
+   D247: the contact tick now counts as grounded, so the tail starts on it
+   (`docs/d241-landing-dip.md`).
    The running landing still covers the walk layers for ~2 ticks at weight 1, then fades
    1/16 per frame (FOUND rule; k = 1 and the jump-over-walk order FOUND in pass 2, so
    this is the game's own behaviour).

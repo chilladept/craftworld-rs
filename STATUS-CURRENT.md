@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D235, 2026-10-11
+# Current state (overwrite each milestone) — after D247, 2026-10-12
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -11,7 +11,16 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D246 idle stretch fixed at the cause (2026-10-12)
+## Latest: D247 landing timing and dip; stop pose measured (2026-10-12)
+- Stop pose measured tick-aligned: fit mean 1.56 against the steady-walk floor 1.51, matches the game, no
+  change (the old "fit 3-5" was the fit tool not converging at 72 deg yaw). Turn: no game capture yet.
+- Landing: the tail now starts on the tick the feet reach the floor (`SackboyBody::grounded` is the contact
+  after the move; controller step unchanged) and `LANDING_DIP` = -25.9, -15.9, 0. Touchdown +1/+2 against
+  d234 `jump.bin`: height game 206.0/202.9, ours 206.3/202.6; lowest point game -29.0/-16.2, ours
+  -29.0/-16.1. Flight ticks unchanged (height max 2.3, lowest max 1.1). `docs/d241-landing-dip.md`,
+  tools `local-analysis/d249-landing/` (`run_ours.ps1`, `land.py`).
+
+## Before: D246 idle stretch fixed at the cause (2026-10-12)
 - The stretch was scale inheritance, not the clip weight: the stand clip breathes by scaling the spine bones
   and our skinning passed that scale to every bone below (legs, head, arms). `lbp-preview` skinning has
   `ScaleRule::Biped` (a `Bip...` bone keeps its parent's scale out of its own shape; its offset still moves),
@@ -76,14 +85,19 @@ Movement: D230 fall drag / gravity; Moon handoff `docs/handoff-pc-2026-10-11*.md
 - D233: +0 newly viewable / +0 newly Complete (runtime feature).
 
 ## Open blockers
-- Stop/turn poses fit 3-5 (need tick-aligned captures); head-top bones 22/23/24/27/28.
+- Stop pose: done (matches the game, D247). Turn pose needs a game capture with a direction reversal.
+- Post-landing leg squash: game mesh height about 195 at touchdown +3..+6, ours 203..199 (8 units over
+  about 5 ticks), unattributed. Jump air lean: ours +4 deg forward of the game, unattributed.
+- Walk start: our cycle is 2 frames ahead of the game on one capture. Head-top bones 22/23/24/27/28.
+- After a landing the body rests 1.6 above the spawn height (floor cast skin); not looked into.
 - Head-look inputs (right stick, creature+0xc20 target, tilt term, roll 0x808/0x810): OPEN.
 - Camera lead while walking; mirror flip types; arms mapping; face morph readers.
 - Non-diffuse channels (glow, reflection) only partly rendered; ThingColor needs a supplied
   color; Vita (0x4431) payloads refused.
 
 ## Next
-1. Arms / stop / turn poses (tick-aligned vertex captures); emote clip frames vs game.
+1. Turn pose (game capture with a direction reversal); post-landing squash; air lean; arms; emote
+   clip frames vs game.
 2. Popit: compare more frames, cursor mode, inventory grid pages (submode 11).
 3. Camera lead, slopes (paused by the owner).
 

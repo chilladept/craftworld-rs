@@ -4059,3 +4059,34 @@ Next: camera lead via a live memory diff; emotes/head look (plan 7-8).
 **+0 newly viewable / +0 newly Complete (runtime feature).**
 Next: run fmt / clippy / tests on this branch and fix what they report, then the scripted
 play run in the D233 doc; after that camera lead (live memory diff) and the look inputs.
+## 2026-10-12 - D247 landing timing and dip; stop pose measured (no change)
+
+- Stop pose: MEASURED tick-aligned against the D234 walk capture (`local-analysis/d247-stop-turn/`,
+  `d248-lean-stretch/cmp-stop.txt`): fit mean 1.56 against 1.51 for the steady walk around it, which is the
+  floor of the method. It matches the game; no change. The old "fit 3-5" was the fit tool not converging at
+  72 deg yaw. The turn has no game capture yet (needs one with a direction reversal).
+- Landing timing (cause): `SackboyBody::grounded` was the floor probe taken before the tick's move, so the
+  tick a fall ended on the floor still read as airborne and the landing tail began one tick late. It is now
+  the contact after the move (`lbp-sim/src/character.rs`); the controller step still gets the probe, so
+  jumps, lane changes, the dip counter and ledge walk-offs are timed as before.
+- Landing dip: `LANDING_DIP` = -25.9, -15.9, 0 (was -21.2, -23.5, -10.7, 0), re-derived after the timing fix
+  as the game's lowest point minus our pose's. D241's first value came from a half-written buffer read.
+- MEASURED, d234 `jump.bin` (standing 6-tick jump) against a release viewer run, tick-aligned, k = ticks
+  from touchdown (height = lowest to highest vertex; lowest point relative to rest):
+  k -2..+3 height: game 199.7, 201.8, 201.6, 206.0, 202.9, 194.9; ours 199.9, 201.9, 201.9, 206.3, 202.6,
+  202.6 (before 199.9, 201.9, 201.9, 201.9, 206.3, 202.6).
+  k -2..+3 lowest: game 62.5, 28.8, 0.4, -29.0, -16.2, 0.0; ours 61.7, 28.1, 1.0, -29.0, -16.1, -1.0
+  (before 61.7, 28.1, 1.0, -20.2, -26.6, -10.9).
+  Flight ticks 1..27 unchanged: height max 2.3 / rms 1.2, take-off max 1.2, fall max 1.0, lowest max 1.1.
+- Not fixed, numbers after the change: post-landing leg squash, k +3..+6 height game 194.9, 194.9, 195.3,
+  196.5, ours 202.6, 201.0, 199.5, 199.3 (unattributed). After a landing the body rests 1.6 above the
+  spawn height (y 1726.9 against 1725.3: floor cast skin); the figure is drawn that much higher.
+- Commands: `local-analysis/d249-landing/run_ours.ps1 -name b2 -script "-:150,r:60,-:60,l:70,-:60,j:6,-:200"`
+  (release viewer, `--no-activate`), `python local-analysis/d249-landing/land.py b2 "-25.9,-15.9,0"`.
+- cargo fmt --all --check: clean. cargo test -q --locked (CI crate list): pass (2 new: touchdown-tick
+  contact in tests/character.rs, tail start in sackboy_anim). cargo clippy -q --locked (CI crate list)
+  --all-targets -- -D warnings: pass. cargo check of both viewers --all-targets: pass.
+- Not tested: landing from a ledge fall or a running jump against the game (no capture); the dip was fitted
+  on one standing 6-tick jump; python unittest not run (no Python change).
+**+0 newly viewable / +0 newly Complete (runtime feature).**
+Next: turn pose (game capture with a direction reversal); post-landing squash; jump air lean (+4 deg).

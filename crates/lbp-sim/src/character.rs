@@ -37,6 +37,7 @@ pub const LANE_PROBE: f32 = 400.0;
 pub struct SackboyBody {
     pub controller: Sackboy,
     pub input: Input,
+    /// Floor contact after this tick's move (what the animation picker reads).
     pub grounded: bool,
     /// Position computed this tick (physics units), written by `apply_moves`.
     next: Option<Vector>,
@@ -127,9 +128,9 @@ fn drive_sackboy(
                 lane_has_floor: &has_floor,
             },
         );
-        body.grounded = grounded;
         let lane_z = body.controller.lane;
         // x, then y, each stopped at the first hit.
+        let mut touched_down = false;
         for (axis, delta) in [(0, d[0]), (1, d[1])] {
             if delta == 0. {
                 continue;
@@ -147,10 +148,18 @@ fn drive_sackboy(
                     body.controller.vx = 0.;
                 } else {
                     body.controller.vy = 0.;
+                    touched_down = delta < 0.;
                 }
             }
             at += Vector::from(dir) * step * UNIT_SCALE;
         }
+        // `grounded` is the contact after this tick's move: the tick a fall is stopped by a
+        // floor already counts (D247, MEASURED on the d234 jump capture: the game starts the
+        // landing tail on the tick the feet reach the floor; the probe above, taken before
+        // the move, saw that floor one tick later). The controller step keeps the probe, so
+        // jumps, lane changes and the dip counter are timed as before; walking off a ledge
+        // is unchanged too (only a stopped fall adds contact).
+        body.grounded = grounded || touched_down;
         body.next = Some(at);
         slab.z = body.controller.z;
     }

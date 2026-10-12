@@ -22,13 +22,17 @@ pub const GRAVITY_TICK: f32 = 2.698;
 /// never applied (173.7 was reached).
 pub const AIR_DRAG: f32 = 0.9997;
 /// Y offset of the drawn figure from its resting position, per tick after touch-down (tick 0
-/// = first tick with floor contact). D241: the game's skinned vertices put the lowest point
-/// 26.7 then 29.0 below rest and back at rest after 3 more ticks (jump capture, d234
-/// `jump.bin`); the jump clip tail already pushes the feet about 5.5 below the root, so the
-/// root offset is that series plus 5.5. The body position the physics reads dips further (35,
+/// = the first step that starts with floor contact, which is the tick after the feet reach
+/// the floor). MEASURED (D247, d234 `jump.bin`, standing 6-tick jump, one vertex buffer per
+/// tick): the game's lowest vertex is at the floor (+0.4) on the tick the fall ends, then
+/// 29.0 and 16.2 below rest, then at rest (0.0): two ticks under the floor line, not three.
+/// Our pose on those two ticks (landing tail frames 15 and 16) has its lowest vertex 3.1 and
+/// 0.3 below the standing one, so the offset is the game's series less that. D241 had
+/// -21.2, -23.5, -10.7: its first game value (-26.7) came from a half-written vertex buffer
+/// and the tail ran a tick late. The body position the physics reads dips further (35,
 /// d230); that table drew him about 12 units too low for 15 ticks (owner: "extra bouncy").
 /// Position only; the walking physics above are unaffected.
-pub const LANDING_DIP: [f32; 4] = [-21.2, -23.5, -10.7, 0.];
+pub const LANDING_DIP: [f32; 3] = [-25.9, -15.9, 0.];
 /// Ground acceleration and deceleration per tick² (linear: 3, 6, ... 30).
 pub const WALK_ACCEL: f32 = 3.0;
 /// Ground top speed per tick (900 u/s), reached in 10 ticks.
@@ -364,10 +368,13 @@ mod tests {
         assert_eq!(s.landing_dip(), 0.);
         s.step(Input::default(), &floor);
         assert_eq!(s.landing_dip(), LANDING_DIP[0]);
+        // D247: two ticks below rest (game lowest point -29.0, -16.2, then 0.0).
+        s.step(Input::default(), &floor);
+        assert_eq!(s.landing_dip(), -15.9);
         for _ in 0..LANDING_DIP.len() {
             s.step(Input::default(), &floor);
+            assert_eq!(s.landing_dip(), 0.);
         }
-        assert_eq!(s.landing_dip(), 0.);
     }
 
     #[test]

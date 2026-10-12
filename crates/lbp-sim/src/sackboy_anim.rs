@@ -937,7 +937,9 @@ impl SackboyAnim {
     }
 
     /// The layers and facing for this tick. Call once per tick after [`Sackboy::step`],
-    /// with `grounded` the floor contact the step used.
+    /// with `grounded` the floor contact after that tick's move: the tick a fall is stopped
+    /// by the floor is already grounded, so the landing tail starts on it (D247, MEASURED:
+    /// the game's mesh is on tail frame 15 one tick after its feet reach the floor).
     pub fn tick(&mut self, s: &Sackboy, grounded: bool) -> AnimFrame {
         self.now += 1;
         let airborne = !grounded || s.jump_tick().is_some();
@@ -1080,9 +1082,11 @@ impl SackboyAnim {
             air.frame = if air.takeoff && air.since <= JUMP_TAKEOFF_TICKS {
                 air.since as f32
             } else if air.frame > JUMP_APEX_FRAME {
-                // Past the apex the frame only moves on: the touchdown tick reports vy 0
-                // one tick before `grounded` (our controller), which mapped back to the
-                // apex frame 8 and started the landing tail at 11 instead of 14 (INFERRED).
+                // Past the apex the frame only moves on (INFERRED). Before D247 the
+                // touchdown tick came here with vy 0 and `grounded` still false, which
+                // mapped back to the apex frame 8 and started the landing tail at 11
+                // instead of 14; that tick is grounded now, so this is only a guard for a
+                // caller that reports contact late.
                 jump_frame(s.vy).max(air.frame)
             } else {
                 jump_frame(s.vy)
@@ -1986,8 +1990,14 @@ mod tests {
                         lane_has_floor: &lanes,
                     },
                 );
+                // As `character::drive_sackboy`: a fall stopped by the floor zeroes vy and
+                // counts as contact on that same tick.
+                let touched_down = d[1] < 0. && y + d[1] <= 0.;
+                if touched_down {
+                    s.vy = 0.;
+                }
                 y = (y + d[1]).max(0.);
-                a.tick(&s, grounded)
+                a.tick(&s, grounded || touched_down)
             })
             .collect()
     }
@@ -2043,9 +2053,34 @@ mod tests {
     }
 
     #[test]
-    fn touchdown_tick_with_vy_zero_keeps_the_fall_frame() {
-        // Falling at -25 (frame 12.96), then the contact tick reports vy 0 before
-        // `grounded`: the frame holds, and the tail starts at int((12.96 + 15) / 2) = 13.
+    fn landing_tail_starts_on_the_touchdown_tick() {
+        // D247, MEASURED (d234 `jump.bin`): mesh height 201.6 on the tick the feet reach
+        // the floor, then 206.0, 202.9, 194.9; our jump poses at frames 14, 15, 16 are
+        // 201.9, 206.3, 202.6. So the touchdown tick shows the tail's first frame
+        // int((14 + 15) / 2) = 14 and the next tick 15 (it was 14, 14, 15 before).
+        let frames = run(
+            |t| Input {
+                jump: (5..=10).contains(&t),
+                ..Default::default()
+            },
+            60,
+        );
+        let jump: Vec<f32> = frames
+            .iter()
+            .filter_map(|f| layer(f, ClipId::JumpStand).map(|l| l.frame))
+            .collect();
+        let first_14 = jump.iter().position(|&f| f == 14.).unwrap();
+        // One airborne tick at the full-fall frame 14 (vy -31.8 on the 6-tick jump), the
+        // touchdown tick on 14 again, then one frame per tick.
+        assert_eq!(jump[first_14..first_14 + 5], [14., 14., 15., 16., 17.]);
+        assert!(jump[first_14 - 1] < 14.);
+    }
+
+    #[test]
+    fn late_contact_with_vy_zero_keeps_the_fall_frame() {
+        // Falling at -25 (frame 12.96), then a tick that reports vy 0 before `grounded`
+        // (a caller whose contact lags): the frame holds, and the tail starts at
+        // int((12.96 + 15) / 2) = 13.
         let mut a = SackboyAnim::new();
         let mut s = moving(0.);
         s.vy = -25.;

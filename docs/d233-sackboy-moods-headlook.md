@@ -15,7 +15,7 @@ still to do. See "Verification".
 - `crates/lbp-sim/src/sackboy.rs`: `Mood` (happy, sad, angry, scared; `opposite` = slot
   `i ^ 1`) and `Input::mood: Option<Mood>`, the mood d-pad direction held this tick. The
   movement rules ignore it.
-- `crates/lbp-sim/src/sackboy_anim.rs`: 33 new clips (54 in `ClipId::ALL`): the anticipation,
+- `crates/lbp-sim/src/sackboy_anim.rs`: 33 new clips (54 in `ClipId::ALL` then; 56 since D245): the anticipation,
   12 emotes (sad 2/3 as `_2_loop`, `_3_into`, `_3_loop`), 12 to_neutral, 4 mood stands, 3
   look clips. `SackboyAnim` keeps `levels[4]`, `weights[4]`, the emote sequence, the mood
   stand and the attention weight; `tick` takes the press edge of `Input::mood`
@@ -29,7 +29,8 @@ still to do. See "Verification".
   for the step (`U:1,-:40,U:1` = two presses). The scripted log line gains
   `mood <name> <level> <anticipation|emote|held>`, `<name> off to_neutral` or `-`, and no
   longer lists additive layers that sit on their reference frame. The clip bank binds all
-  54 clips through the unchanged `ClipId::ALL` loop.
+  clips (54 then, 56 since D245 added jump_small_stand / jump_small_walk) through the unchanged
+  `ClipId::ALL` loop.
 
 ## Rules used
 
@@ -84,7 +85,7 @@ frames -> emote 16 -> held frame 15 with stand_happy from tick 21 at weight 1 - 
 to_neutral 16 frames then reset to stand only; weights 0.1, 0.19, 1 - 0.9^10 and decay;
 sad 2 / 3 loops; idle blocked for 5,000 ticks; look layers last on reference frames 4, 4, 8;
 `look_axes` numbers; attention 0.1 after one tick, 0.475 at half speed, 0 at full speed.
-`clip_table` now expects 54 distinct GUIDs.
+`clip_table` expected 54 distinct GUIDs at D233 (56 since D245).
 
 ## Verification
 
@@ -92,8 +93,8 @@ sad 2 / 3 loops; idle blocked for 5,000 ticks; look layers last on reference fra
   -p lbp-bevy-viewer`, `cargo clippy -q -p lbp-sim -p lbp-preview -p lbp-bevy-viewer
   --all-targets -- -D warnings` (permission gate, see top). The code was formatted and
   checked by reading only; expect fmt touch-ups.
-- Play run (PC, hidden window, d68 0133 snapshot, blank_level_large): "clip bank 54/54 bound to one rig", mood column steps sad 1 -> 2 -> off (to_neutral) and angry 1 -> held; no panics. Original note: play run. Suggested script (hidden window, d68 0133 snapshot):
+- Play run (PC, hidden window, d68 0133 snapshot, blank_level_large): "clip bank 54/54 bound to one rig" (56/56 since D245), mood column steps sad 1 -> 2 -> off (to_neutral) and angry 1 -> held; no panics. Original note: play run. Suggested script (hidden window, d68 0133 snapshot):
   `-:30,U:1,-:40,U:1,-:40,D:1,-:40,D:1,-:30,D:1,-:60,R:1,r:30,-:30,L:1,-:40`; expect
-  "clip bank 54/54 bound to one rig" and the mood column stepping through the states.
+  "clip bank 56/56 bound to one rig" (54/54 at D233) and the mood column stepping through the states.
 - Not verified against RPCS3: the d-pad mapping, the anticipation on every level step, the
   mood-stand gate, the weight easing form and the look frame scale.
