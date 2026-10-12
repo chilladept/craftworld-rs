@@ -80,5 +80,16 @@ Question: why does the left-to-right turn fit worse than the right-to-left one?
 - Test note: the scripted run's walk phase at the reversal depends on when the figure appears; the
   left-to-right script now walks through a right-to-left turn first, which fixes the phase.
 
+## Walk start (checked with D254, no change)
+
+- An earlier capture had the game's walk cycle 2 frames behind ours after a start from standing.
+- MEASURED on the lead-in of the five turn and stop captures: the game's walk phase on the first moving tick
+  was 0, 0, 3, 4 and 4. It is not reset by starting to walk; the counter runs on while standing, as the rule
+  found earlier says (frame = tick mod 13) and as ours does.
+- With our counter put on the game's phase (a scripted turn first, which resets it), our start from standing
+  fits the `stopR` capture at 0.9 .. 1.7 vertex rms on every tick from speed 3 to full speed. A second
+  capture (`turnRL3`) fits at 2.4 .. 5.4 on ticks 1..9 and 1.1 .. 1.2 after, with the game's figure already
+  8 off its stand pose on the tick before it moved.
+
 Tools (local, not in the repository): `local-analysis/d251-air-lean/` (`lean.py`), `local-analysis/d252-turn/`
 (captures), `local-analysis/d253-turn-cmp/` (`runall.ps1`, `cmp.py`).

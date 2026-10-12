@@ -4179,6 +4179,9 @@ Next: mirrored-pose fit (front torso bone in the left-to-right turn); walk start
   walk 0.7..1.6; zip-pull joint at N = 9 15.1 -> under 1.7. Right-to-left run unchanged (0.6..1.8).
 - Commands: `local-analysis/d253-turn-cmp/runall.ps1 lr rl`, `python local-analysis/d253-turn-cmp/cmp.py
   turnLR lr`, `python local-analysis/d253-turn-cmp/perjoint.py`.
+- Walk start, MEASURED, no change: phase at the first moving tick in five game captures 0, 0, 3, 4, 4
+  (free-running counter, as ours); at the game's phase our start fits `stopR` at 0.9..1.7 on ticks 1..15
+  (`local-analysis/d253-turn-cmp/wstart.py`, `wstart2.py`, run `ws`).
 - Tests: `mirrored_pose_follows_the_flip_types` (new). fmt, tests, clippy: see the PR checks.
 - Not tested: the game's job-queue path of the mirror (only the direct routine was read); costume meshes
   with other tables; mirrored morphs (`mirror_morphs`, not applied).

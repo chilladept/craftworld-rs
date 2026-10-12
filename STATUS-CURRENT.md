@@ -16,6 +16,8 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
   through one of six rules picked by the skeleton's mirror flip type; the zip-pull bones are copied, not
   reflected. `Rig::mirrored_trs` does the same. MEASURED on the left-to-right turn: vertex rms 2.3..4.2 ->
   0.5..1.4 on the turn frames, mirrored walk 0.7..1.6. `docs/d250-air-lean-turn.md` (D254).
+- Walk start: MEASURED, no change needed. The walk phase is a free-running counter in the game too (phase
+  at the first moving tick 0, 0, 3, 4, 4 over five captures); at equal phase our start fits at 0.9..1.7.
 
 ## Before: D250 jump air lean, D251 turn (2026-10-12)
 - Air lean: FOUND in the EBOOT and applied. In the air and through the landing tail the upper body (Spine1
@@ -58,7 +60,7 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Turn: the game's top speed to the right was 29.33 in the captured level.
 - Landing: only a standing jump is captured (ledge fall, running jump: same tables, unchecked). Air ease:
   arm terms (+0xae0/+0xae4) not modelled; upper arms 2 to 3 degrees off late in the flight.
-- Walk start: our cycle is 2 frames ahead of the game on one capture. Head-top bones 22/23/24/27/28.
+- Head-top bones 22/23/24/27/28.
 - After a landing the body rests 1.6 above the spawn height (floor cast skin); not looked into.
 - Head-look inputs (right stick, creature+0xc20 target, tilt term, roll 0x808/0x810): OPEN.
 - Camera lead while walking; mirror flip types; arms mapping; face morph readers.
@@ -66,7 +68,7 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
   color; Vita (0x4431) payloads refused.
 
 ## Next
-1. Walk start (2 frames, second capture); arms; emote clip frames vs game.
+1. Air ease arm terms; arms; emote clip frames vs game.
 2. Popit: compare more frames, cursor mode, inventory grid pages (submode 11).
 3. Camera lead, slopes (paused by the owner).
 

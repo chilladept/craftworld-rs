@@ -10,7 +10,9 @@ through one of six rules picked by the skeleton's mirror flip type; types 6 and 
 bind (Sackboy's hands differ by 6 units) and reflected the zip pull. `Rig::mirrored_trs` now applies the
 game's rule when the skeleton has flip types. MEASURED on the left-to-right turn capture: vertex rms (free
 yaw) on the turn frames 2.3..4.2 -> 0.5..1.4, mirrored steady walk 0.7..1.6, the zip-pull joint 15.1 -> under
-1.7. `docs/d250-air-lean-turn.md` (D254).
+1.7. `docs/d250-air-lean-turn.md` (D254). Walk start: MEASURED, no change. The game's walk phase at the first
+moving tick differed between five captures (0, 0, 3, 4, 4), as the free-running 13-tick counter gives; with
+our counter on the game's phase the whole start (speed 3 to 30) fits at 0.9..1.7.
 
 ## 2026-10-12 - D250 jump air lean (upper body eased toward stand in the air); D251 turn facing and walk restart
 
