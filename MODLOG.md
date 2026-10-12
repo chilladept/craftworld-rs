@@ -1,5 +1,15 @@
 # Development log
 
+## 2026-10-12 - D245 jump pose mixes the tap and held clips
+
+Owner: the take-off tucks the legs too early. The EBOOT jump layer (0x20a5f4, 0x209fc8) confirms our frame
+rule (tick 1..5, then `8 * (1 - vy / 73)`), so the handoff's guess of a different vy scale was wrong. What we
+lacked: the pose is `lerp(jump_small_*, jump_*, held ticks / 10)`, the count frozen when the button is
+released, and the layer is at full weight after a take-off. We drew jump_stand alone at 0.7-0.9. Added
+jump_small_stand / jump_small_walk (56 clips), `JUMP_HOLD_FULL` = 10. Against the D243 capture (6-tick hold)
+the mesh height per tick is now within 4.6 (rms 2.3; jump_stand alone was 20 low). Ledge falls keep the D234
+weight ramp (not re-measured). +0 / +0.
+
 ## 2026-10-12 - D244 idle weight reaches the viewer
 
 Owner: the idle still stretches vertically in the viewer. The viewer's pose blender forced the base layer to

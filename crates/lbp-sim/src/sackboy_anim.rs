@@ -45,9 +45,13 @@ pub enum ClipId {
     WalkZForwards,
     /// 0x30c: dz < 0.
     WalkZBackwards,
-    /// 0x310 / 0x314.
+    /// 0x310 / 0x314: the held-jump clips.
     JumpStand,
     JumpWalk,
+    /// 0x318 / 0x31c: the tap-jump clips, mixed with the held ones by [`JUMP_HOLD_FULL`]
+    /// (FOUND, 0x209fc8; D245).
+    JumpSmallStand,
+    JumpSmallWalk,
     /// 0x36c: an additive spring pose in the game, driven on the ground path by shape
     /// overlap depth `max over contacts of min(depth / 350, 1)` (FOUND, 0x6c56c). Not
     /// driven here: we model no body overlap.
@@ -109,7 +113,7 @@ pub enum ClipId {
 
 impl ClipId {
     /// Stand first: the viewer's clip bank binds the rest to stand's rig.
-    pub const ALL: [ClipId; 54] = [
+    pub const ALL: [ClipId; 56] = [
         ClipId::Stand,
         ClipId::WalkSlow,
         ClipId::WalkMedium,
@@ -120,6 +124,8 @@ impl ClipId {
         ClipId::WalkZBackwards,
         ClipId::JumpStand,
         ClipId::JumpWalk,
+        ClipId::JumpSmallStand,
+        ClipId::JumpSmallWalk,
         ClipId::StretchCrouch,
         ClipId::Blink,
         ClipId::IdleYawn,
@@ -184,6 +190,8 @@ impl ClipId {
             ClipId::WalkZBackwards => 0x2fa5,
             ClipId::JumpStand => 0x1249,
             ClipId::JumpWalk => 0x124a,
+            ClipId::JumpSmallStand => 0x2fa2,
+            ClipId::JumpSmallWalk => 0x2fa3,
             ClipId::StretchCrouch => 0x125a,
             ClipId::Blink => 0x22ba,
             ClipId::IdleYawn => 0x3110,
@@ -237,7 +245,10 @@ impl ClipId {
             ClipId::Stand => 19,
             ClipId::WalkFastStop => 21,
             ClipId::WalkFastTurn => 19,
-            ClipId::JumpStand | ClipId::JumpWalk => 31,
+            ClipId::JumpStand
+            | ClipId::JumpWalk
+            | ClipId::JumpSmallStand
+            | ClipId::JumpSmallWalk => 31,
             ClipId::StretchCrouch => 9,
             ClipId::IdleYawn => 76,
             ClipId::IdleShiftFeet => 26,
@@ -293,6 +304,8 @@ impl ClipId {
             ClipId::WalkZBackwards => "walk_z_backwards",
             ClipId::JumpStand => "jump_stand",
             ClipId::JumpWalk => "jump_walk",
+            ClipId::JumpSmallStand => "jump_small_stand",
+            ClipId::JumpSmallWalk => "jump_small_walk",
             ClipId::StretchCrouch => "stretch_crouch",
             ClipId::Blink => "blink",
             ClipId::IdleYawn => "idle_yawn",
@@ -579,12 +592,19 @@ pub const LANE_RAMP: f32 = 3.;
 /// 0.125 per tick (superseded in the air by JUMP_AIR_*, see below).
 pub const JUMP_PEAK_FULL: f32 = 10.;
 pub const JUMP_PEAK_EASE: f32 = 0.125;
-/// Jump layer weight in the air (D234, RPCS3 vertex fits): 0.7 at take-off to 0.9 over 30 ticks.
+/// Jump layer weight in the air after a ledge fall (D234, RPCS3 vertex fits): 0.7 rising to
+/// 0.9 over 30 ticks. A jump from the ground is at full weight (FOUND: the take-off sets
+/// the peak to [`JUMP_PEAK_FULL`]; D245).
 pub const JUMP_AIR_START: f32 = 0.7;
 pub const JUMP_AIR_END: f32 = 0.9;
 pub const JUMP_AIR_RAMP: f32 = 30.;
 /// Stand-vs-walk jump mix per |vx| in the air (FOUND 0.045, full at 22.2).
 pub const JUMP_MIX_PER_VX: f32 = 0.045;
+/// Tap-vs-held jump mix (FOUND, 0x20a5f4 / 0x209fc8): a counter is 1 on the take-off tick
+/// and goes up one per tick while the jump button stays held; the pose is
+/// `lerp(jump_small_*, jump_*, clamp(count / 10))`. Releasing the button freezes it for the
+/// rest of the flight and the landing tail.
+pub const JUMP_HOLD_FULL: f32 = 10.;
 /// Jump frame (FOUND): take-off ticks 1..5 show frame = tick; rising
 /// `8 * (1 - clamp(vy / 73))`; falling `8 + 6 * clamp(-vy / 30.26)`.
 pub const JUMP_TAKEOFF_TICKS: u32 = 5;
@@ -702,6 +722,9 @@ pub struct SackboyAnim {
     peak: f32,
     jump_mix: f32,
     jump_mirror: bool,
+    /// The game's hold counter 0x790 and its "still held" flag 0x78a.
+    jump_hold: u32,
+    jump_holding: bool,
     air: Option<Air>,
     land: Option<f32>,
     lane: Option<Shot>,
@@ -746,6 +769,8 @@ impl SackboyAnim {
             peak: 0.,
             jump_mix: 0.,
             jump_mirror: false,
+            jump_hold: 0,
+            jump_holding: false,
             air: None,
             land: None,
             lane: None,
@@ -1020,12 +1045,27 @@ impl SackboyAnim {
 
         // Jump layer: vy-driven frame in the air, the clip's tail after landing (FOUND).
         let vy = s.vy.abs();
-        // D234: the game's jump layer is not at full weight in the air: RPCS3 vertex fits
-        // (standing jump) put 10-40% stand under it, 0.7 at take-off rising to 0.9 over the
-        // first 30 air ticks, whatever |vy| does. The |vy| follower below only keeps the
-        // value for the landing tail (INFERRED from one capture; the 0x20a5f4 follower
-        // reading is not reconciled with it).
+        // D234 put the layer at 0.7..0.9 in the air from RPCS3 vertex fits of a standing
+        // jump. D245: those fits compared against jump_stand alone; the game mixes
+        // jump_small_stand under it by the hold count (below), and with that mix the D243
+        // capture fits a full-weight layer, which is what 0x20a5f4 does after a take-off.
+        // The D234 ramp is kept for ledge falls only (not re-measured; the 0x20a5f4 peak
+        // follower is still not modelled).
         let _ = (vy, JUMP_PEAK_EASE);
+        // Hold counter (FOUND): stopped by the first tick without the button; cleared on
+        // the ground once no landing tail is playing (the game's test is its tail index
+        // being unset, which in the air it is not).
+        if !input.jump {
+            self.jump_holding = false;
+            if !airborne && self.air.is_none() && self.land.is_none() {
+                self.jump_hold = 0;
+            }
+        } else if s.jump_tick() == Some(1) {
+            self.jump_hold = 1;
+            self.jump_holding = true;
+        } else if self.jump_holding {
+            self.jump_hold += 1;
+        }
         let mut jump = None;
         if airborne {
             let air = self.air.get_or_insert(Air {
@@ -1049,9 +1089,13 @@ impl SackboyAnim {
             self.land = None;
             self.jump_mix = (vx * JUMP_MIX_PER_VX).abs().min(1.);
             self.jump_mirror = vx < 0.;
-            let level = JUMP_AIR_START
-                + (JUMP_AIR_END - JUMP_AIR_START)
-                    * (air.since as f32 / JUMP_AIR_RAMP).clamp(0., 1.);
+            let level = if air.takeoff {
+                1.
+            } else {
+                JUMP_AIR_START
+                    + (JUMP_AIR_END - JUMP_AIR_START)
+                        * (air.since as f32 / JUMP_AIR_RAMP).clamp(0., 1.)
+            };
             self.peak = level * JUMP_PEAK_FULL;
             let w = level * (air.since as f32 / air.blend_in).clamp(0., 1.);
             jump = Some((air.frame, w));
@@ -1067,14 +1111,21 @@ impl SackboyAnim {
             self.land = (f + 1. < n).then_some(f + 1.);
         }
         if let Some((frame, w)) = jump.filter(|&(_, w)| w > 0.01) {
-            // lerp(pose, lerp(jump_stand, jump_walk, m), w) as two sequential lerps.
+            // lerp(pose, lerp(stand pair, walk pair, m), w), each pair being
+            // lerp(jump_small_*, jump_*, h), as four sequential lerps: a clip whose share of
+            // the result is c gets the weight c / (1 - the shares applied after it).
             let m = self.jump_mix;
-            let rest = 1. - w * m;
-            let w_stand = if rest > 1e-6 { w * (1. - m) / rest } else { 0. };
-            for (clip, weight, mirror) in [
-                (ClipId::JumpStand, w_stand, false),
-                (ClipId::JumpWalk, w * m, self.jump_mirror),
+            let h = (self.jump_hold as f32 / JUMP_HOLD_FULL).clamp(0., 1.);
+            let mut after = w;
+            for (clip, share, mirror) in [
+                (ClipId::JumpSmallStand, w * (1. - m) * (1. - h), false),
+                (ClipId::JumpStand, w * (1. - m) * h, false),
+                (ClipId::JumpSmallWalk, w * m * (1. - h), self.jump_mirror),
+                (ClipId::JumpWalk, w * m * h, self.jump_mirror),
             ] {
+                after -= share;
+                let rest = 1. - after;
+                let weight = if rest > 1e-6 { share / rest } else { 0. };
                 if weight > 0. {
                     layers.push(Layer {
                         clip,
@@ -1292,14 +1343,34 @@ mod tests {
         f.layers.iter().copied().find(|l| l.clip == clip)
     }
 
+    const JUMP_CLIPS: [ClipId; 4] = [
+        ClipId::JumpSmallStand,
+        ClipId::JumpStand,
+        ClipId::JumpSmallWalk,
+        ClipId::JumpWalk,
+    ];
+
+    /// The jump layer's total weight over the pose under it (its clips are sequential
+    /// lerps) and each clip's part of the result, in [`JUMP_CLIPS`] order.
+    fn jump_parts(f: &AnimFrame) -> (f32, [f32; 4]) {
+        let mut under = 1.;
+        let mut parts = [0.; 4];
+        for l in f.layers.iter().filter(|l| JUMP_CLIPS.contains(&l.clip)) {
+            parts.iter_mut().for_each(|p| *p *= 1. - l.weight);
+            under *= 1. - l.weight;
+            parts[JUMP_CLIPS.iter().position(|&c| c == l.clip).unwrap()] += l.weight;
+        }
+        (1. - under, parts)
+    }
+
     #[test]
     fn clip_table() {
         let guids: Vec<u32> = ClipId::ALL.iter().map(|c| c.guid()).collect();
-        assert_eq!(guids.len(), 54);
+        assert_eq!(guids.len(), 56);
         let mut unique = guids.clone();
         unique.sort_unstable();
         unique.dedup();
-        assert_eq!(unique.len(), 54);
+        assert_eq!(unique.len(), 56);
         assert_eq!(ClipId::EmoteAnticipation.guid(), 0x25bf);
         assert_eq!(ClipId::EmoteSad3Loop.frames(), 51);
         assert_eq!(
@@ -1584,8 +1655,8 @@ mod tests {
         let f = a.tick(&s, false);
         let at = |c: ClipId| f.layers.iter().position(|l| l.clip == c).unwrap();
         assert!(at(ClipId::Stand) < at(ClipId::WalkSlow));
-        assert!(at(ClipId::WalkSlow) < at(ClipId::JumpStand));
-        assert!(at(ClipId::JumpStand) < at(ClipId::WalkZForwards));
+        assert!(at(ClipId::WalkSlow) < at(ClipId::JumpSmallStand));
+        assert!(at(ClipId::JumpSmallStand) < at(ClipId::WalkZForwards));
         assert!(at(ClipId::WalkZForwards) < at(ClipId::Blink));
     }
 
@@ -1934,13 +2005,19 @@ mod tests {
             .enumerate()
             .filter_map(|(t, f)| layer(f, ClipId::JumpStand).map(|l| (t, l.frame, l.weight)))
             .collect();
-        // Take-off on tick 5: frames 1..5 on the first five airborne ticks, full weight.
+        // Take-off on tick 5: frames 1..5 on the first five airborne ticks.
         let first: Vec<f32> = jump[..5].iter().map(|j| j.1).collect();
         assert_eq!(first, [1., 2., 3., 4., 5.]);
         assert_eq!(jump[0].0, 5);
-        // D234: 0.7 at take-off, rising slowly (was full weight at once).
-        assert!(jump[0].2 > 0.69 && jump[0].2 < 0.75, "{:?}", jump[0]);
-        assert!(jump[..4].windows(2).all(|p| p[0].2 < p[1].2));
+        // D245: the layer is at full weight from the take-off, and jump_stand's part of it
+        // is the hold count over 10 (button held 10 ticks here), jump_small_stand the rest.
+        for (k, j) in jump[..10].iter().enumerate() {
+            assert!(close(j.2, (k + 1) as f32 / 10.), "{k} {j:?}");
+            assert!(close(jump_parts(&frames[j.0]).0, 1.));
+            let small = layer(&frames[j.0], ClipId::JumpSmallStand);
+            assert_eq!(small.is_some(), k < 9, "{k}");
+            assert!(small.is_none_or(|l| l.frame == j.1));
+        }
         // The frame reaches the apex (8) and the full-fall range, never past 14 in the air.
         let air_max = jump
             .iter()
@@ -1972,13 +2049,15 @@ mod tests {
         let mut s = moving(0.);
         s.vy = -25.;
         let f = a.tick(&s, false);
-        let fall = layer(&f, ClipId::JumpStand).unwrap().frame;
+        // A fall has no hold count: jump_small_stand alone.
+        assert!(layer(&f, ClipId::JumpStand).is_none());
+        let fall = layer(&f, ClipId::JumpSmallStand).unwrap().frame;
         assert!(close(fall, 8. + 6. * 25. / 30.26));
         s.vy = 0.;
         let f = a.tick(&s, false);
-        assert_eq!(layer(&f, ClipId::JumpStand).unwrap().frame, fall);
+        assert_eq!(layer(&f, ClipId::JumpSmallStand).unwrap().frame, fall);
         let f = a.tick(&s, true);
-        assert_eq!(layer(&f, ClipId::JumpStand).unwrap().frame, 13.);
+        assert_eq!(layer(&f, ClipId::JumpSmallStand).unwrap().frame, 13.);
     }
 
     #[test]
@@ -1992,20 +2071,129 @@ mod tests {
             40,
         );
         let f = &frames[22];
-        // vx about 30 x 0.045 > 1: all jump_walk; blend-in 1 + 4 x 30 / 20 = 7 ticks.
+        // vx about 30 x 0.045 > 1: all walk jump clips; blend-in 1 + 4 x 30 / 20 = 7 ticks.
         assert!(weight_of(f, ClipId::JumpStand) < 1e-4);
-        let w: Vec<f32> = frames[20..28]
-            .iter()
-            .map(|f| weight_of(f, ClipId::JumpWalk))
-            .collect();
-        // Blend-in ramp times the air level (0.7..0.9, D234): rising, 0.7 x 7/7 at tick 7.
-        assert!(
-            w[0] < 1. / 7. && w.windows(2).all(|p| p[0] <= p[1]),
-            "{w:?}"
-        );
-        assert!(w[6] > 0.7 && w[6] < 0.75, "{w:?}");
+        assert!(weight_of(f, ClipId::JumpSmallStand) < 1e-4);
+        // Held 5 ticks: jump_walk's part of the layer is 0.1 per tick up to 0.5, then held.
+        for (k, f) in frames[20..28].iter().enumerate() {
+            let layer_w = ((k + 1) as f32 / 7.).min(1.);
+            let (w, parts) = jump_parts(f);
+            assert!(close(w, layer_w), "{k} {w}");
+            assert!(
+                close(parts[3], layer_w * (k + 1).min(5) as f32 / 10.),
+                "{k}"
+            );
+        }
         // Full-speed walk under it, facing right.
         assert!(close(weight_of(&frames[19], ClipId::WalkFast), 1.));
         assert!(frames[30].yaw > 1.4);
+    }
+
+    /// Height (lowest to highest vertex) of the Sackboy mesh posed by
+    /// `lerp(jump_small_stand, jump_stand, h)` at clip frames 1..=10, rows h = 0.1..=0.6
+    /// (MEASURED on our own skinned mesh with the pose_fit example, D245).
+    const JUMP_POSE_HEIGHT: [[f32; 10]; 6] = [
+        [
+            214.3, 217.5, 219.0, 218.9, 217.2, 214.7, 211.3, 203.7, 194.7, 189.4,
+        ],
+        [
+            214.6, 217.7, 218.9, 217.9, 215.7, 212.8, 208.3, 200.8, 192.5, 188.9,
+        ],
+        [
+            214.9, 218.3, 218.8, 216.7, 213.7, 210.2, 204.9, 198.1, 191.2, 187.5,
+        ],
+        [
+            215.1, 219.1, 218.5, 215.2, 211.2, 207.4, 202.3, 195.0, 188.4, 185.1,
+        ],
+        [
+            215.4, 219.7, 218.2, 213.5, 208.6, 204.9, 198.8, 190.8, 184.3, 181.2,
+        ],
+        [
+            216.1, 220.2, 217.8, 211.7, 206.5, 201.9, 194.6, 186.6, 180.4, 175.9,
+        ],
+    ];
+    /// The same for jump_stand alone (h = 1), which is what we drew before D245.
+    const JUMP_STAND_HEIGHT: [f32; 10] = [
+        218.3, 221.6, 215.2, 204.8, 195.8, 188.4, 178.6, 167.5, 161.3, 161.2,
+    ];
+
+    fn between(row: &[f32; 10], frame: f32) -> f32 {
+        let i = (frame.floor() as usize).clamp(1, 9);
+        let r = frame - i as f32;
+        row[i - 1] * (1. - r) + row[i] * r
+    }
+
+    /// [`JUMP_POSE_HEIGHT`] between frames and rows.
+    fn jump_pose_height(frame: f32, h: f32) -> f32 {
+        let x = (h * 10. - 1.).clamp(0., 5.);
+        let row = (x.floor() as usize).min(4);
+        let r = x - row as f32;
+        between(&JUMP_POSE_HEIGHT[row], frame) * (1. - r)
+            + between(&JUMP_POSE_HEIGHT[row + 1], frame) * r
+    }
+
+    #[test]
+    fn six_tick_jump_follows_the_games_mesh_height() {
+        // D243 capture (RPCS3, jump button held 200 ms = 6 ticks, standing): mesh height
+        // per tick from the take-off, and the upward speed (centroid for ticks 1..9, feet
+        // after; the last four continue at gravity). MEASURED.
+        let game = [
+            216.0, 219.6, 214.8, 213.4, 213.2, 209.3, 206.4, 205.1, 204.7, 203.6, 202.1, 200.0,
+            197.9, 195.8, 193.6, 191.1, 187.4, 183.3, 180.2, 177.6,
+        ];
+        let vy = [
+            12.6, 20.1, 24.9, 27.5, 29.5, 26.6, 24.5, 22.2, 19.8, 17.1, 15.5, 13.2, 10.5, 7.8, 5.2,
+            2.7, 0.0, -3.3, -6.0, -8.7,
+        ];
+        let lanes = |_: f32| true;
+        let mut s = Sackboy::at_lane(0.);
+        let mut a = SackboyAnim::new();
+        let mut ours = Vec::new();
+        let mut before = Vec::new();
+        for (t, &v) in vy.iter().enumerate() {
+            // The real controller for the button and the take-off tick; the speed is then
+            // the capture's, so this tests the pose rule and not our jump arc.
+            s.step(
+                Input {
+                    jump: t < 6,
+                    ..Default::default()
+                },
+                &Contact {
+                    grounded: t == 0,
+                    lane_has_floor: &lanes,
+                },
+            );
+            s.vy = v;
+            let f = a.tick(&s, false);
+            let (w, parts) = jump_parts(&f);
+            // Standing jump: full weight, no walk clips, both stand clips on one frame.
+            assert!(close(w, 1.), "tick {t}: {w}");
+            assert!(parts[2] == 0. && parts[3] == 0.);
+            let h = (t + 1).min(6) as f32 / 10.;
+            assert!(close(parts[1], h), "tick {t}: {parts:?}");
+            let frame = layer(&f, ClipId::JumpSmallStand).unwrap().frame;
+            assert_eq!(layer(&f, ClipId::JumpStand).unwrap().frame, frame);
+            ours.push(jump_pose_height(frame, h));
+            before.push(between(&JUMP_STAND_HEIGHT, frame));
+        }
+        let worst = |v: &[f32]| {
+            v.iter()
+                .zip(&game)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0f32, f32::max)
+        };
+        let rms = |v: &[f32]| {
+            (v.iter()
+                .zip(&game)
+                .map(|(a, b)| (a - b) * (a - b))
+                .sum::<f32>()
+                / v.len() as f32)
+                .sqrt()
+        };
+        assert!(worst(&ours) < 5., "{ours:?}");
+        assert!(rms(&ours) < 2.6, "{ours:?}");
+        // jump_stand alone tucks the legs early: 16 below the game on tick 10, 20 at worst.
+        assert!(game[9] - before[9] > 15. && worst(&before) > 20.);
+        assert!(ours[9] > 200.);
     }
 }

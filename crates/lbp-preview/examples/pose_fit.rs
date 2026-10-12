@@ -408,6 +408,15 @@ fn run() -> Result<(), String> {
     }
     let flip = args.get(6).is_some();
     println!("samples {samples}, pose table {}", table.len());
+    if std::env::var("HEIGHTS").is_ok() {
+        // lowest / highest vertex and height of every table pose (no fit)
+        for (name, f, p) in &table {
+            let lo = p.iter().map(|q| q[1]).fold(f32::MAX, f32::min);
+            let hi = p.iter().map(|q| q[1]).fold(f32::MIN, f32::max);
+            println!("{name} {f} lo {lo:.1} hi {hi:.1} h {:.1}", hi - lo);
+        }
+        return Ok(());
+    }
     for s in 0..samples {
         let g: Vec<[f32; 3]> = (0..gn)
             .map(|v| {

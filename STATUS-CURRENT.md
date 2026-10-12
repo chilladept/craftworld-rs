@@ -11,7 +11,19 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D243 Popit leftovers (2026-10-12)
+## Latest: D245 jump pose (2026-10-12)
+- Take-off tucked the legs early. From the EBOOT jump layer: the frame rule was right; the pose is
+  `lerp(jump_small_*, jump_*, held ticks / 10)` (count frozen on release) at full layer weight after a
+  take-off. `sackboy_anim.rs`: clips jump_small_stand / jump_small_walk (bank is 56), `JUMP_HOLD_FULL`.
+  D243 capture (6-tick hold): mesh height per tick within 4.6, rms 2.3 (was 20 low). Not yet seen in the
+  viewer next to the game. Open: ledge-fall layer weight (still the D234 ramp), ticks 3 and 5 are 4 off,
+  our jump arc vs the capture's (root, not centroid), then stop/turn poses and lean/stretch.
+
+## Before: D244 idle weight reaches the viewer (2026-10-12, #5)
+- The viewer's pose blender forced the base layer to weight 1, so D242's weight never showed. Honoured now;
+  `STAND_BASE_WEIGHT` = 0.25 (head-top travel per breath 18.5 -> about 4.6, game 2.6; `docs/d242-idle-stretch.md`).
+
+## Before: D243 Popit leftovers (2026-10-12)
 - Pod card uses the same head anchor as the Moon (no change); UV Tool / Slice icon guids 42930-42931 are absent from disc (`docs/d235-popit.md` pass 8). RPCS3 can be driven without focus: `scripts/rpcs3_bgpad.py`, `scripts/rpcs3_bgcap.py`.
 
 ## Before: D242 idle stretch (2026-10-12)
