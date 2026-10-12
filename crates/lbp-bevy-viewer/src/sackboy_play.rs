@@ -106,11 +106,13 @@ pub(crate) fn enabled() -> bool {
 /// toward its clip's (sub-frame) pose by its weight, each additive layer adds its frame
 /// minus its reference frame. Stand is the playing clip; a clip missing from the bank is
 /// skipped. A layer with the game's mirror flag is mirrored left/right through the
-/// skeleton's mirror table (moving left: walk, jump_walk, stop/turn).
+/// skeleton's mirror table (moving left: walk, jump_walk, stop/turn). Last, `squash` raises
+/// both ankles toward the pelvis by that much (the short legs after a landing, D249).
 fn blend_frame(
     stand: &SkinnedClip,
     bank: &[Option<BoundAnimation>],
     frame: &AnimFrame,
+    squash: f32,
 ) -> BlendPose {
     let mut pose = BlendPose::bind(&stand.rig);
     for l in &frame.layers {
@@ -144,6 +146,17 @@ fn blend_frame(
     // and idle-chain clips +90 degrees): kept, it doubled the picker's yaw (walking right
     // showed his back) and snapped 90 degrees wherever stand met another clip.
     pose.hold_root_rotation(&stand.rig);
+    if squash != 0. {
+        for side in ["L", "R"] {
+            let bone = |part: &str| stand.rig.bone_named(&format!("Bip01 {side} {part}"));
+            if let (Some(thigh), Some(calf), Some(foot)) =
+                (bone("Thigh"), bone("Calf"), bone("Foot"))
+            {
+                // Raw model space is Z-up.
+                pose.move_chain_end(&stand.rig, [thigh, calf, foot], [0., 0., squash]);
+            }
+        }
+    }
     pose
 }
 
@@ -821,7 +834,8 @@ pub(crate) fn show_sackboy(
             // Clip bank: one blended pose per picked tick (stand stays the playing clip).
             if f.posed != f.picked {
                 if let (Some(a), Some(playing)) = (&f.anim, &mut v.playing) {
-                    let pose = blend_frame(&playing.clip, &f.bank, a);
+                    let pose =
+                        blend_frame(&playing.clip, &f.bank, a, body.controller.landing_squash());
                     dump_pose(&playing.clip.blended_positions(&pose), f.picked);
                     playing.blended = Some(pose);
                 }

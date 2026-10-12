@@ -22,7 +22,7 @@ pub fn mul(a: &Mat4, b: &Mat4) -> Mat4 {
     })
 }
 
-/// Translation × rotation (unit quaternion x, y, z, w) × scale.
+/// Translation Ã— rotation (unit quaternion x, y, z, w) Ã— scale.
 pub fn trs(t: [f32; 3], q: [f32; 4], s: [f32; 3]) -> Mat4 {
     let [x, y, z, w] = q;
     let r = [
@@ -65,7 +65,7 @@ impl Trs {
         trs(self.t, self.r, self.s)
     }
 
-    /// Splits a translation × rotation × scale matrix (no shear) back into its parts; a
+    /// Splits a translation Ã— rotation Ã— scale matrix (no shear) back into its parts; a
     /// mirrored basis gets a negative x scale.
     pub fn from_matrix(m: &Mat4) -> Self {
         let col = |c: usize| [m[c * 4], m[c * 4 + 1], m[c * 4 + 2]];
@@ -232,7 +232,7 @@ impl BlendPose {
 
     /// Adds `w` times the difference `pose` minus `reference` (both from `rig`'s
     /// animation): translation and morph deltas add, scale ratios multiply, and the local
-    /// rotation delta `reference⁻¹ · pose` is applied after the bone's rotation. The
+    /// rotation delta `referenceâ»Â¹ Â· pose` is applied after the bone's rotation. The
     /// game's own composition (`0x1eafc0`) is not traced: INFERRED.
     pub fn add(&mut self, rig: &Rig, pose: &Pose, reference: &Pose, w: f32) {
         if w <= 0. || !w.is_finite() {
@@ -280,6 +280,137 @@ impl BlendPose {
     pub fn local_matrices(&self) -> Vec<Mat4> {
         self.bones.iter().map(Trs::matrix).collect()
     }
+
+    /// Two-bone solver: moves the `end` joint of the chain `upper` -> `lower` -> `end` (a
+    /// thigh, calf and foot) by `offset` in model space. The upper joint stays where it is,
+    /// both bone lengths are kept, the middle joint stays in the plane it bends in now and
+    /// the end bone keeps its model-space rotation (a level foot stays level). A target out
+    /// of reach is pulled in to the nearest reachable point. Only the three rotations change.
+    /// Returns false (pose untouched) when the bones are not such a chain or have no length.
+    pub fn move_chain_end(
+        &mut self,
+        rig: &Rig,
+        [upper, lower, end]: [usize; 3],
+        offset: [f32; 3],
+    ) -> bool {
+        let parent = |i: usize| rig.bones.get(i).map(|b| b.parent);
+        if end >= self.bones.len()
+            || parent(end) != i32::try_from(lower).ok()
+            || parent(lower) != i32::try_from(upper).ok()
+        {
+            return false;
+        }
+        let worlds = rig.worlds_from_trs(&self.bones);
+        let at = |i: usize| [worlds[i][12], worlds[i][13], worlds[i][14]];
+        let (a, b, c) = (at(upper), at(lower), at(end));
+        let (ab, bc) = (sub3(b, a), sub3(c, b));
+        let (l1, l2) = (len3(ab), len3(bc));
+        let to = sub3(add3(c, offset), a);
+        let reach = len3(to);
+        if l1 < 1e-4 || l2 < 1e-4 || reach < 1e-4 || !reach.is_finite() {
+            return false;
+        }
+        let d = reach.clamp((l1 - l2).abs() + 1e-3, l1 + l2 - 1e-3);
+        let dir = scale3(to, 1. / reach);
+        // The side the middle joint bends to: where it is now, seen from the new axis.
+        let side = sub3(ab, scale3(dir, dot3(ab, dir)));
+        let side = if len3(side) > 1e-4 {
+            scale3(side, 1. / len3(side))
+        } else {
+            // Straight along the axis: bend toward the model's front (-Y).
+            let f = [0., -1., 0.];
+            let s = sub3(f, scale3(dir, dot3(f, dir)));
+            if len3(s) < 1e-4 {
+                return false;
+            }
+            scale3(s, 1. / len3(s))
+        };
+        let cos = ((l1 * l1 + d * d - l2 * l2) / (2. * l1 * d)).clamp(-1., 1.);
+        let sin = (1. - cos * cos).max(0.).sqrt();
+        let knee = add3(scale3(dir, l1 * cos), scale3(side, l1 * sin));
+        let target = scale3(dir, d);
+        // Model-space turns: the upper bone onto the new middle joint, then the lower bone
+        // (already carried by the first turn) onto the target.
+        let d1 = q_between(ab, knee);
+        let d2 = q_between(q_rotate(d1, bc), sub3(target, knee));
+        // Model-space rotation of each bone: the product of the local rotations above it.
+        let model = |bones: &[Trs], i: usize| {
+            rig.chains[i]
+                .iter()
+                .fold([0., 0., 0., 1.], |q, &j| q_mul(q, bones[j].r))
+        };
+        let (qu, ql, qe) = (
+            model(&self.bones, upper),
+            model(&self.bones, lower),
+            model(&self.bones, end),
+        );
+        let qp = q_mul(qu, q_conj(self.bones[upper].r));
+        let qu_new = q_mul(d1, qu);
+        let ql_new = q_mul(d2, q_mul(d1, ql));
+        self.bones[upper].r = normalize(q_mul(q_conj(qp), qu_new));
+        self.bones[lower].r = normalize(q_mul(q_conj(qu_new), ql_new));
+        self.bones[end].r = normalize(q_mul(q_conj(ql_new), qe));
+        true
+    }
+}
+
+fn add3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    std::array::from_fn(|i| a[i] + b[i])
+}
+
+fn sub3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    std::array::from_fn(|i| a[i] - b[i])
+}
+
+fn scale3(a: [f32; 3], k: f32) -> [f32; 3] {
+    a.map(|v| v * k)
+}
+
+fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn len3(a: [f32; 3]) -> f32 {
+    dot3(a, a).sqrt()
+}
+
+fn cross3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+fn q_conj([x, y, z, w]: [f32; 4]) -> [f32; 4] {
+    [-x, -y, -z, w]
+}
+
+fn q_rotate(q: [f32; 4], v: [f32; 3]) -> [f32; 3] {
+    let [x, y, z, _] = q_mul(q_mul(q, [v[0], v[1], v[2], 0.]), q_conj(q));
+    [x, y, z]
+}
+
+/// The shortest turn taking the direction of `a` to the direction of `b` (identity for a
+/// zero vector; opposite directions turn about an axis square to `a`).
+fn q_between(a: [f32; 3], b: [f32; 3]) -> [f32; 4] {
+    let (la, lb) = (len3(a), len3(b));
+    if la < 1e-6 || lb < 1e-6 {
+        return [0., 0., 0., 1.];
+    }
+    let (a, b) = (scale3(a, 1. / la), scale3(b, 1. / lb));
+    let w = 1. + dot3(a, b);
+    if w < 1e-6 {
+        let other = if a[0].abs() < 0.9 {
+            [1., 0., 0.]
+        } else {
+            [0., 1., 0.]
+        };
+        let [x, y, z] = cross3(a, other);
+        return normalize([x, y, z, 0.]);
+    }
+    let [x, y, z] = cross3(a, b);
+    normalize([x, y, z, w])
 }
 
 /// The pose at a fractional frame: the two neighbouring frames blended (translation and
@@ -558,7 +689,7 @@ impl Rig {
         self.driven_by.iter().flatten().count()
     }
 
-    /// Per mesh bone: world(pose) × inverse skin pose. Undriven bones keep their bind
+    /// Per mesh bone: world(pose) Ã— inverse skin pose. Undriven bones keep their bind
     /// local transform, so a pose without matches reproduces the bind pose.
     pub fn skin_matrices(&self, pose: Option<&Pose>) -> Vec<Mat4> {
         if self.scale_rule != ScaleRule::Inherited {
@@ -567,7 +698,7 @@ impl Rig {
         self.skin_matrices_from_locals(&self.local_matrices(pose))
     }
 
-    /// Per mesh bone: world (from these local transforms) × inverse skin pose.
+    /// Per mesh bone: world (from these local transforms) Ã— inverse skin pose.
     pub fn skin_matrices_from_locals(&self, local: &[Mat4]) -> Vec<Mat4> {
         self.chains
             .iter()
@@ -707,6 +838,12 @@ impl Rig {
             r: *pose.rotations.get(a)?,
             s: *pose.scales.get(a)?,
         })
+    }
+
+    /// The mesh bone whose animation hash is that of `name` (`Bip01 L Thigh`).
+    pub fn bone_named(&self, name: &str) -> Option<usize> {
+        let hash = lbp_mesh::anim_hash(name);
+        self.bones.iter().position(|b| b.anim_hash == hash)
     }
 
     pub fn parents(&self) -> Vec<i32> {
@@ -1131,7 +1268,7 @@ mod tests {
         assert_eq!(out[2], [3., 3., 3.]); // joint past the bone list
     }
 
-    /// The viewer's GPU path: joint world = parent world × local, matrix × inverse bind.
+    /// The viewer's GPU path: joint world = parent world Ã— local, matrix Ã— inverse bind.
     #[test]
     fn hierarchy_of_locals_reproduces_skin_matrices() {
         let r = rig(&[10, 20]);
@@ -1378,6 +1515,59 @@ mod tests {
             &[10, 20, 30],
         )
         .unwrap()
+    }
+
+    #[test]
+    fn move_chain_end_reaches_the_target_and_keeps_the_end_rotation() {
+        // A leg hanging down z from a pelvis: hip at z 3, knee bent forward (-y), ankle at 1.
+        let at = |parent: i32, p: [f32; 3]| RigBone {
+            parent,
+            anim_hash: 0,
+            skin_pose: translate(p),
+            inv_skin_pose: translate([-p[0], -p[1], -p[2]]),
+        };
+        let rig = Rig::new(
+            vec![
+                at(-1, [0., 0., 3.5]),
+                at(0, [0.5, 0., 3.]),
+                at(1, [0.5, -0.2, 2.]),
+                at(2, [0.5, 0., 1.]),
+            ],
+            &[],
+        )
+        .unwrap();
+        let joint = |p: &BlendPose, i: usize| {
+            let w = rig.worlds_from_trs(&p.bones)[i];
+            [w[12], w[13], w[14]]
+        };
+        let foot_rotation = |p: &BlendPose| Trs::from_matrix(&rig.worlds_from_trs(&p.bones)[3]).r;
+        for rule in [ScaleRule::Inherited, ScaleRule::Biped] {
+            let mut rig = rig.clone();
+            rig.set_biped_bones(&[true; 4]);
+            rig.scale_rule = rule;
+            let mut pose = BlendPose::bind(&rig);
+            // Not a chain: nothing happens.
+            assert!(!pose.move_chain_end(&rig, [0, 2, 3], [0., 0., 0.5]));
+            assert_eq!(pose, BlendPose::bind(&rig));
+            assert!(pose.move_chain_end(&rig, [1, 2, 3], [0.1, 0., 0.5]));
+            assert!(close(joint(&pose, 1), [0.5, 0., 3.]));
+            assert!(
+                close(joint(&pose, 3), [0.6, 0., 1.5]),
+                "{:?}",
+                joint(&pose, 3)
+            );
+            // Lengths kept, the knee further forward, the foot not turned.
+            let knee = joint(&pose, 2);
+            assert!((len3(sub3(knee, [0.5, 0., 3.])) - len3([0., 0.2, 1.])).abs() < 1e-4);
+            assert!(knee[1] < -0.2, "{knee:?}");
+            let r = foot_rotation(&pose);
+            assert!(r[3].abs() > 0.9999, "{r:?}");
+            // Out of reach: the leg ends up straight toward the target.
+            let mut far = BlendPose::bind(&rig);
+            assert!(far.move_chain_end(&rig, [1, 2, 3], [0., 0., -5.]));
+            let reach = 2. * len3([0., 0.2, 1.]);
+            assert!((joint(&far, 3)[2] - (3. - reach)).abs() < 0.01);
+        }
     }
 
     #[test]

@@ -32,7 +32,22 @@ pub const AIR_DRAG: f32 = 0.9997;
 /// and the tail ran a tick late. The body position the physics reads dips further (35,
 /// d230); that table drew him about 12 units too low for 15 ticks (owner: "extra bouncy").
 /// Position only; the walking physics above are unaffected.
-pub const LANDING_DIP: [f32; 3] = [-25.9, -15.9, 0.];
+///
+/// D249: the entries after the first two are the rest of that capture, touchdown +3..+12: the
+/// game's lowest vertex less ours (1.0, 2.7, 3.9, 5.7, 1.7, -2.3, -2.4, -1.4, -0.8, -0.3) less
+/// the leg shortening of [`LANDING_SQUASH`] on the same tick. The body settles in a damped
+/// bounce (up to 2.7 above rest at +6) while the legs are still short. One standing jump.
+pub const LANDING_DIP: [f32; 12] = [
+    -25.9, -15.9, -6.6, -3.3, -0.5, 2.7, 0.1, -2.8, -2.4, -1.4, -0.8, -0.3,
+];
+/// How much shorter his legs are drawn (ankles raised toward the pelvis, feet kept level), per
+/// tick after touch-down, same index as [`LANDING_DIP`]. MEASURED (D248 table, d234
+/// `jump.bin`): the game's pelvis is 7.6, 6.0, 4.4, 3.0, 1.6, 0.5 closer to its lowest vertex
+/// than our landing tail on touchdown +3..+8, with the head-to-pelvis length unchanged; none
+/// on the two ticks he is under the floor line. The game's rule is its foot placement pass
+/// (EBOOT 0x210dd8, foot target from the floor contact distance, only while the body moved
+/// 15 or less in the tick); its inputs are not traced, so this is the measured series.
+pub const LANDING_SQUASH: [f32; 12] = [0., 0., 7.6, 6.0, 4.4, 3.0, 1.6, 0.5, 0., 0., 0., 0.];
 /// Ground acceleration and deceleration per tick² (linear: 3, 6, ... 30).
 pub const WALK_ACCEL: f32 = 3.0;
 /// Ground top speed per tick (900 u/s), reached in 10 ticks.
@@ -132,6 +147,11 @@ impl Sackboy {
     /// Y offset of his position from rest this tick (0 outside a landing).
     pub fn landing_dip(&self) -> f32 {
         self.dip_tick.map_or(0., |t| LANDING_DIP[t])
+    }
+
+    /// How much shorter his legs are drawn this tick (0 outside a landing).
+    pub fn landing_squash(&self) -> f32 {
+        self.dip_tick.map_or(0., |t| LANDING_SQUASH[t])
     }
 
     /// Ticks of the jump profile played so far (`Some(1)` right after the take-off tick);
@@ -370,10 +390,17 @@ mod tests {
         assert_eq!(s.landing_dip(), LANDING_DIP[0]);
         // D247: two ticks below rest (game lowest point -29.0, -16.2, then 0.0).
         s.step(Input::default(), &floor);
-        assert_eq!(s.landing_dip(), -15.9);
-        for _ in 0..LANDING_DIP.len() {
+        assert_eq!((s.landing_dip(), s.landing_squash()), (-15.9, 0.));
+        // D249: then the legs are short while the body settles, twelve ticks in all.
+        for t in 2..LANDING_DIP.len() {
             s.step(Input::default(), &floor);
-            assert_eq!(s.landing_dip(), 0.);
+            assert_eq!(s.landing_dip(), LANDING_DIP[t]);
+            assert_eq!(s.landing_squash(), LANDING_SQUASH[t]);
+        }
+        assert_eq!(s.landing_squash(), 0.);
+        for _ in 0..3 {
+            s.step(Input::default(), &floor);
+            assert_eq!((s.landing_dip(), s.landing_squash()), (0., 0.));
         }
     }
 

@@ -4133,3 +4133,18 @@ Next: turn pose (game capture with a direction reversal); post-landing squash; j
 **+0 newly viewable / +0 newly Complete (runtime feature).**
 Next: leg solver for the post-landing squash (feet on the floor, body dip continued); turn pose capture;
 jump air lean.
+
+## D249: short legs after a landing (2026-10-12)
+- Changed: `lbp-preview` `BlendPose::move_chain_end` (two-bone solver) and `Rig::bone_named`; `lbp-sim`
+  `LANDING_SQUASH`, `Sackboy::landing_squash`, `LANDING_DIP` twelve entries; the Bevy viewer's `blend_frame`
+  raises both ankles by the squash after all layers.
+- MEASURED (d234 `jump.bin`, release viewer `-:400,j:6,-:120`): touchdown +3..+8 height 194.8, 194.7, 195.0,
+  196.3, 199.0, 201.7 (game 194.9, 194.9, 195.3, 196.5, 199.1, 201.3); pelvis and lowest vertex within 0.4;
+  flight and idle unchanged. Table in `docs/d241-landing-dip.md` (D249).
+- Commands: `local-analysis/d250-crouch/run.ps1 -name leg1 -secs 70`, `python final2.py leg1` (same folder).
+- Tests: `move_chain_end_reaches_the_target_and_keeps_the_end_rotation` (new),
+  `air_drag_is_tiny_and_landing_plays_the_measured_dip` (extended). fmt, tests, clippy: see the PR checks.
+- Not tested: ledge fall, running jump, walking straight out of a landing (no game capture); GPU skinning
+  path by eye (same pose data as the measured CPU dump).
+**+0 newly viewable / +0 newly Complete (runtime feature).**
+Next: jump air lean; turn pose against the new game capture.

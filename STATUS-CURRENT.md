@@ -11,18 +11,19 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D248 crouch spring found, not the landing squash; lean/height measured (2026-10-12)
-- Measured, no change needed: idle, steady walk and stop match the game within 0.4 deg lean / 0.4 height.
-- `stretch_crouch` spring (EBOOT 0x2011d4) is in `sackboy_anim.rs` (`CrouchSpring`, `set_contact_depth`,
-  tested) but unfed, so nothing drawn changed. As a landing kick it does not fit d234 `jump.bin`: best max
-  error 3.9 (none: 7.6), spine shortened 3-4 where the game's is not, peak two ticks late.
-- The squash is (INFERRED) feet held on the floor under a body that keeps rising for ten ticks: the game's
-  pelvis is 18.8, 31.1, 39.3, 40.8, 42.5, 45.5 above the floor line at touchdown +1..+6 (rest 48), lowest
-  vertex on the floor from +3. Foot pass 0x210dd8. Needs a leg solver in the blender. `LANDING_DIP` unchanged.
-- No extra in-air body layer in the EBOOT (phys+0x41 is wall cling). Air lean +4 deg: still open.
-- QA: vertex dumps log `sackboy pose N` (tie poses to ticks by log order, not by counting); the stand
-  phase at a script tick varies between viewer runs. `docs/d241-landing-dip.md` (D248), tools
-  `local-analysis/d250-crouch/`.
+## Latest: D249 short legs after a landing (2026-10-12)
+- The pose blender has a two-bone leg solver (`BlendPose::move_chain_end`, `lbp-preview`); the play figure
+  raises both ankles by `LANDING_SQUASH` (7.6 .. 0.5 on touchdown +3..+8) and `LANDING_DIP` runs twelve ticks
+  (two under the floor, then the body's settle). MEASURED against d234 `jump.bin`: height, pelvis height and
+  lowest vertex within 0.4 on touchdown +3..+8 (height was 8 off). Both tables are one standing jump's
+  series; the game's foot pass (0x210dd8) inputs are untraced. `docs/d241-landing-dip.md` (D249), tools
+  `local-analysis/d250-crouch/` (`run.ps1`, `final2.py`).
+
+## Before: D248 crouch spring found, not the landing squash (2026-10-12)
+- `stretch_crouch` spring (EBOOT 0x2011d4) is in `sackboy_anim.rs` (`CrouchSpring`, tested) but unfed; as a
+  landing kick it does not fit. Idle, steady walk and stop match the game within 0.4 deg lean / 0.4 height.
+  No extra in-air body layer in the EBOOT. Vertex dumps log `sackboy pose N`; the stand phase at a script
+  tick varies between viewer runs (+-1 height).
 
 ## Before: D247 landing timing and dip; stop pose measured (2026-10-12)
 - Stop pose measured tick-aligned: fit mean 1.56 against the steady-walk floor 1.51, matches the game, no
@@ -52,8 +53,7 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 
 ## Open blockers
 - Stop pose: done (matches the game, D247). Turn pose needs a game capture with a direction reversal.
-- Post-landing leg squash: game mesh height about 195 at touchdown +3..+6, ours 203..200. Not the crouch
-  spring (D248); a leg solver holding the feet on the floor while the body dip decays is the candidate.
+- Landing: only a standing jump is captured (ledge fall, running jump: same tables, unchecked).
   Jump air lean: ours +4 deg forward of the game; candidates are the head-look tilt from the physical
   body's rotation (0x200c6c) and the 0x20a5f4 peak follower.
 - Walk start: our cycle is 2 frames ahead of the game on one capture. Head-top bones 22/23/24/27/28.
@@ -64,8 +64,7 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
   color; Vita (0x4431) payloads refused.
 
 ## Next
-1. Leg solver for the post-landing squash; turn pose (game capture with a direction reversal); air
-   lean; arms; emote clip frames vs game.
+1. Turn pose (game capture with a direction reversal); air lean; arms; emote clip frames vs game.
 2. Popit: compare more frames, cursor mode, inventory grid pages (submode 11).
 3. Camera lead, slopes (paused by the owner).
 

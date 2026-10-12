@@ -1,5 +1,14 @@
 # Development log
 
+## 2026-10-12 - D249 short legs after a landing: two-bone leg solver, landing tables to twelve ticks
+
+`BlendPose::move_chain_end` (lbp-preview) moves a thigh-calf-foot chain's end joint, keeping the bone lengths,
+the knee's bend plane and the foot's rotation. The Sackboy play figure raises both ankles by `LANDING_SQUASH`
+(0, 0, 7.6, 6.0, 4.4, 3.0, 1.6, 0.5) and `LANDING_DIP` continues past its two under-floor ticks with the
+body's settle (-6.6, -3.3, -0.5, 2.7, 0.1, -2.8, -2.4, -1.4, -0.8, -0.3). MEASURED against d234 `jump.bin`:
+touchdown +3..+8 height, pelvis height and lowest vertex within 0.4 of the game (height was 8 off). Both
+tables are one capture's series; the game's foot pass (0x210dd8) inputs are untraced. `docs/d241-landing-dip.md`.
+
 ## 2026-10-12 - D248 lean/height measured (no change); crouch spring found, not the landing squash
 
 MEASURED tick-aligned against the D234 captures: idle, steady walk and stop match the game within 0.4 deg of

@@ -122,6 +122,42 @@ Answer: no (MEASURED). Nothing drawn changed; `LANDING_DIP` stays -25.9, -15.9, 
   the figure has loaded (around script tick 86, varying), so the stand clip's phase at a given script tick
   differs between runs by a few frames: up to +-1 in height once the landing tail has faded.
 
+## D249 (2026-10-12): short legs after a landing (leg solver) and the body's settle
+
+MEASURED, same capture and method as D248 (release viewer, script `-:400,j:6,-:120`, k = ticks from touchdown).
+
+- Blender: `BlendPose::move_chain_end` (`lbp-preview`), a two-bone solver. The thigh joint stays, both bone
+  lengths are kept, the knee stays in the plane it bends in, the foot keeps its model-space rotation; only the
+  three rotations change. The Sackboy play figure raises both ankles toward the pelvis by `LANDING_SQUASH`
+  after all layers.
+- `LANDING_SQUASH` (index = ticks after the first grounded controller step, k +1): 0, 0, 7.6, 6.0, 4.4, 3.0,
+  1.6, 0.5, then 0: the D248 pelvis-above-lowest differences.
+- `LANDING_DIP` is now twelve entries: -25.9, -15.9 as before, then -6.6, -3.3, -0.5, 2.7, 0.1, -2.8, -2.4,
+  -1.4, -0.8, -0.3 = the game's lowest vertex less ours, less the squash. The D248 reading "feet held on the
+  floor" was half right: the legs are short by the D248 series, but the game's lowest vertex is 1.4, 2.6, 4.6
+  above the floor at k +4..+6 and 3.2 below at k +8, so the body settles in a damped bounce of its own. Both
+  tables are this one capture's series, not the game's rule (foot pass 0x210dd8 inputs untraced).
+- Result, game against ours:
+
+  | k | height game | ours | pelvis game | ours | lowest game | ours |
+  |---|---|---|---|---|---|---|
+  | +2 | 202.9 | 202.5 | 47.3 | 46.9 | -16.2 | -16.1 |
+  | +3 | 194.9 | 194.8 | 39.3 | 39.2 | 0.0 | 0.0 |
+  | +4 | 194.9 | 194.7 | 39.4 | 39.3 | 1.4 | 1.5 |
+  | +5 | 195.3 | 195.0 | 39.8 | 39.5 | 2.6 | 2.7 |
+  | +6 | 196.5 | 196.3 | 40.9 | 40.5 | 4.6 | 4.6 |
+  | +7 | 199.1 | 199.0 | 43.0 | 42.9 | 0.7 | 0.7 |
+  | +8 | 201.3 | 201.7 | 45.3 | 45.3 | -3.2 | -3.2 |
+  | +10 | 203.2 | 204.4 | 47.1 | 47.8 | -2.0 | -2.0 |
+  | +12 | 204.3 | 205.6 | 47.9 | 48.6 | -0.8 | -0.8 |
+  | +14 | 205.3 | 206.1 | 48.7 | 49.0 | -0.4 | -0.3 |
+
+  Head-to-pelvis length within 0.4 on k +0..+14. Height from k +9 is 0.8..1.3 above the game in this run: the
+  stand clip's breathing phase differs between viewer runs (D248), not the legs (squash 0 from k +9). Flight
+  (27 ticks) height max 2.3, lowest max 1.1; idle 200.8..206.1: unchanged.
+- One standing 6-tick jump. A ledge fall, a running jump or a landing followed at once by walking plays the
+  same two tables; no capture says whether the game does.
+
 ## Open
 - The physics body position dips 35 (d230); the drawn figure no longer follows it. Whether the game draws
   the root at the body position and cancels the clip's root offset is not resolved.
