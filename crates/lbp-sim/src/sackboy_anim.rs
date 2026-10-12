@@ -619,6 +619,15 @@ pub const JUMP_FALL_FRAMES: f32 = 6.;
 pub const LAND_FADE_FROM: f32 = 15.;
 pub const LAND_FADE_POW: f32 = 1.;
 /// Ticks between blinks: `30 + rand(70)` (FOUND, 0x2040a0).
+/// Crouch spring (FOUND, 0x2011d4 and its input 0x6c56c): contact depth that gives input 1
+/// (0xd937f8), the exponent of bias(x, 0.2) = x^(ln 0.2 / ln 0.5), the cut below which the
+/// kick and the pose are dropped, and the two carry factors (0xd99764, 0xd99760).
+pub const CROUCH_DEPTH_FULL: f32 = 350.;
+pub const CROUCH_BIAS_POW: f32 = 2.321_928;
+pub const CROUCH_MIN: f32 = 0.01;
+pub const CROUCH_KEEP: f32 = 0.75;
+pub const CROUCH_BACK: f32 = -0.25;
+
 pub const BLINK_GAP: u32 = 30;
 pub const BLINK_GAP_RAND: u32 = 70;
 /// The LCG state the anim object's constructor stores (FOUND 0x2a at 0x1ff64c; shared by
@@ -712,6 +721,40 @@ struct Air {
     frame: f32,
 }
 
+/// The `stretch_crouch` spring (FOUND, 0x2011d4): three values between ticks (creature
+/// +0x850, +0x854, +0x858), each clamped to [-1, 1].
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct CrouchSpring {
+    s850: f32,
+    s854: f32,
+    s858: f32,
+}
+
+impl CrouchSpring {
+    /// One tick with the contact input `e` in [0, 1] (the game's 0x6c56c value: the deepest
+    /// contact's depth over [`CROUCH_DEPTH_FULL`]). Returns the pose value v in [-1, 1]:
+    /// positive squashes, negative stretches; exactly 0 while at rest with no input.
+    ///
+    /// FOUND: x = clamp(sqrt(e), 0.01, 0.99), h = bias(x, 0.2) = x^2.3219, dropped below
+    /// 0.01; a = s858 + h, b = s854 + a, v = s850 + b (each clamped), s854 = b; after the
+    /// pose s850 = 0.75 v and s858 = -0.25 v. A one-tick kick h gives v / h = 1, 1.5, 1.5,
+    /// 1.125, 0.5625, 0, then a rebound to -0.63: a damped swing of period 12 ticks.
+    pub fn step(&mut self, e: f32) -> f32 {
+        let x = e.max(0.).sqrt().clamp(CROUCH_MIN, 0.99);
+        let mut h = x.powf(CROUCH_BIAS_POW);
+        if h < CROUCH_MIN {
+            h = 0.;
+        }
+        let a = (self.s858 + h).clamp(-1., 1.);
+        let b = (self.s854 + a).clamp(-1., 1.);
+        let v = (self.s850 + b).clamp(-1., 1.);
+        self.s854 = b;
+        self.s850 = CROUCH_KEEP * v;
+        self.s858 = CROUCH_BACK * v;
+        v
+    }
+}
+
 /// Per-Sackboy animation state between ticks.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SackboyAnim {
@@ -728,6 +771,10 @@ pub struct SackboyAnim {
     jump_holding: bool,
     air: Option<Air>,
     land: Option<f32>,
+    crouch: CrouchSpring,
+    /// The deepest contact's depth for the next tick's crouch spring (the caller's to set;
+    /// 0 unless set, and cleared by each tick).
+    contact_depth: f32,
     lane: Option<Shot>,
     lane_armed: bool,
     shot: Option<Shot>,
@@ -774,6 +821,8 @@ impl SackboyAnim {
             jump_holding: false,
             air: None,
             land: None,
+            crouch: CrouchSpring::default(),
+            contact_depth: 0.,
             lane: None,
             lane_armed: true,
             shot: None,
@@ -791,6 +840,12 @@ impl SackboyAnim {
             mood_held: None,
             attention: 0.,
         }
+    }
+
+    /// Sets the deepest contact's depth (level units) that the next tick's crouch spring
+    /// reads (FOUND input, 0x6c56c). Nothing in the sim reports a depth yet.
+    pub fn set_contact_depth(&mut self, depth: f32) {
+        self.contact_depth = depth.max(0.);
     }
 
     /// The eased facing angle (radians, see [`AnimFrame::yaw`]).
@@ -1179,9 +1234,29 @@ impl SackboyAnim {
             }
         }
 
-        // stretch_crouch is an additive spring (FOUND, 0x2011d4) whose input 0x6c56c is shape
-        // overlap depth, max(min(depth / 350, 1)), on the ground path only (FOUND). We model
-        // no body overlap, so it stays at rest and is not layered.
+        // stretch_crouch: an additive spring (FOUND, 0x2011d4, run by the dispatcher after
+        // jump, lane and grab) driven by the deepest contact's depth over 350 (0x6c56c; 0 in
+        // the wall-cling state, which is not modelled). Applied as frame (0.5 v + 0.5) n
+        // minus frame 0.5 n at weight 1 while |v| > 0.01 (FOUND); n as for the look clips
+        // (INFERRED). Our contacts have no depth, so nothing feeds it and it stays at rest.
+        // It is NOT the leg squash after a landing (D248, MEASURED on d234 `jump.bin`): fed
+        // a landing depth on any of the first four ticks, the best fit still misses the
+        // game's height and pelvis height by up to 3.9, shortens the spine by 3 to 4 where
+        // the game's does not change, and predicts a rebound the capture does not show.
+        let v = self
+            .crouch
+            .step((self.contact_depth / CROUCH_DEPTH_FULL).min(1.));
+        self.contact_depth = 0.;
+        if v.abs() > CROUCH_MIN {
+            let (frame, reference) = look_frames(ClipId::StretchCrouch, v);
+            layers.push(Layer {
+                clip: ClipId::StretchCrouch,
+                frame,
+                weight: 1.,
+                mirror: false,
+                blend: Blend::Additive { reference },
+            });
+        }
 
         // Blink: additive frame i minus frame 0, weight 1, first on tick 0, then every
         // 30 + rand(70) ticks (FOUND). Its slot in the stack is INFERRED (last): 0x2040a0
@@ -2050,6 +2125,74 @@ mod tests {
         assert!(tail.last().unwrap().0 <= 30.);
         // Standing still: no jump_walk.
         assert!(frames.iter().all(|f| layer(f, ClipId::JumpWalk).is_none()));
+    }
+
+    #[test]
+    fn crouch_spring_follows_the_found_recurrence() {
+        // A one-tick kick h (0x2011d4): v / h = 1, 1.5, 1.5, 1.125, 0.5625, 0, then the
+        // rebound, a damped swing of period 12 ticks.
+        let e = 0.25f32;
+        let h = e.sqrt().powf(CROUCH_BIAS_POW);
+        assert!(close(h, 0.2));
+        let mut s = CrouchSpring::default();
+        let v: Vec<f32> = (0..13)
+            .map(|t| s.step(if t == 0 { e } else { 0. }) / h)
+            .collect();
+        let want = [
+            1.,
+            1.5,
+            1.5,
+            1.125,
+            0.5625,
+            0.,
+            -0.421_875,
+            -0.632_812_5,
+            -0.632_812_5,
+            -0.474_609_4,
+            -0.237_304_7,
+            0.,
+            0.177_978_5,
+        ];
+        for (t, (v, w)) in v.iter().zip(want).enumerate() {
+            assert!((v - w).abs() < 1e-4, "{t}: {v} {w}");
+        }
+        // A held input settles at v = 4h; every value stays inside [-1, 1].
+        let mut s = CrouchSpring::default();
+        let held = (0..200).map(|_| s.step(e)).last().unwrap();
+        assert!(close(held, 0.8), "{held}");
+        let mut s = CrouchSpring::default();
+        assert!((0..50).all(|_| s.step(1.).abs() <= 1.));
+    }
+
+    #[test]
+    fn crouch_spring_gives_nothing_without_input() {
+        // No depth, or one under the cut (h < 0.01 below depth 6.6): exactly 0, no layer.
+        let mut s = CrouchSpring::default();
+        assert!((0..20).all(|_| s.step(0.) == 0.));
+        assert!((0..20).all(|_| s.step(6. / CROUCH_DEPTH_FULL) == 0.));
+        assert!(s.step(7. / CROUCH_DEPTH_FULL) > 0.01);
+        let crouch = |f: &AnimFrame| layer(f, ClipId::StretchCrouch);
+        // Standing, walking, stopping and a full jump with its landing.
+        let frames = run(
+            |t| Input {
+                x: if (80..140).contains(&t) { 1. } else { 0. },
+                jump: (5..=14).contains(&t),
+                ..Default::default()
+            },
+            200,
+        );
+        assert!(frames.iter().all(|f| crouch(f).is_none()));
+        // With a contact depth the layer is additive about the middle frame of the nine.
+        let mut a = SackboyAnim::new();
+        let s = moving(0.);
+        a.set_contact_depth(350. * 0.25);
+        let f = a.tick(&s, true);
+        let l = crouch(&f).unwrap();
+        assert!(close(l.frame, (0.5 * 0.2 + 0.5) * 8.) && l.weight == 1.);
+        assert_eq!(l.blend, Blend::Additive { reference: 4. });
+        // The depth is read once: the next tick is the spring's own second value.
+        let l = crouch(&a.tick(&s, true)).unwrap();
+        assert!(close(l.frame, (0.5 * 0.3 + 0.5) * 8.));
     }
 
     #[test]

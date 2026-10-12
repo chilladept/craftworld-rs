@@ -46,8 +46,8 @@ INFERRED = our choice; OPEN = not traced, not used or stubbed.
 Order of the stack (FOUND pass 2, dispatcher 0x20e28c via 0x20f140 -> 0x20eee0 ->
 0x20f078/0x20f084 -> 0x20eef4/0x20ef00): base (stand/idle) -> walk slow/medium/fast ->
 stop -> turn -> jump and landing tail -> lane -> blink (blink slot INFERRED: 0x2040a0 is
-reached through a pointer). The game then runs the grab/override blend, the crouch spring,
-arms and head look, none of which are layered here. Additive rotation is applied as `bone * (ref^-1 * frame)^w`,
+reached through a pointer). The game then runs the grab/override blend, the crouch spring
+(layered since D248 but at rest: see below), arms and head look. Additive rotation is applied as `bone * (ref^-1 * frame)^w`,
 scale as a ratio (INFERRED; 0x1eafc0 not traced). Clips a layer does not drive keep the
 pose built so far; bones no clip drives stay at bind.
 
@@ -62,11 +62,15 @@ roll rate over 100,000 LCG steps (11/250 +- 0.005).
 
 Traced but not implemented (FOUND in the pass, out of scope here):
 
-- Crouch spring input 0x6c56c: E = max over contacts of min(overlap depth / 350, 1), on the
-  ground path only (0 when phys+0x41 picks the air path); `this+0x960 = sqrt(E)` feeds the
-  spring at 0x2011d4 (s850 = 0.75v, s858 = -0.25v, bias(x, 0.2)). It is a squash from
-  overlapping bodies, not a landing squash; there is no other landing squash. We model no
-  body overlap, so stretch_crouch stays unused.
+- Crouch spring input 0x6c56c: E = max over contacts of min(overlap depth / 350, 1), 0 when
+  phys+0x41 is set (D248: that flag is the wall-cling state, not "airborne");
+  `this+0x960 = sqrt(E)` feeds the spring at 0x2011d4: x = clamp(sqrt(E), 0.01, 0.99),
+  h = bias(x, 0.2) = x^2.3219 (0 below 0.01), a = s858 + h, b = s854 + a, v = s850 + b (each
+  clamped to [-1, 1]), s854 = b, pose += stretch_crouch frame (0.5v + 0.5)n minus frame 0.5n
+  when |v| > 0.01, then s850 = 0.75v, s858 = -0.25v. D248: the recurrence is in
+  `sackboy_anim.rs` (`CrouchSpring`, tested, input `set_contact_depth`), but nothing feeds
+  it: we model no contact depth, and it was MEASURED not to be the post-landing leg squash
+  (no landing kick fits the game within 3.9 units; `docs/d241-landing-dip.md`, D248).
 - Emotes and mood stands: mood slots happy/sad/angry/scared (0x894 level, 0x8a4 weight
   easing 0.1 per tick), the anticipation -> emote -> to_neutral sequence (0x203cdc..0x204094),
   `stand_<mood>` picks at 0x2022b8 and per-mood lerps at 0x201fb8.

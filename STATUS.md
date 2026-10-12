@@ -4090,3 +4090,46 @@ play run in the D233 doc; after that camera lead (live memory diff) and the look
   on one standing 6-tick jump; python unittest not run (no Python change).
 **+0 newly viewable / +0 newly Complete (runtime feature).**
 Next: turn pose (game capture with a direction reversal); post-landing squash; jump air lean (+4 deg).
+## 2026-10-12 - D248 lean and height measured; crouch spring is not the landing squash (no visible change)
+
+- D248 measurements that need no change (tick-aligned, D234 captures, `local-analysis/d248-lean-stretch/`):
+  idle, steady walk and stop match the game within 0.4 deg of lean and 0.4 units of height.
+- Ghidra (read-only, notes `local-analysis/d249-crouch-spring/notes.txt`), extra in-air body layer: none
+  found. phys+0x41 is the wall-cling state (set by a wall probe, cleared by the wall jump), creature
+  +0x874/+0x878/+0x880 its head look, clip-mix weight 0x80c is grab only. Open candidates for the +4 deg
+  air lean: the head-look tilt 1.3 x (2 x body angle - target angle) / (pi/4) from the physical body's
+  rotation (0x200c6c); the 0x20a5f4 peak follower (runs only while fewer than 2 legs touch) and its
+  landing branch (moved 15 or less this tick and 2 legs in contact); the foot pass 0x210dd8.
+- Crouch spring FOUND (0x2011d4, input 0x6c56c = deepest contact depth / 350): implemented as
+  `CrouchSpring` + `SackboyAnim::set_contact_depth` in `lbp-sim/src/sackboy_anim.rs`, layered additively
+  after the lane layer. Nothing feeds it (no contact depth in our sim), so no pose changed.
+- Failed experiment (do not repeat without new evidence): feeding the spring a landing depth k x fall speed.
+  Start tick k +0..+3, one or two ticks, k fitted to the game's height and pelvis height (d234 `jump.bin`,
+  k 0..+14): best rms 1.60 (start +2, two ticks, depth 31.0, k 0.97; max 4.6) and best max 3.9 (start +2,
+  one tick, depth 56.4, k 1.77; rms 1.69), against 2.95 / 7.6 with no spring. The game's squash is full on
+  its first tick (k +3) and decays; the spring rises for two ticks. Every fit shortens head-to-pelvis by
+  3 to 4 where the game's is within 0.4 of ours. Predicted rebound (taller at 6 to 10 ticks after the
+  kick): not resolvable at the +-1 level (game 0.9..1.1 lower against one run, 0.2..1.0 higher against
+  another, see the QA point); a rebound in proportion to a 7-unit squash is absent.
+- Squash, INFERRED: the game's pelvis keeps rising for ten ticks (height above the floor line k +1..+8:
+  18.8, 31.1, 39.3, 40.8, 42.5, 45.5, 43.7, 42.1; rest 48) while the lowest vertex is on the floor from
+  k +3: feet held down under a body still below rest (foot pass 0x210dd8, active only when the body moved
+  15 or less in the tick). Needs a leg solver in the blender plus the dip continued; not done.
+- `LANDING_DIP` re-checked: unchanged (-25.9, -15.9, 0); lowest point k +1/+2 game -29.0/-16.2, ours
+  -29.0/-16.2. Height k +3..+6 still game 194.9, 194.9, 195.3, 196.5, ours 202.9, 201.3, 200.0, 199.7.
+  Flight ticks: height max 2.3, lowest max 1.1 (unchanged). Idle 200.8..206.1 (unchanged).
+- QA: `LBP_DUMP_VERTS` now prints `sackboy pose N` per dumped pose (pose = the `sackboy tick` line above
+  it); pose counting drifted when two ticks shared a rendered frame. The picker starts when the figure has
+  loaded, so the stand phase at a script tick varies between runs (+-1 height after a landing).
+- Commands: `local-analysis/d250-crouch/run.ps1 -name fin -secs 38` (release viewer, `--no-activate`,
+  script `-:400,j:6,-:120`), `python local-analysis/d250-crouch/final.py fin`, fits `fit.py`.
+- cargo fmt --all --check: clean. cargo test -q --locked (CI crate list): pass, 487 tests (2 new:
+  `crouch_spring_follows_the_found_recurrence`, `crouch_spring_gives_nothing_without_input`). cargo clippy
+  -q --locked (CI crate list) --all-targets -- -D warnings: pass. cargo check -q --locked -p lbp-viewer
+  -p lbp-bevy-viewer --all-targets: pass.
+- Not tested: walk and stop re-run in the viewer (no layer can appear: the spring's output is exactly 0
+  without input, unit-tested); python unittest (no tracked Python change); n for the stretch_crouch
+  frames (taken as the last frame index, as for the look clips).
+**+0 newly viewable / +0 newly Complete (runtime feature).**
+Next: leg solver for the post-landing squash (feet on the floor, body dip continued); turn pose capture;
+jump air lean.

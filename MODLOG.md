@@ -1,5 +1,17 @@
 # Development log
 
+## 2026-10-12 - D248 lean/height measured (no change); crouch spring found, not the landing squash
+
+MEASURED tick-aligned against the D234 captures: idle, steady walk and stop match the game within 0.4 deg of
+lean and 0.4 units of height; nothing changed. Read-only Ghidra pass for an extra in-air body layer: none
+(phys+0x41 and creature +0x874..+0x880 are the wall-cling state and its head look, clip-mix weight 0x80c is
+grab only); open candidates for the +4 deg air lean are the head-look tilt from the physical body's rotation
+(0x200c6c) and the peak follower / landing-branch conditions of 0x20a5f4. The `stretch_crouch` spring
+(0x2011d4) is now in `sackboy_anim.rs` as `CrouchSpring` with tests but unfed: fitted as a landing kick it
+misses the game by 3.9+ units, shortens the spine where the game does not, and peaks two ticks late. The
+squash looks like feet held on the floor (foot pass 0x210dd8) under a body still rising for ten ticks.
+`LANDING_DIP` unchanged. Vertex dumps now log a pose line per tick shown. `docs/d241-landing-dip.md` (D248).
+
 ## 2026-10-12 - D247 landing starts on the touchdown tick, two-tick dip; stop pose measured
 
 Stop pose MEASURED tick-aligned against the D234 walk capture: fit mean 1.56 against 1.51 for the steady walk
