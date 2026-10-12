@@ -75,7 +75,7 @@ Bundled Python lacked jsonschema. Installed validator `jsonschema==4.23.0` only
 under ignored local-analysis/schema-tools; product dependencies are unchanged:
 
 ```powershell
-$pythonRuntime = 'C:/Users/chill/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe'
+$pythonRuntime = 'C:/Users/<you>/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe'
 & $pythonRuntime -m pip install --target local-analysis/schema-tools 'jsonschema==4.23.0'
 ```
 

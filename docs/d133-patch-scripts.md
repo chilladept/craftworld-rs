@@ -15,13 +15,13 @@ Approved research method (AGENTS.md: RPCS3 measurement and local decryption, 202
 All derived files are under ignored `local-analysis/`; nothing derived is committed, and
 no key is written into the repository.
 
-1. RPCS3 v0.0.43-20247-222754bf (user-installed, `C:\Users\chill\Emulators\rpcs3`),
+1. RPCS3 v0.0.43-20247-222754bf (user-installed, `%USERPROFILE%\Emulators\rpcs3`),
    firmware 4.93 installed with `--installfw` (dev_flash `version.txt` release 04.9300).
 2. The 32 official update packages (A0101..A0133) installed with `--installpkg` into
    RPCS3's own `dev_hdd0/game/BCUS98245` (PARAM.SFO APP_VER 01.33).
 3. The extracted disc folder does not boot ("Failed to mount disc directory", also with
    `/dev_bdvd` mapped in vfs.yml). The user's ISO, extracted as a copy from their ZIP to
-   `C:\Users\chill\Emulators\lbp2-iso\` and marked read-only, boots (`--game-screen 1`,
+   `%USERPROFILE%\Emulators\lbp2-iso\` and marked read-only, boots (`--game-screen 1`,
    second monitor). The ZIP is untouched.
 4. While the game runs, its NPDRM check for `patches/patch.edat` makes RPCS3 hold the
    game key. RPCS3's own *Utilities -> Decrypt PS3 Binaries* then decrypts a copy:

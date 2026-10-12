@@ -1,6 +1,6 @@
 # Handoff: Moon movement and Sackboy animation (2026-10-11, PC session)
 
-Read CLAUDE.md, then this file. Thread: "Moon movement 1:1" in the Claude Project (owner: chill).
+Read CLAUDE.md, then this file. Thread: "Moon movement 1:1" in the Claude Project.
 
 ## Done (all merged to main)
 - #124 gravity/air drag/landing dip, #125 vertical drag + gravity 2.698 (no terminal clamp, 173.7/tick

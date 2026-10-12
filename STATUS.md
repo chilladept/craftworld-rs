@@ -3636,7 +3636,7 @@ The two U5 checks skipped at merge, run afterwards (outputs local-analysis/d127v
 ## D133 — patch.edat decrypted; U10/G10/check() on real scripts (2026-10-08)
 
 Detail: [docs/d133-patch-scripts.md](docs/d133-patch-scripts.md).
-- RPCS3 boots the user's ISO copy (C:\Users\chill\Emulators\lbp2-iso, read-only) with
+- RPCS3 boots the user's ISO copy (%USERPROFILE%\Emulators\lbp2-iso, read-only) with
   update 01.33; the extracted disc folder does not boot. RPCS3's Decrypt tool, run while
   the game holds the key, decrypted a copy of patch.edat: a FARC, 522 entries, 426 FSHb.
 - U10 census d133 (unit distinct content hash, scope decrypted patch.edat): 426/426

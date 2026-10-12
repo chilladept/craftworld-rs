@@ -94,7 +94,7 @@ copy the relevant ones into each subagent brief.
   `Start-Process -WindowStyle Hidden` (stdout/stderr redirected) or open them on the
   2nd monitor without activation; verify placement first. RPCS3 work is memory reads
   only unless input can be posted without focus. A brief focus grant covers that job only.
-- **One emulator, never write.** RPCS3 lives at `C:\Users\chill\Emulators\rpcs3`. One
+- **One emulator, never write.** RPCS3 lives at `%USERPROFILE%\Emulators\rpcs3`. One
   instance at a time, the owner's own, in the blank Moon level with the default camera:
   Moon is the visual reference for gameplay and Sackboy measurements, never story-level
   captures (their cameras are wrong). Never save the level or the profile, never inject

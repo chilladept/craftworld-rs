@@ -67,8 +67,8 @@ no omitted eligible cohort, but budget means not every maximum is represented.
 Older/branch variants remain counted in census and outside proposed oracle scope.
 
 ```powershell
-& 'C:/Users/chill/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe' -m unittest discover -s tests -p test_level_plan_report.py
-& 'C:/Users/chill/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe' scripts/level_plan_report.py local-analysis/a2-inventory-verified.json local-analysis/new-level-plan-census.json local-analysis/new-plan-samples.json
+& 'C:/Users/<you>/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe' -m unittest discover -s tests -p test_level_plan_report.py
+& 'C:/Users/<you>/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe' scripts/level_plan_report.py local-analysis/a2-inventory-verified.json local-analysis/new-level-plan-census.json local-analysis/new-plan-samples.json
 ```
 
 Four authored synthetic tests pass: alias/type/dependency separation, input-order

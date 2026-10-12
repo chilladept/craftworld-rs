@@ -95,8 +95,8 @@ cargo fmt --all --check
 cargo test --workspace --all-targets
 cargo clippy --workspace --all-targets -- -D warnings
 cargo build -p lbp-viewer
-& 'C:/Users/chill/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe' scripts/material_coverage_samples.py local-analysis/d13-material-census.json local-analysis/d10-material-tail-oracle-final.json local-analysis/d13-material-followup-samples-final.json
-& 'C:/Users/chill/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe' -m unittest discover -s tests -v
+& 'C:/Users/<you>/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe' scripts/material_coverage_samples.py local-analysis/d13-material-census.json local-analysis/d10-material-tail-oracle-final.json local-analysis/d13-material-followup-samples-final.json
+& 'C:/Users/<you>/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe' -m unittest discover -s tests -v
 ```
 
 Original and repeated9,209,187bytecensus reports byte-identical SHA256:
@@ -228,7 +228,7 @@ material-tail.md remain unchanged. Sound binding, animation timing/interpolation
 port semantics and shader evaluation remain UNKNOWN.
 
 ```powershell
-$pythonRuntime = 'C:/Users/chill/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe'
+$pythonRuntime = 'C:/Users/<you>/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe'
 & $pythonRuntime scripts/material_shape_samples.py local-analysis/d13-material-census.json local-analysis/d15-material-shape-samples.json local-analysis/d10-material-tail-oracle-final.json local-analysis/d14-material-tail-oracle.json
 ./scripts/run-material-oracle.ps1 -Tail -SampleManifest local-analysis/d15-material-shape-samples.json -Output local-analysis/d15-material-tail-oracle.json
 . ./scripts/use-local-rust.ps1

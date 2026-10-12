@@ -56,10 +56,10 @@ remains recorded; this tail contains no signed zigzag fields.
 
 ```powershell
 ./scripts/run-material-oracle.ps1 -Tail -Output local-analysis/d10-material-tail-oracle-final.json
-& 'C:/Users/chill/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe' scripts/material_tail_report.py local-analysis/d10-material-tail-oracle-final.json local-analysis/d7-material-graph-oracle-guarded.json local-analysis/d4-material-prefix-oracle-final.json local-analysis/d10-material-tail-consistency.json
+& 'C:/Users/<you>/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe' scripts/material_tail_report.py local-analysis/d10-material-tail-oracle-final.json local-analysis/d7-material-graph-oracle-guarded.json local-analysis/d4-material-prefix-oracle-final.json local-analysis/d10-material-tail-consistency.json
 ./scripts/run-material-oracle.ps1 -Tail -Output local-analysis/d10-material-tail-oracle-repeat.json
 Get-FileHash -Algorithm SHA256 -LiteralPath local-analysis/d10-material-tail-oracle-final.json,local-analysis/d10-material-tail-oracle-repeat.json
-& 'C:/Users/chill/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe' -m unittest discover -s tests -v
+& 'C:/Users/<you>/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe' -m unittest discover -s tests -v
 ```
 
 Java21 compilation and prefix/graph/tail authored self-tests pass. Fixed and packed

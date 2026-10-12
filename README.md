@@ -11,6 +11,16 @@ must not be copied, adapted or translated into product code. Runtime assets come
 from user-owned ISO/game data; direct ISO support remains a later input feature.
 Current rules: [AGENTS.md](AGENTS.md).
 
+## What is not in this repository
+
+No game assets are included: no textures, meshes, audio, levels, archives,
+executables, keys, saves or emulator captures, and none have ever been committed.
+`.gitignore` is default-deny, so only authored source, docs and synthetic test
+recipes can be tracked. To use the tools you supply your own disc dump of
+LittleBigPlanet 2. Asset names, GUIDs and hashes in the docs are identifiers
+only. No license has been chosen yet, so all rights to the authored code are
+reserved for now. LittleBigPlanet is a trademark of Sony Interactive Entertainment.
+
 Current milestone: **D40 first material-linked textured mesh preview complete**;
 B2 metadata explorer supports validated source attachment and hex inspection.
 Rust readers inventory SFO, MAP/FARC, resource magic, binary headers and dependencies

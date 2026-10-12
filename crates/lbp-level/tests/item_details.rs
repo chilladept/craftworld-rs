@@ -65,7 +65,7 @@ fn modern_plan(flags: u8) -> Vec<u8> {
     w.res_none(); // outline (> 0x39f)
     w.i16(5).i16(6).i16(-1); // location/category/primary
     w.u32(4); // creator tag 4
-    player(&mut w, "chill");
+    player(&mut w, "tester");
     w.u8(16).u8(0x80); // toolType, flags
     w.u32(0xaaaa).u32(0xbbbb); // plan location/category keys
     w.b
@@ -113,7 +113,7 @@ fn u5_modern_details_values_and_plan_keys() {
             (d.location_index, d.category_index, d.primary_index),
             (5, 6, -1)
         );
-        assert_eq!(d.creator, Ref::Value("chill".to_owned()));
+        assert_eq!(d.creator, Ref::Value("tester".to_owned()));
         assert_eq!((d.tool_type, d.flags), (16, 0x80));
         assert_eq!(
             type_names(d.type_bits, 0x3f8),
