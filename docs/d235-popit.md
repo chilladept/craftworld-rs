@@ -125,3 +125,17 @@ pad's West button toggles it, arrows move the focus while it is open. Code:
   costume tools (guids 42924-42926, 46763) are not in the disc data, drawn from the Body button figure plus marks
   (INFERRED art). Viewer: Body/Stickers/My Pods tiles, Heart Items (play), tiles shared by both modes (create-mode
   Body/Stickers tiles INFERRED the same).
+
+## MEASURED pass 8: Pod card placement, UV Tool / Slice 'N Dice textures (2026-10-12)
+- Pod card placement: RPCS3 Pod frame (Popit open, Sackboy left of the controller) against the Moon play frame. The
+  card sits directly above Sackboy's head in both (card centre within 2% of the frame width of his centre, same
+  size, same tail); in the Pod he is simply left of the screen centre, so the card looks "left". The viewer already
+  anchors the card to Sackboy's projected head (`world_to_viewport`), so no Pod-specific rule is needed; only the
+  Pod camera (not in the viewer) differs. No page turn in the Pod, the card opens on the same pages.
+- UV Tool / Slice 'N Dice textures: the tool icon guids run 42928 (Take A Photo), 42929 (Capture Object), then
+  **42930 and 42931 are absent** from the 01.33 catalog (no row in `d68-inventory-0133-verified.json`), 42932-42936
+  present (Electric ... Unlethalize). These two guids are most likely the missing icons; they are not in the disc or
+  update data, so the drawn art stays (INFERRED guid).
+- Background control (owner, 2026-10-12): `scripts/rpcs3_bgpad.py KEY MS` posts WM_KEYDOWN/UP to the RPCS3 window and
+  `scripts/rpcs3_bgcap.py OUT.png` captures it with PrintWindow; neither takes focus (F12 via PostMessage does not
+  work, use bgcap). Verified: walk left/right moved Sackboy with another app in front.
