@@ -293,6 +293,10 @@ fn class_defaults_inherited_natives_and_parts() {
         .is_err());
     assert_eq!(world.num_players(), Ok(1));
     assert_eq!(world.play_or_edit_mode(), Ok(0));
+    // A sound request is counted by name; nothing plays.
+    world.play_sound(Some(1), "gameplay/ping").unwrap();
+    world.play_sound(None, "gameplay/ping").unwrap();
+    assert_eq!(world.sounds_played["gameplay/ping"], 2);
     // A native inherited through Lamp's reference reaches the host as Base.Mode__.
     let mut host = Bindings::new(world);
     let inst = instances(&vm, &host.world)[0];
@@ -1607,10 +1611,11 @@ fn stage4_a_script_takes_the_position_out_of_the_world_matrix() {
 /// Thing 1: a microchip (PSwitch type 36) at (50, 0, 0) whose board is Thing 2; Thing 3 a
 /// component on the board at (7, 0, 0). Thing 4: a sequencer whose board is Thing 5, with
 /// the component Thing 6. Thing 7: a switch whose output (off) is wired to port 0 of the
-/// chip. Thing 8: loose, under the world.
+/// chip. Thing 8: loose, under the world. Thing 9: a chip without a PPos on the first
+/// chip's board, with its own board Thing 10 and the component Thing 11 on it.
 fn chip_level() -> Vec<ThingRecord> {
     use lbp_level::parts::Microchip;
-    let mut t: Vec<ThingRecord> = (0..9)
+    let mut t: Vec<ThingRecord> = (0..12)
         .map(|index| ThingRecord {
             index,
             ..Default::default()
@@ -1632,9 +1637,21 @@ fn chip_level() -> Vec<ThingRecord> {
         (6, 5),
         (7, 0),
         (8, 0),
+        (9, 2),
+        (10, 9),
+        (11, 10),
     ] {
         t[thing].parent = Some(parent);
     }
+    t[9].parts = vec!["SWITCH", "MICROCHIP"];
+    t[9].data.switch = logic(36);
+    t[9].data.microchip = Some(Microchip {
+        circuit_board: Some(10),
+    });
+    t[10].parts = vec!["SWITCH"];
+    t[10].data.switch = logic(37);
+    t[11].parts = vec!["POS"];
+    t[11].data.pos = pos(translation(9., 9., 9.));
     t[1].parts = vec!["POS", "SWITCH", "MICROCHIP"];
     t[1].data.pos = pos(translation(50., 0., 0.));
     t[1].data.switch = logic(36);
@@ -1708,6 +1725,10 @@ fn stage4_inactive_microchip_proxy_sensor_position_and_sequencer() {
     assert_eq!(proxy(&mut w, Value::Thing(None)), Ok(Value::Thing(None)));
     assert_eq!(w.microchip_of(3), Some(1));
     assert_eq!(w.microchip_of(8), None);
+    // A chip inside a chip: the outermost one, which is the one with a PPos.
+    assert_eq!(proxy(&mut w, me(11)), Ok(me(1)));
+    assert_eq!(proxy(&mut w, me(9)), Ok(me(1)));
+    assert_eq!(inactive(&mut w, 11), Ok(Value::Bool(true)));
 
     // The sensor position: the world matrix of the proxy.
     let sensor =
@@ -1719,6 +1740,10 @@ fn stage4_inactive_microchip_proxy_sensor_position_and_sequencer() {
     assert_eq!(
         sensor(&mut w, me(8)),
         Ok(Value::Mat44(translation(1., 2., 3.)))
+    );
+    assert_eq!(
+        sensor(&mut w, me(11)),
+        Ok(Value::Mat44(translation(50., 0., 0.)))
     );
     // The board has no PPos and no chip of its own: the identity, as for a null Thing.
     assert_eq!(sensor(&mut w, me(2)), Ok(Value::Mat44(identity())));

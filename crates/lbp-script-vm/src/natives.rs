@@ -900,7 +900,7 @@ const TABLE: &[(&str, &str, NativeFn)] = &[
     // FOUND (01.33, 0x642bd4 -> 0x754498). Declared static
     // `Thing GetMicroChipProxyFromThing(Thing)`: null for null; the Thing's microchip
     // Thing (+0x5c) when it has one, else the Thing itself. INFERRED: what fills +0x5c
-    // (the world's side: the chip whose circuit board the Thing is a child of).
+    // (the world's side: the outermost microchip whose circuit board the Thing is on).
     ("Thing", "GetMicroChipProxyFromThing__Q5Thing", |w, c| {
         Ok(Value::Thing(match thing(param(c, 0)?)? {
             Some(t) => Some(w.microchip_proxy(t)?),

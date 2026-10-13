@@ -116,6 +116,9 @@ pub struct InputWire {
     pub output: usize,
 }
 
+/// How many chips inside chips [`LevelWorld::microchip_of`] follows outwards.
+pub const MAX_CHIP_NESTING: usize = 64;
+
 /// Input ports past this are not wired (a guard against a damaged file; the count of
 /// targets it drops is [`LevelWorld::input_ports_dropped`]).
 pub const MAX_INPUT_PORTS: usize = 1024;
@@ -281,6 +284,8 @@ pub struct LevelWorld {
     /// The owner of each circuit board: board Thing -> the Thing whose PMicrochip names it
     /// (the first in Thing order). See [`LevelWorld::microchip_of`].
     pub board_owners: BTreeMap<u32, u32>,
+    /// `Audio.PlaySound__Q5ThingQ7StringA` requests by sound name; nothing plays.
+    pub sounds_played: BTreeMap<String, u64>,
 }
 
 /// PWorld state scripts read through `World.World` members, with the level file's values
@@ -872,11 +877,24 @@ impl LevelWorld {
     /// The Thing's microchip Thing (the game's Thing+0x5c), if it has one.
     ///
     /// INFERRED: the Thing whose PMicrochip names the circuit board this Thing is a child
-    /// of. For a chip inside a chip that is the inner one; which of the two the game keeps
-    /// is not established.
+    /// of, and for a chip that itself sits on a board, the outermost chip. The level
+    /// scripts read the PPos of this Thing without a null test, so it must have one; in
+    /// the levels a chip on another chip's board has no PPos and the outermost chip has
+    /// (PC census, 378 levels: 1,107 scripted Things sit on such an inner chip).
     pub fn microchip_of(&self, thing: u32) -> Option<u32> {
-        let parent = self.things.get(thing as usize)?.parent?;
-        self.board_owners.get(&parent).copied()
+        let owner = |t: u32| {
+            let parent = self.things.get(t as usize)?.parent?;
+            self.board_owners.get(&parent).copied()
+        };
+        let mut chip = owner(thing)?;
+        // Bounded, so a damaged tree cannot loop.
+        for _ in 0..MAX_CHIP_NESTING {
+            match owner(chip) {
+                Some(outer) if outer != chip => chip = outer,
+                _ => break,
+            }
+        }
+        Some(chip)
     }
 
     /// One world frame has passed: `PWorld.Frame` (and `simFrame`) go up by one.
@@ -1191,6 +1209,12 @@ impl World for LevelWorld {
             .members
             .get_or_insert_with(BTreeMap::new)
             .insert(field.to_owned(), value);
+        Ok(())
+    }
+    /// Counted by name in [`LevelWorld::sounds_played`]; nothing plays (audio natives are
+    /// recorded no-ops until there is an audio system, docs/rscript-plan.md).
+    fn play_sound(&mut self, _thing: Option<u32>, name: &str) -> Result<(), String> {
+        *self.sounds_played.entry(name.to_owned()).or_default() += 1;
         Ok(())
     }
     /// One local player (the PC run has no controllers yet).
