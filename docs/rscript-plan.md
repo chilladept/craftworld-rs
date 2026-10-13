@@ -133,6 +133,17 @@ UI (`UpdateUI__`) and photo natives are not planned.
   stay at 4. INFERRED: no cone test (4,786 sensors with AngleRange below 180) and no
   layer test (701 with IncludeTouching 1). Still open: those two, the other sensors, the
   randomiser, sequencers.
+- Stage 5 begun, PR 1 (D265, part 16): the level world keeps the game's message list.
+  The messaging natives open and close speech bubbles, captions, subtitles and the
+  level-link and wormhole prompts by the rules FOUND in the executable (a duplicate is
+  dropped, a bubble without a prompt or a subtitle is written over, 8 at most, event 3
+  closes the messages of its Thing, no time limit); the caption and think natives are
+  bound (212 -> 216). Pulsed run over 378 levels: 2,381 requests, 1,187 messages opened,
+  1,161 written over, 33 dropped, 1,152 closed, a message in 216 levels; Things stopped
+  by a fault stay at 4. INFERRED: a closed message leaves at once, list order, the
+  anchor Thing. Follows: PR 2 the viewer draws the list (tables loaded, bubbles at the
+  anchor, subtitles), PR 3 global settings applied, PR 4 hidden, moved and tinted Things,
+  PR 5 camera and screen natives. Still open: the player's close button.
 
 ## Rules
 

@@ -19,7 +19,7 @@ used or is committed.
 - Example `native_coverage SCRIPT-DIR NEW-JSON`: the share of native call sites that have
   a binding, over all scripts and over gameplay scripts.
 
-## Bound natives (212 in the table, plus `System.Yield__` in the VM)
+## Bound natives (216 in the table, plus `System.Yield__` in the VM)
 
 | Group | Natives | Needs from `World` |
 |---|---|---|
@@ -40,7 +40,8 @@ used or is committed.
 | Recorded only, stage 4 (part 13; `natives::RECORDED_ONLY`) | `World.SetPieChartMultiplier__i`, `Thing.UpdateScale__`, `HideRenderMesh__Q5Thing`, `SetRenderMeshEditorTexture__Q5ThingQ8Resource`, `SetRenderMeshEditorColour__Q5Thingr`, `RemoveFromAnimatingDivergentList__`, `Trigger_Speech_Bubble.NotifyNpcsOfMouthEnd__`, `NoJoinMarker.SetGameNoJoin__`, `Game.GotoScoreboard__b` | `World::engine_call`: the call is counted and kept, nothing else happens |
 | Pad, LAMS and game state, D263 (part 14) | `Pad.IsJustPressed/IsPressed/IsJustReleased__Q5Thingii`, `LAMS.IsInLams__i`, `Resource.LoadAnimatedTextureByFilename__g`, `Game.GetGameFrame__`, `GetNumYellowHeadAvatars__`, `GetNumKeyNames`, `GetKeyIndex`, `GetNumKnownItemsCollectedAtStart__`, `IsTarsierDLCEnabled__`, `Score_Board.GetGameScoreDataType__`, `IsSlotIDValidForScoring__Q6SlotIDi`, `Slot.GetSlotGroup__Q6SlotID`, `GameMessagingManager.Messaging_ShouldFilterMessageStrings__`, `OffScreenIndicator.GetPlayerIndicatorActivityType__i`, `ModalOverlay.IsPartyLeaderOverlayActive__`, `Poppet.GetTextEntryType__` | a pad per player record (`natives::PadState`), loaded translation tables, the level slot, 9 more state queries |
 | Global settings, D263 (part 14) | `Game.SetGlobalSettingsTo__fffffb`, `SetGlobalSettingsGravityTo__fb`, `SetGlobalSettingsWater{Level,WaveMagnitude,Tint,Murkiness,Bits}To__fb`, `SetGlobalSettingsWaterDrainSoundsEnabled__b`, `SetGlobalSettingsBlendFactor`, `GetGlobalSettingsWater{Level,WaveMagnitude,Tint,Murkiness,Bits}__` | start, target and blend factor per setting |
-| Recorded only, D263 (part 14) | `GameMessagingManager.Messaging_NewTriggerMessage`, `...NoPrompt`, `...Subtitles`, `Messaging_NewLevelLinkPrompt`, `Messaging_NewWormHolePrompt`, `Messaging_NewGameEvent`, `HUD.RegisterOverlayCallback`, `HUD.PreloadGlyphs`, `Game.TrackSpeechKey`, `Trigger_Speech_Bubble.NotifyNpcsOfMouthStart__i`, `Thing.AddToAnimatingDivergentList__`, `Thing.SetAnimLoop__b`, `Gooey.SetLastNavSelectionMode__b`, `PerFrameUpdate`, `SetStylesheetScalingFactor__f`, `Game.SetGlobalSettingsAudioTo` | `World::engine_call`; ten are kept with their arguments |
+| Messaging, D263 and D265 (parts 14 and 16; `natives::MESSAGING`) | `GameMessagingManager.Messaging_NewTriggerMessage`, `...NoPrompt`, `...Caption`, `...CaptionNoPrompt`, `...Think`, `...ThinkNoPrompt`, `...Subtitles`, `Messaging_NewLevelLinkPrompt`, `Messaging_NewWormHolePrompt`, `Messaging_NewGameEvent` | `World::engine_call`; the level world opens and closes the messages of its list by them |
+| Recorded only, D263 (part 14) | `HUD.RegisterOverlayCallback`, `HUD.PreloadGlyphs`, `Game.TrackSpeechKey`, `Trigger_Speech_Bubble.NotifyNpcsOfMouthStart__i`, `Thing.AddToAnimatingDivergentList__`, `Thing.SetAnimLoop__b`, `Gooey.SetLastNavSelectionMode__b`, `PerFrameUpdate`, `SetStylesheetScalingFactor__f`, `Game.SetGlobalSettingsAudioTo` | `World::engine_call`; four are kept with their arguments (with the ten messaging calls, 14 kept names) |
 | Test (part 2) | `Check`, `CheckFalse`, `Fail`, `CheckEqual` on `i b j f p q r`, `CheckSimilar__fff`, each ending `Q7StringAi` | records each check |
 
 Coverage against the G10 export, computed from its tables (unit: call instruction):

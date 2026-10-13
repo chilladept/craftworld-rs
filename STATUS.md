@@ -4554,3 +4554,71 @@ Next: stage 5, show what the scripts do.
 - Not tested: the viewer window; any sensor against the game in RPCS3.
 **+0 newly viewable / +0 newly Complete (runtime feature).**
 Next: stage 5, show what the scripts do; the cone direction and the layer test.
+
+## D265 the message list (2026-10-13)
+- RScript plan stage 5, PR 1 (`docs/rscript-plan.md`). D263 kept the speech-bubble, prompt and subtitle
+  requests with their arguments. The level world now runs the game's message list by them, from the
+  stage 5 scoping notes and further reads of the manager's code. Nothing is drawn yet.
+- Rules (FOUND in the 01.33 EBOOT), in `lbp-runtime/src/messages.rs`:
+  - Manager 4 of 5 takes the trigger messages and the two prompts; at most 8 messages (0x3e8dc0).
+  - Types: bubble with a prompt 1, without 2, subtitles 3, level-link prompt 0x2b, wormhole prompt 0x59,
+    caption 0x5d / 0x5e, think 0x5f / 0x60.
+  - A request of a type about a Thing that has a message of the type, not closing, does nothing
+    (0x3e4124, asked by every core).
+  - With 8 held, the eighth is cleared unless its priority number is below the new type's; all nine
+    types have priority 10 (0x3e3248).
+  - Types 2, 3, 0x5e and 0x60 (flag bit 0) are written over the first message of the type, keeping its
+    id; the others are added.
+  - Event 3 reaches the messages of the Thing passed with it and runs action 0x10, which sets the
+    closing byte (0x3e8aa0, 0x3e528c); event 9 does the same to subtitles. `Messaging_NewGameEvent` with
+    an index above 4 means manager 4 (0x7353ec).
+  - No type here has a timed action. A trigger message has no player (both fields -1). The prompt
+    bubble carries a prompt string unless prevent close is set (0x7382e0).
+  - Actor name (0x737910): a translation tag when the level slot's type is 0 or 8, else as passed.
+- INFERRED choices:
+  - A closing message leaves the list at once (the game keeps it flagged for a time that was not read).
+  - The list keeps the order of adding; the game's sort comparison was not read. This decides which
+    message is the eighth: it mattered once in the three runs.
+  - A message written over restarts its age (`Message::age`, counted in `PWorld.Frame`).
+  - The anchor is the Thing's microchip when it sits on one, else the Thing (the Thing the bubble's
+    script measures its off-screen distance at); where the HUD draws was not read.
+  - A tag in no table gives no actor name (the game's default string taken as empty); the slot type is
+    the INFERRED 0 of D262.
+- Read API for the viewer: `LevelWorld::messages.open`, `Messages::of_thing`, `Message` (id, kind, style,
+  text, actor, actor_tag, thing, anchor, bubble_pos, triggered_once, prevent_close, has_voice, frame),
+  `Message::age`, `message_type`, `has_close_prompt`, `LevelWorld::message_position`, `CLOSE_PROMPT_KEY`.
+- Natives: `Messaging_NewTriggerMessageCaption`, `...CaptionNoPrompt`, `...Think`, `...ThinkNoPrompt`
+  bound (handlers 0x64ac74, 0x64abc8, 0x64ab1c, 0x64aa70), 212 -> 216. `natives::MESSAGING` lists the
+  ten natives that open or close a message; they are no longer in `RECORDED_ONLY` (29 -> 23), because
+  the world keeps state by them. `KEPT_REQUESTS` 10 -> 14.
+- `level_scripts`: a `messages` block per played level and in `play_all` (requests, opened, written
+  over and duplicate by type; text in a loaded table, other, empty; actor names; anchors; closed; open
+  at the end; levels).
+- MEASURED runs (378 levels, 13,547 scripted Things, release, 60 ticks; plain / visit / pulsed):
+  - requests 92 / 1,690 / 2,381; opened 57 / 1,036 / 1,187; written over 35 / 621 / 1,161; dropped as
+    duplicate 0 / 33 / 33; closed 0 / 1,000 / 1,152; open at the end 57 / 36 / 34; levels with a
+    message 47 / 192 / 216.
+  - Pulsed run by type, requests / opened / written over / duplicate: bubble with a prompt 214 / 214 /
+    0 / 0; without 1,058 / 306 / 743 / 9; caption without a prompt 59 / 34 / 25 / 0; subtitles 719 /
+    326 / 393 / 0; level-link prompt 218 / 194 / 0 / 24; wormhole prompt 113 / 113 / 0 / 0. The caption
+    with a prompt and both think forms are never called.
+  - Text of bubbles and subtitles that entered the list: from a loaded table 69 / 1,289 / 1,974, other
+    0 / 1 / 1, empty 0 / 63 / 66. Actor names 16 / 69 / 218, all tags of the loaded tables. Every
+    message has an anchor with a position.
+  - Close events 0 / 1,740 / 2,318, of which 740 and 1,166 closed nothing (the message had been written
+    over, or was never opened). The list was full once (pulsed run).
+  - Things stopped by a fault 4 -> 4 in all three runs; fault kinds 2, levels with a fault 2. Unbound
+    natives called 52 -> 51, 88 -> 87, 88 -> 87; recorded-only calls 13,648 -> 13,560, 95,656 -> 92,256,
+    102,810 -> 98,170 (the messaging natives left the list). Native calls, trigger events and reaction
+    calls as in D264.
+- Not modelled: event 2, the player's button (action 0x17 sets a byte and calls a function with a part
+  of the Thing unless prevent close is set; action 0x37 not read); the sort order and states; other
+  Things' bubbles closed by 0x3e4af0; the subtitle text formatting (0x736f1c); the prompts' text;
+  placement; the script's off-screen close (screen natives unbound).
+- Tests: 6 unit tests in `messages.rs`, the world test
+  `d265_the_messaging_natives_open_and_close_the_worlds_messages`; the D263 recorded-calls test covers
+  the four new natives. fmt, the CI clippy line, the CI test set, the Python tests and `cargo check` of
+  both viewers pass.
+- Not tested: the viewer window; any message against the game in RPCS3.
+**+0 newly viewable / +0 newly Complete (runtime feature).**
+Next: stage 5 PR 2, the viewer draws the open messages; then global settings, Things, camera.

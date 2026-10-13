@@ -1,5 +1,28 @@
 # Development log
 
+## 2026-10-13 - D265 the level world keeps the game's message list
+
+RScript plan stage 5, PR 1. New `lbp-runtime/src/messages.rs`: `LevelWorld::messages` holds the open speech
+bubbles, captions, subtitles and level-link and wormhole prompts, and the messaging natives run it through
+`World::engine_call`. FOUND (manager add 0x3e8dc0, find 0x3e4124, event 0x3e8aa0, sort 0x3e8928, type
+records 0x3e3248, actions 0x3e528c, cores 0x7382e0 / 0x7380f8 / 0x737320 / 0x737f64 / 0x737d7c / 0x737be8 /
+0x737a00, actor name 0x737910): manager 4 of 5, at most 8 messages; a request of a type about a Thing that
+has a message of the type does nothing; types 2, 3, 0x5e and 0x60 are written over the open one of the
+type; with 8 held the eighth is cleared (all nine types have priority 10); event 3 runs action 0x10 on the
+messages of its Thing, which marks them closing; no type has a timed action; a trigger message has no
+player; the prompt bubble carries a prompt string unless prevent close is set. INFERRED: a closing message
+leaves the list at once; the list keeps the order of adding (the sort comparison was not read); a message
+written over restarts its age; the anchor is the Thing's microchip, else the Thing; a tag in no table
+gives no actor name. Not modelled: event 2 (the player's button, actions 0x17 and 0x37), the sort states,
+the closing of other Things' bubbles by 0x3e4af0, subtitle text formatting. Natives: the caption and think
+forms bound, 212 -> 216; `natives::MESSAGING` lists the ten messaging natives, which leave `RECORDED_ONLY`
+(29 -> 23); `KEPT_REQUESTS` 10 -> 14. `level_scripts`: a `messages` block per level and in `play_all`. PC
+run, 378 levels, 60 ticks (plain / visit / pulsed): requests 92 / 1,690 / 2,381, opened 57 / 1,036 /
+1,187, written over 35 / 621 / 1,161, dropped as duplicate 0 / 33 / 33, closed 0 / 1,000 / 1,152, open at
+the end 57 / 36 / 34, levels with a message 47 / 192 / 216; unbound natives called 52 -> 51, 88 -> 87,
+88 -> 87; Things stopped by a fault stay at 4 in all three runs. No viewer change. +0 viewable, +0
+Complete. `docs/level-scripts.md` part 16.
+
 ## 2026-10-13 - D264 tag sensors and player sensors run in the switch pass
 
 Between RScript plan stages 4 and 5. `lbp-level` keeps the PSwitch fields the sensors read (Radius,

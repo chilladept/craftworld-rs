@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D264
+# Current state (overwrite each milestone) — after D265
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -11,7 +11,27 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D264 tag sensors and player sensors (2026-10-13)
+## Latest: D265 the message list (2026-10-13)
+- RScript plan stage 5, PR 1. `LevelWorld::messages` (`lbp-runtime/src/messages.rs`) is the game's list
+  of open speech bubbles, captions, subtitles and level-link and wormhole prompts, run by the messaging
+  natives. FOUND in the EBOOT (0x3e8dc0, 0x3e4124, 0x3e8aa0, 0x3e3248, 0x3e528c, the cores 0x7382e0 ..
+  0x737a00, 0x737910): manager 4 holds at most 8; a request of a type about a Thing that has one is
+  dropped; a bubble without a prompt or a subtitle is written over the one of its type; a ninth clears
+  the eighth; event 3 closes the messages of its Thing; no time limit; the actor name is a translation
+  tag in slot types 0 and 8. The four caption and think natives are bound (212 -> 216); the ten
+  messaging natives are `natives::MESSAGING`, no longer recorded only (29 -> 23).
+- Read API for the viewer: `messages.open` (`Message`: kind, style, text, actor, thing, anchor, bubble
+  position, flags, frame), `Message::age`, `has_close_prompt`, `LevelWorld::message_position`.
+- INFERRED: a closed message leaves at once; the list keeps the order of adding; the anchor is the
+  Thing's microchip, else the Thing; age restarts when written over. Not modelled: the player's close
+  button (event 2), which queued bubble is shown, placement.
+- MEASURED, 378 levels, 60 ticks (plain / visit / pulsed): requests 92 / 1,690 / 2,381; opened 57 /
+  1,036 / 1,187; written over 35 / 621 / 1,161; dropped 0 / 33 / 33; closed 0 / 1,000 / 1,152; levels
+  with a message 47 / 192 / 216. Text from a loaded table in all but 1 non-empty case; every message has
+  an anchor. Things stopped by a fault stay at 4. Next: PR 2, the viewer draws the list.
+  `docs/level-scripts.md` part 16.
+
+## Before: D264 tag sensors and player sensors (2026-10-13)
 - The switch pass computes the tag sensor (type 4) and the player sensor (type 3) each tick; the other
   sensors keep the stored signal. FOUND in the EBOOT (0x118d5c, 0x119910, 0x11873c, 0xd5c1c, 0x12f6f4,
   0xf9a64): the tag map by (colour index, name), rebuilt when the pass starts; a tag's signal from its
