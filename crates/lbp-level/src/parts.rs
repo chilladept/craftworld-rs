@@ -760,6 +760,16 @@ pub struct World {
     /// entry per global-settings type.
     pub global_settings_thing_uids: Vec<i32>,
     pub global_settings_thing_priority: Vec<i32>,
+    /// D263: the first f32 of the wave and gravity triples, `waterTint`, and the first
+    /// f32 of the murkiness and bits triples: the stored current value of each setting
+    /// (field order from community layouts, as the water level; UNVERIFIED).
+    pub water_wave_magnitude: f32,
+    pub gravity: f32,
+    pub water_tint: f32,
+    pub water_murkiness: f32,
+    pub water_bits: f32,
+    /// PWorld `waterDrainSoundsEnabled` bool (head >= 0x34e, else false).
+    pub water_drain_sounds_enabled: bool,
 }
 
 /// `reference(P*)` for a present part of Thing `me`.
@@ -1339,6 +1349,12 @@ fn part_body(
                 w.game_mode = tail.game_mode;
                 w.global_settings_thing_uids = tail.global_settings_thing_uids;
                 w.global_settings_thing_priority = tail.global_settings_thing_priority;
+                w.water_wave_magnitude = tail.water_wave_magnitude;
+                w.gravity = tail.gravity;
+                w.water_tint = tail.water_tint;
+                w.water_murkiness = tail.water_murkiness;
+                w.water_bits = tail.water_bits;
+                w.water_drain_sounds_enabled = tail.water_drain_sounds_enabled;
                 w.backdrop = tail.backdrop;
                 w.backdrop_new = tail.backdrop_new;
                 w.backdrop_plan = tail.backdrop_plan;
@@ -1555,18 +1571,25 @@ fn world_tail(r: &mut Reader, things: &mut Things) -> Result<World> {
         r.skip_f32(4)?;
     }
     out.water_level = r.f32()?;
-    r.skip_f32(8)?;
+    r.skip_f32(2)?;
+    out.water_wave_magnitude = r.f32()?;
+    r.skip_f32(2)?;
+    out.gravity = r.f32()?;
+    r.skip_f32(2)?;
     let n = r.count(4)?;
     r.bytes(n * 4)?;
     let signed = |v: Vec<u32>| v.into_iter().map(|x| x as i32).collect();
     out.global_settings_thing_uids = signed(r.int_array()?);
     out.global_settings_thing_priority = signed(r.int_array()?);
-    r.f32()?;
+    out.water_tint = r.f32()?;
     r.v4()?;
     r.f32()?;
-    r.skip_f32(6)?;
+    out.water_murkiness = r.f32()?;
+    r.skip_f32(2)?;
+    out.water_bits = r.f32()?;
+    r.skip_f32(2)?;
     if v >= 0x34e {
-        r.bool()?;
+        out.water_drain_sounds_enabled = r.bool()?;
         r.bool()?;
     }
     r.f32()?;

@@ -3522,6 +3522,7 @@ dependencies = [
  "lbp-catalog",
  "lbp-level",
  "lbp-preview",
+ "lbp-resource",
  "lbp-script-vm",
  "lbp-ui-script",
  "serde_json",

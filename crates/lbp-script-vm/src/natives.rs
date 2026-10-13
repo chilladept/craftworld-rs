@@ -56,7 +56,62 @@ pub struct PlayerRecord {
     /// The Thing the multiplier display is drawn at (null = none).
     pub multiplier_source: Option<u32>,
     pub multiplier_visible: bool,
+    /// The record's pad object (record +0x6a0, a pointer); `None` = no pad, for which
+    /// every `Pad` query is false.
+    pub pad: Option<PadState>,
 }
+
+/// A player's pad as the `Pad` natives read it. FOUND in the 01.33 executable (readers
+/// 0x388358, 0x389400, 0x388e2c): two mode masks (pad +0x1c, +0x20), the button word of
+/// this frame (+0x50) and the one of the frame before (+0xa0); the game copies the
+/// current block over the old one once a frame (0x3866e8).
+///
+/// A button argument is a mask and all of its bits must be down. FOUND for four bits of
+/// the word (the stick emulation at 0x688458 reads them): 0x100000 up, 0x200000 right,
+/// 0x400000 down, 0x800000 left. The other bits are INFERRED at best and have no names
+/// here. INFERRED: the masks say which input consumer owns the pad this frame (the
+/// level scripts pass mode 1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PadState {
+    pub mask_a: u32,
+    pub mask_b: u32,
+    pub now: u32,
+    pub old: u32,
+}
+
+impl PadState {
+    /// `Pad.IsPressed`: the mode is in the first mask and every bit of `buttons` is down.
+    pub fn is_pressed(&self, mode: u32, buttons: u32) -> bool {
+        mode & self.mask_a != 0 && buttons & self.now == buttons
+    }
+    /// `Pad.IsJustPressed`: the mode is in both masks, every bit of `buttons` is down
+    /// now and they were not all down the frame before.
+    pub fn is_just_pressed(&self, mode: u32, buttons: u32) -> bool {
+        mode & self.mask_a != 0
+            && mode & self.mask_b != 0
+            && buttons & self.now == buttons
+            && buttons & self.old != buttons
+    }
+    /// `Pad.IsJustReleased`: the mode is in both masks, the bits of `buttons` were all
+    /// down the frame before and are not all down now.
+    pub fn is_just_released(&self, mode: u32, buttons: u32) -> bool {
+        mode & self.mask_a != 0
+            && mode & self.mask_b != 0
+            && buttons & self.now != buttons
+            && buttons & self.old == buttons
+    }
+}
+
+/// `Game.EGlobalSettingsType` values. FOUND (01.33, 0xd623c): the type indexes the
+/// PWorld's array of 8 blend factors; 5 is the lighting group (five values under one
+/// factor) and 7 audio; the others are one blended float each.
+pub const GS_WATER_LEVEL: i32 = 0;
+pub const GS_GRAVITY: i32 = 1;
+pub const GS_WATER_WAVE_MAGNITUDE: i32 = 2;
+pub const GS_WATER_TINT: i32 = 3;
+pub const GS_WATER_MURKINESS: i32 = 4;
+pub const GS_LIGHTING: i32 = 5;
+pub const GS_WATER_BITS: i32 = 6;
 
 /// The highest score `Game.SetPlayerScore` stores. FOUND (01.33, 0x3970e4): the value is
 /// clamped between two constants read from the executable, 0.0 and 4,000,000.0.
@@ -244,6 +299,46 @@ pub trait World {
     fn find_mesh_descendant(&mut self, _thing: u32, _mesh: u32) -> Result<Option<u32>, String> {
         Err(not_available("render meshes"))
     }
+    /// The pad of the player whose Sackboy the Thing is (its PYellowHead's player number
+    /// names the record); `None` for a Thing without a PYellowHead, a number without a
+    /// record or a record without a pad.
+    fn pad(&mut self, _thing: u32) -> Result<Option<PadState>, String> {
+        Err(not_available("pads"))
+    }
+    /// Does a loaded translation table have this LAMS key (`LAMS.IsInLams__i`)?
+    fn in_lams(&mut self, _key: i32) -> Result<bool, String> {
+        Err(not_available("translated text"))
+    }
+    /// Type and SlotNumber of a script `SlotID` object.
+    fn slot_id(&mut self, _slot: &Value) -> Result<(i32, i32), String> {
+        Err(not_available("level slots"))
+    }
+    /// `Game.SetGlobalSettings<X>To__fb` for the one-float settings (`kind` is a
+    /// `GS_*` type other than [`GS_LIGHTING`]): see the native table for the rule.
+    fn set_global_setting_to(
+        &mut self,
+        _kind: i32,
+        _value: f32,
+        _blend: bool,
+    ) -> Result<(), String> {
+        Err(not_available("global settings"))
+    }
+    /// `Game.SetGlobalSettingsTo__fffffb`, the values in the script's argument order
+    /// (Lighting, Darkness, Fog, FogTint, ColourCorrection).
+    fn set_lighting_to(&mut self, _values: [f32; 5], _blend: bool) -> Result<(), String> {
+        Err(not_available("global settings"))
+    }
+    /// `Game.SetGlobalSettingsBlendFactor`: the blend factor of global-settings type `kind`.
+    fn set_global_setting_blend(&mut self, _kind: i32, _t: f32) -> Result<(), String> {
+        Err(not_available("global settings"))
+    }
+    /// The value in force of a one-float setting (`Game.GetGlobalSettingsWater<X>__`).
+    fn global_setting_value(&mut self, _kind: i32) -> Result<f32, String> {
+        Err(not_available("global settings"))
+    }
+    fn set_water_drain_sounds(&mut self, _enabled: bool) -> Result<(), String> {
+        Err(not_available("global settings"))
+    }
     /// A call whose effect is display, HUD, network or game flow that nothing here models
     /// yet: the world records it (by `name`, with the Thing it is about and the arguments
     /// as passed) and nothing else happens. The natives bound this way are
@@ -289,7 +384,7 @@ pub trait World {
         Err(not_available("audio"))
     }
     /// Engine state queries ([`STATE_QUERIES`]) by `Class.mangled` name; their arguments
-    /// (a player number at most) do not change the answer.
+    /// do not change the answer the world gives.
     fn state_query(&mut self, native: &str) -> Result<Value, String> {
         Err(not_available(native))
     }
@@ -618,6 +713,35 @@ fn recorded(
 ) -> Result<Value, String> {
     w.engine_call(name, thing, args)?;
     Ok(Value::Void)
+}
+
+/// `Pad.Is*(Thing, s32 mode, s32 buttons)`: `test` on the pad of the Thing's player. FOUND:
+/// false for a null Thing and whenever the Thing leads to no pad.
+fn pad_test(
+    w: &mut dyn World,
+    c: &Call<'_>,
+    test: fn(&PadState, u32, u32) -> bool,
+) -> Result<Value, String> {
+    let (mode, buttons) = (int(param(c, 1)?)? as u32, int(param(c, 2)?)? as u32);
+    let pad = match thing(param(c, 0)?)? {
+        Some(t) => w.pad(t)?,
+        None => None,
+    };
+    Ok(Value::Bool(pad.is_some_and(|p| test(&p, mode, buttons))))
+}
+
+/// `Game.SetGlobalSettings<X>To__fb(value, blend)` for global-settings type `kind`.
+fn setting_to(w: &mut dyn World, c: &Call<'_>, kind: i32) -> Result<Value, String> {
+    w.set_global_setting_to(kind, float(param(c, 0)?)?, boolean(param(c, 1)?)?)?;
+    Ok(Value::Void)
+}
+
+/// A [`World::state_query`] that answers with an s32.
+fn int_query(w: &mut dyn World, native: &str) -> Result<Value, String> {
+    match w.state_query(native)? {
+        Value::Int(i) => Ok(Value::Int(i)),
+        other => Err(format!("{native}: expected s32, got {other:?}")),
+    }
 }
 
 /// For the `Thing.*Switch*__i` natives: the signal wired to the receiver's input port.
@@ -1695,6 +1819,379 @@ const TABLE: &[(&str, &str, NativeFn)] = &[
         boolean(param(c, 0)?)?;
         recorded(w, "GotoScoreboard", None, c.params)
     }),
+    // ---- D263: the natives the stage 4 runs reached in most levels ----
+    // Same form as stage 4: handler -> reader in the 01.33 executable, the declared
+    // signature, FOUND or INFERRED.
+    //
+    // FOUND (0x647f58 -> 0x6fa3dc -> 0x388358). Declared static
+    // `bool IsJustPressed(Thing, s32 mode, s32 buttons)`: the Thing's PYellowHead gives a
+    // player number, that player's record a pad; [`PadState::is_just_pressed`] on it.
+    // False for a null Thing, no PYellowHead, no record or no pad. Not modelled: the
+    // button hint the game can show for the call.
+    ("Pad", "IsJustPressed__Q5Thingii", |w, c| {
+        pad_test(w, c, PadState::is_just_pressed)
+    }),
+    // FOUND (0x647fc4 -> 0x6fa4f0 -> 0x388e2c). Declared static
+    // `bool IsPressed(Thing, s32, s32)`: [`PadState::is_pressed`] on the same pad.
+    ("Pad", "IsPressed__Q5Thingii", |w, c| {
+        pad_test(w, c, PadState::is_pressed)
+    }),
+    // FOUND (0x647eec -> 0x6fa958 -> 0x389400). Declared static
+    // `bool IsJustReleased(Thing, s32, s32)`: [`PadState::is_just_released`].
+    ("Pad", "IsJustReleased__Q5Thingii", |w, c| {
+        pad_test(w, c, PadState::is_just_released)
+    }),
+    // FOUND (0x617c0c). Declared static `Resource LoadAnimatedTextureByFilename(guid)`:
+    // builds a resource descriptor from the GUID like `LoadTextureByFilename__g`, with
+    // another resource type constant. The handle here is the GUID either way.
+    ("Resource", "LoadAnimatedTextureByFilename__g", |w, c| {
+        Ok(Value::Ref(w.load_resource(
+            ResourceKind::Texture,
+            guid(param(c, 0)?)?,
+        )?))
+    }),
+    // FOUND (0x5f7c64 -> 0x751758 -> 0x51bc0 -> 0x159c1c). Declared static
+    // `bool IsInLams(s32)`: the key (what `MakeLamsKeyID` returns, compared unsigned) is
+    // searched in the sorted rows of every translation resource that is loaded; true
+    // when one has it. The same search gives `Translate__i` its string.
+    ("LAMS", "IsInLams__i", |w, c| {
+        Ok(Value::Bool(w.in_lams(int(param(c, 0)?)?)?))
+    }),
+    // FOUND (0x5f7fe0 -> 0x736260). Declared static
+    // `bool Messaging_ShouldFilterMessageStrings()`: true unless the level slot's type
+    // is 2; for type 2 a test of the network session decides (see the world).
+    (
+        "GameMessagingManager",
+        "Messaging_ShouldFilterMessageStrings__",
+        |w, _| {
+            bool_query(
+                w,
+                "GameMessagingManager.Messaging_ShouldFilterMessageStrings__",
+            )
+        },
+    ),
+    // FOUND (0x5fa9c8 -> 0x19f63c). Declared static `s32 GetGameFrame()`: the PWorld's
+    // frame counter, 0 without a level.
+    ("Game", "GetGameFrame__", |w, _| {
+        int_query(w, "Game.GetGameFrame__")
+    }),
+    // FOUND (0x5faac8 -> 0x5ed9f8). Declared static `s32 GetNumYellowHeadAvatars()`: the
+    // length of the PWorld's PYellowHead list, the list `GetYellowheadFromPlayerNumber`
+    // walks.
+    ("Game", "GetNumYellowHeadAvatars__", |w, _| {
+        int_query(w, "Game.GetNumYellowHeadAvatars__")
+    }),
+    // FOUND (0x5f9710 -> 0x16aa4c). Declared `s32 GetGameScoreDataType()` on Score_Board:
+    // 6 when `PWorld.GameMode` is 1, else max(n - 1, 0) for a count n kept in the game
+    // state. INFERRED: n is the number of players the score table is kept for.
+    ("Score_Board", "GetGameScoreDataType__", |w, _| {
+        int_query(w, "Score_Board.GetGameScoreDataType__")
+    }),
+    // FOUND (0x63bef8 -> 0x743e64 -> 0x229bb8). Declared
+    // `bool IsSlotIDValidForScoring(SlotID, s32)` on Score_Board: reads Type and
+    // SlotNumber out of the script object; false for (0, 0), else true for type 0, 1 or
+    // 8 and false for any other. Not modelled: a second test on a value looked up by
+    // the s32 argument, which can still say no when a global byte is clear.
+    (
+        "Score_Board",
+        "IsSlotIDValidForScoring__Q6SlotIDi",
+        |w, c| {
+            int(param(c, 1)?)?;
+            let (kind, number) = w.slot_id(param(c, 0)?)?;
+            Ok(Value::Bool(
+                (kind, number) != (0, 0) && matches!(kind, 0 | 1 | 8),
+            ))
+        },
+    ),
+    // FOUND shape (0x5f9ff0 -> 0x73a750). Declared static
+    // `s32 GetPlayerIndicatorActivityType(s32 player)`: 0, 1 or 2; 0 = no off-screen
+    // indicator. INFERRED for the world: 0 (see the world).
+    (
+        "OffScreenIndicator",
+        "GetPlayerIndicatorActivityType__i",
+        |w, c| {
+            int(param(c, 0)?)?;
+            int_query(w, "OffScreenIndicator.GetPlayerIndicatorActivityType__i")
+        },
+    ),
+    // FOUND (0x5ffec8 -> 0x5e727c). Declared static
+    // `s32 GetNumKeyNames(Gooey.EGooeyNetworkAction)`: the length of a sorted name list
+    // the game rebuilds for the action (for actions 0x50 and 0x14b the names of the
+    // level's Sackbots). INFERRED for the world: no names (see the world).
+    (
+        "Game",
+        "GetNumKeyNames__Q25Gooey.EGooeyNetworkAction",
+        |w, c| {
+            int(param(c, 0)?)?;
+            int_query(w, "Game.GetNumKeyNames__Q25Gooey.EGooeyNetworkAction")
+        },
+    ),
+    // FOUND (0x62a48c -> 0x5e71a0). Declared static
+    // `s32 GetKeyIndex(Gooey.EGooeyNetworkAction, String)`: the position of the string
+    // in that list (a null string counts as empty), -1 when it is not there.
+    (
+        "Game",
+        "GetKeyIndex__Q25Gooey.EGooeyNetworkActionQ6String",
+        |w, c| {
+            int(param(c, 0)?)?;
+            opt_text(param(c, 1)?)?;
+            int_query(w, "Game.GetKeyIndex__Q25Gooey.EGooeyNetworkActionQ6String")
+        },
+    ),
+    // FOUND (0x5f99f8 -> 0x56a838). Declared static `s32 GetTextEntryType()` on Poppet:
+    // the function returns the constant 2.
+    ("Poppet", "GetTextEntryType__", |_, _| Ok(Value::Int(2))),
+    // FOUND (0x5f827c -> 0x5e68d8). Declared static `bool IsTarsierDLCEnabled()`: the
+    // function returns the constant 1.
+    ("Game", "IsTarsierDLCEnabled__", |_, _| {
+        Ok(Value::Bool(true))
+    }),
+    // FOUND (0x5f7b2c -> 0x7398a4 -> 0x3ea794). Declared static
+    // `bool IsPartyLeaderOverlayActive()` on ModalOverlay: a byte of the party leader's
+    // modal overlay entry, false when he has none. INFERRED for the world: no overlay.
+    ("ModalOverlay", "IsPartyLeaderOverlayActive__", |w, _| {
+        bool_query(w, "ModalOverlay.IsPartyLeaderOverlayActive__")
+    }),
+    // FOUND (0x5fac6c). Declared static `s32 GetNumKnownItemsCollectedAtStart()`: one
+    // word of the game state; its writer was not located. INFERRED for the world: 0, a
+    // fresh profile.
+    ("Game", "GetNumKnownItemsCollectedAtStart__", |w, _| {
+        int_query(w, "Game.GetNumKnownItemsCollectedAtStart__")
+    }),
+    // ---- D263: global settings ----
+    // FOUND: the PWorld keeps, for each one-float setting, a start value, a target and a
+    // blend factor t; the value in force is start + (target - start) * t. The scripts
+    // drive t themselves through `SetGlobalSettingsBlendFactor`; no per-frame step of t
+    // was seen. All of these do nothing without a level.
+    //
+    // FOUND (0x5fc13c -> 0xd9dac). Declared static
+    // `void SetGlobalSettingsTo(f32, f32, f32, f32, f32, bool blend)`; the arguments are
+    // Lighting, Darkness, Fog, FogTint, ColourCorrection (names from the script that
+    // calls it). Without blend: start = target = the arguments, t = 1.0. With blend:
+    // start = the blend in force (0xd978c), target = the arguments, t = 0. Not
+    // modelled: the lighting block the game rebuilds afterwards.
+    ("Game", "SetGlobalSettingsTo__fffffb", |w, c| {
+        let f = |i| float(param(c, i)?);
+        let values = [f(0)?, f(1)?, f(2)?, f(3)?, f(4)?];
+        w.set_lighting_to(values, boolean(param(c, 5)?)?)?;
+        Ok(Value::Void)
+    }),
+    // FOUND (0x5fbfd4 -> 0xcef3c). Declared static
+    // `void SetGlobalSettingsGravityTo(f32, bool blend)`. Without blend: start = target
+    // = value, t = 1.0. With blend: start = start + (target - start) * t, target =
+    // value, t = 0. Not modelled: the physics world's gravity vector, written too.
+    ("Game", "SetGlobalSettingsGravityTo__fb", |w, c| {
+        setting_to(w, c, GS_GRAVITY)
+    }),
+    // FOUND (0x5fc108 -> 0xce608). `void SetGlobalSettingsWaterLevelTo(f32, bool)`: the
+    // gravity rule on the water level's start, target and t.
+    ("Game", "SetGlobalSettingsWaterLevelTo__fb", |w, c| {
+        setting_to(w, c, GS_WATER_LEVEL)
+    }),
+    // FOUND (0x5fc0d4 -> 0xce654). `void SetGlobalSettingsWaterWaveMagnitudeTo(f32, bool)`:
+    // the same rule.
+    (
+        "Game",
+        "SetGlobalSettingsWaterWaveMagnitudeTo__fb",
+        |w, c| setting_to(w, c, GS_WATER_WAVE_MAGNITUDE),
+    ),
+    // FOUND shape (0x5fc0a0 -> 0xd5d68 -> 0xd5c50).
+    // `void SetGlobalSettingsWaterTintTo(f32, bool)`: the tint is one stored value (no
+    // start and target pair), from which the game picks between 9 colours. INFERRED:
+    // the stored value becomes the argument (the store itself was not read); the blend
+    // flag and the colours are not modelled.
+    ("Game", "SetGlobalSettingsWaterTintTo__fb", |w, c| {
+        setting_to(w, c, GS_WATER_TINT)
+    }),
+    // FOUND (0x5fc06c -> 0xd51b0). `void SetGlobalSettingsWaterMurkinessTo(f32, bool)`:
+    // the same rule. Not modelled: the renderer value written from the result.
+    ("Game", "SetGlobalSettingsWaterMurkinessTo__fb", |w, c| {
+        setting_to(w, c, GS_WATER_MURKINESS)
+    }),
+    // FOUND (0x5fc038 -> 0xce6a0). `void SetGlobalSettingsWaterBitsTo(f32, bool)`: the
+    // same rule.
+    ("Game", "SetGlobalSettingsWaterBitsTo__fb", |w, c| {
+        setting_to(w, c, GS_WATER_BITS)
+    }),
+    // FOUND (0x5fc008 -> 0x5ec908). Declared static
+    // `void SetGlobalSettingsWaterDrainSoundsEnabled(bool)`: one byte of the PWorld.
+    (
+        "Game",
+        "SetGlobalSettingsWaterDrainSoundsEnabled__b",
+        |w, c| {
+            w.set_water_drain_sounds(boolean(param(c, 0)?)?)?;
+            Ok(Value::Void)
+        },
+    ),
+    // FOUND (0x600524 -> 0x5ecf34 -> 0xd623c). Declared static
+    // `void SetGlobalSettingsBlendFactor(Game.EGlobalSettingsType, f32)`: t of that type
+    // becomes the value. Not modelled: gravity, tint and murkiness are pushed on to
+    // physics and the renderer.
+    (
+        "Game",
+        "SetGlobalSettingsBlendFactor__Q24Game.EGlobalSettingsTypef",
+        |w, c| {
+            w.set_global_setting_blend(int(param(c, 0)?)?, float(param(c, 1)?)?)?;
+            Ok(Value::Void)
+        },
+    ),
+    // FOUND (0x5fd630 -> 0x5ec6f8 -> 0xce438). Declared static
+    // `f32 GetGlobalSettingsWaterLevel()`: the blended level while it is above 0.0001
+    // (and an editor flag is clear); else, and without a level, 0.0.
+    ("Game", "GetGlobalSettingsWaterLevel__", |w, _| {
+        Ok(Value::Float(w.global_setting_value(GS_WATER_LEVEL)?))
+    }),
+    // FOUND (0x5fd5b8 -> 0x5ec4f8). `f32 GetGlobalSettingsWaterWaveMagnitude()`: the
+    // blended value; 0.0 without a level, as the three getters below.
+    ("Game", "GetGlobalSettingsWaterWaveMagnitude__", |w, _| {
+        Ok(Value::Float(
+            w.global_setting_value(GS_WATER_WAVE_MAGNITUDE)?,
+        ))
+    }),
+    // FOUND (0x5fd57c -> 0x5ec424). `f32 GetGlobalSettingsWaterTint()`: the stored tint
+    // value, not blended.
+    ("Game", "GetGlobalSettingsWaterTint__", |w, _| {
+        Ok(Value::Float(w.global_setting_value(GS_WATER_TINT)?))
+    }),
+    // FOUND (0x5fd540 -> 0x5ec340). `f32 GetGlobalSettingsWaterMurkiness()`: blended.
+    ("Game", "GetGlobalSettingsWaterMurkiness__", |w, _| {
+        Ok(Value::Float(w.global_setting_value(GS_WATER_MURKINESS)?))
+    }),
+    // FOUND (0x5fd504 -> 0x5ec25c). `f32 GetGlobalSettingsWaterBits()`: blended.
+    ("Game", "GetGlobalSettingsWaterBits__", |w, _| {
+        Ok(Value::Float(w.global_setting_value(GS_WATER_BITS)?))
+    }),
+    // ---- D263: recorded only ([`RECORDED_ONLY`]) ----
+    // The messaging natives go to one of the game's five message managers, which does
+    // nothing when the Thing already has a message of that type; the world keeps each
+    // request with its arguments.
+    //
+    // FOUND (0x64b010 -> 0x7382e0, message type 1). Declared static
+    // `void Messaging_NewTriggerMessage(String, String, Thing, bool, s32, bool)`: text,
+    // actor name, the bubble's Thing, triggered once, bubble position, prevent close
+    // (names from the script that calls it).
+    (
+        "GameMessagingManager",
+        "Messaging_NewTriggerMessage__Q6StringQ6StringQ5Thingbib",
+        |w, c| {
+            let t = thing(param(c, 2)?)?;
+            recorded(w, "Messaging_NewTriggerMessage", t, c.params)
+        },
+    ),
+    // FOUND (0x64af64 -> 0x7380f8, message type 2). The same six arguments.
+    (
+        "GameMessagingManager",
+        "Messaging_NewTriggerMessageNoPrompt__Q6StringQ6StringQ5Thingbib",
+        |w, c| {
+            let t = thing(param(c, 2)?)?;
+            recorded(w, "Messaging_NewTriggerMessageNoPrompt", t, c.params)
+        },
+    ),
+    // FOUND (0x64aedc -> 0x737320, message type 3). Declared static
+    // `void Messaging_NewTriggerMessageSubtitles(String, Thing, bool, bool)`: text, the
+    // Thing, a flag, is dialogue.
+    (
+        "GameMessagingManager",
+        "Messaging_NewTriggerMessageSubtitles__Q6StringQ5Thingbb",
+        |w, c| {
+            let t = thing(param(c, 1)?)?;
+            recorded(w, "Messaging_NewTriggerMessageSubtitles", t, c.params)
+        },
+    ),
+    // FOUND (0x64add8 -> 0x735bd0, message type 0x2b). Declared static
+    // `void Messaging_NewLevelLinkPrompt(Thing)`.
+    (
+        "GameMessagingManager",
+        "Messaging_NewLevelLinkPrompt__Q5Thing",
+        |w, c| {
+            let t = thing(param(c, 0)?)?;
+            recorded(w, "Messaging_NewLevelLinkPrompt", t, c.params)
+        },
+    ),
+    // FOUND (0x64ad98 -> 0x735b20, message type 0x59). Declared static
+    // `void Messaging_NewWormHolePrompt(Thing)`.
+    (
+        "GameMessagingManager",
+        "Messaging_NewWormHolePrompt__Q5Thing",
+        |w, c| {
+            let t = thing(param(c, 0)?)?;
+            recorded(w, "Messaging_NewWormHolePrompt", t, c.params)
+        },
+    ),
+    // FOUND (0x64ad20 -> 0x7353ec). Declared static
+    // `void Messaging_NewGameEvent(s32 manager, s32 event, Thing, bool)`: an event for
+    // one of the five managers. A speech bubble closes its message with (4, 3, self,
+    // false).
+    (
+        "GameMessagingManager",
+        "Messaging_NewGameEvent__iiQ5Thingb",
+        |w, c| {
+            let t = thing(param(c, 2)?)?;
+            recorded(w, "Messaging_NewGameEvent", t, c.params)
+        },
+    ),
+    // FOUND (0x64a948 -> 0x4b6d24). Declared static
+    // `void RegisterOverlayCallback(Thing, String)` on HUD: the HUD pass will call the
+    // named script function on the Thing. Nothing calls it here yet.
+    ("HUD", "RegisterOverlayCallback__Q5ThingQ6String", |w, c| {
+        opt_text(param(c, 1)?)?;
+        let t = thing(param(c, 0)?)?;
+        recorded(w, "RegisterOverlayCallback", t, c.params)
+    }),
+    // FOUND (0x62a258 -> 0x4ba780). Declared static `void PreloadGlyphs(Fonts.EFont,
+    // String)` on HUD: warms a font's glyph cache with the string's characters.
+    ("HUD", "PreloadGlyphs__Q11Fonts.EFontQ6String", |w, c| {
+        recorded(w, "PreloadGlyphs", None, c.params)
+    }),
+    // FOUND (0x62a538 -> 0x5e67b0). Declared static `void TrackSpeechKey(String)`: the
+    // callee is an empty function. The key is kept all the same.
+    ("Game", "TrackSpeechKey__Q6String", |w, c| {
+        recorded(w, "TrackSpeechKey", None, c.params)
+    }),
+    // FOUND (0x641e44 -> 0x6d3de0). Declared `void NotifyNpcsOfMouthStart(s32)` on
+    // Trigger_Speech_Bubble: an event for every Sackbot, about the Sackbot with that
+    // index or, for a negative index, about the bubble's own Thing.
+    (
+        "Trigger_Speech_Bubble",
+        "NotifyNpcsOfMouthStart__i",
+        |w, c| {
+            int(param(c, 0)?)?;
+            recorded(w, "NotifyNpcsOfMouthStart", receiver(c)?, c.params)
+        },
+    ),
+    // FOUND (0x642b04 -> 0x7552d4). Declared `void AddToAnimatingDivergentList()`: the
+    // pair of `RemoveFromAnimatingDivergentList`.
+    ("Thing", "AddToAnimatingDivergentList__", |w, c| {
+        recorded(w, "AddToAnimatingDivergentList", receiver(c)?, c.params)
+    }),
+    // FOUND (0x643438 -> 0x7548b0). Declared `void SetAnimLoop(bool)`: the loop flag of
+    // the Thing's animation, when it has one. Kept on the Thing; nothing animates by it.
+    ("Thing", "SetAnimLoop__b", |w, c| {
+        boolean(param(c, 0)?)?;
+        recorded(w, "SetAnimLoop", receiver(c)?, c.params)
+    }),
+    // FOUND (0x637f18 -> 0x4c0ad4). Declared `void SetLastNavSelectionMode(bool)` on a
+    // Gooey object (found by its handle, no Thing): one byte of its UI state.
+    ("Gooey", "SetLastNavSelectionMode__b", |w, c| {
+        recorded(w, "SetLastNavSelectionMode", None, c.params)
+    }),
+    // FOUND (0x62b990 -> 0x4bfe20 -> 0x49c300). Declared
+    // `void PerFrameUpdate(Game.EPlayerNumber, s32)` on a Gooey object: its layout pass.
+    ("Gooey", "PerFrameUpdate__Q18Game.EPlayerNumberi", |w, c| {
+        recorded(w, "PerFrameUpdate", None, c.params)
+    }),
+    // FOUND (0x6373cc -> 0x4ccd30). Declared `void SetStylesheetScalingFactor(f32)` on a
+    // Gooey object: one float of its UI state.
+    ("Gooey", "SetStylesheetScalingFactor__f", |w, c| {
+        recorded(w, "SetStylesheetScalingFactor", None, c.params)
+    }),
+    // FOUND (0x5fb4a4 -> 0xd0df0 -> 0x2ce55c). Declared static
+    // `void SetGlobalSettingsAudioTo(s32, f32 x 11)`: reverb, three reverb sends, four
+    // volumes, three filters and a transition time, handed to the audio system. Kept
+    // with its arguments; nothing plays.
+    ("Game", "SetGlobalSettingsAudioTo__ifffffffffff", |w, c| {
+        recorded(w, "SetGlobalSettingsAudioTo", None, c.params)
+    }),
     // ---- the game's own test scripts ----
     ("Test", "Check__bQ7StringAi", |w, c| {
         let ok = boolean(param(c, 0)?)?;
@@ -1730,7 +2227,7 @@ const TABLE: &[(&str, &str, NativeFn)] = &[
 ];
 
 /// The natives bound through [`World::state_query`], with their return type.
-pub const STATE_QUERIES: [(&str, &str); 15] = [
+pub const STATE_QUERIES: [(&str, &str); 24] = [
     ("Game.IsNonInteractive__", "bool"),
     ("Game.GetNumPendingLinks__", "s32"),
     ("Game.GetNumAvatars__", "s32"),
@@ -1746,13 +2243,31 @@ pub const STATE_QUERIES: [(&str, &str); 15] = [
     ("Game.IsVcrPaused__", "bool"),
     ("Game.IsTutorialLevel__", "bool"),
     ("Game.IsPSNDemoBuild__", "bool"),
+    (
+        "GameMessagingManager.Messaging_ShouldFilterMessageStrings__",
+        "bool",
+    ),
+    ("Game.GetGameFrame__", "s32"),
+    ("Game.GetNumYellowHeadAvatars__", "s32"),
+    ("Score_Board.GetGameScoreDataType__", "s32"),
+    (
+        "OffScreenIndicator.GetPlayerIndicatorActivityType__i",
+        "s32",
+    ),
+    ("Game.GetNumKeyNames__Q25Gooey.EGooeyNetworkAction", "s32"),
+    (
+        "Game.GetKeyIndex__Q25Gooey.EGooeyNetworkActionQ6String",
+        "s32",
+    ),
+    ("ModalOverlay.IsPartyLeaderOverlayActive__", "bool"),
+    ("Game.GetNumKnownItemsCollectedAtStart__", "s32"),
 ];
 
 /// Bound natives that return nothing and whose whole effect here is a record in the world
 /// ([`World::engine_call`], or a counter for the audio ones): the engine would draw, play
 /// or send something that nothing models yet. Reports count calls to them apart from the
 /// other bound natives.
-pub const RECORDED_ONLY: [(&str, &str); 13] = [
+pub const RECORDED_ONLY: [(&str, &str); 29] = [
     ("Audio", "PlaySound__Q5ThingQ7StringA"),
     ("Audio", "SetInteractiveMusic__ggffiQ5Thing"),
     ("Audio", "SetInteractiveMusicStereoPairVolume__giff"),
@@ -1766,6 +2281,37 @@ pub const RECORDED_ONLY: [(&str, &str); 13] = [
     ("Trigger_Speech_Bubble", "NotifyNpcsOfMouthEnd__"),
     ("NoJoinMarker", "SetGameNoJoin__"),
     ("Game", "GotoScoreboard__b"),
+    (
+        "GameMessagingManager",
+        "Messaging_NewTriggerMessage__Q6StringQ6StringQ5Thingbib",
+    ),
+    (
+        "GameMessagingManager",
+        "Messaging_NewTriggerMessageNoPrompt__Q6StringQ6StringQ5Thingbib",
+    ),
+    (
+        "GameMessagingManager",
+        "Messaging_NewTriggerMessageSubtitles__Q6StringQ5Thingbb",
+    ),
+    (
+        "GameMessagingManager",
+        "Messaging_NewLevelLinkPrompt__Q5Thing",
+    ),
+    (
+        "GameMessagingManager",
+        "Messaging_NewWormHolePrompt__Q5Thing",
+    ),
+    ("GameMessagingManager", "Messaging_NewGameEvent__iiQ5Thingb"),
+    ("HUD", "RegisterOverlayCallback__Q5ThingQ6String"),
+    ("HUD", "PreloadGlyphs__Q11Fonts.EFontQ6String"),
+    ("Game", "TrackSpeechKey__Q6String"),
+    ("Trigger_Speech_Bubble", "NotifyNpcsOfMouthStart__i"),
+    ("Thing", "AddToAnimatingDivergentList__"),
+    ("Thing", "SetAnimLoop__b"),
+    ("Gooey", "SetLastNavSelectionMode__b"),
+    ("Gooey", "PerFrameUpdate__Q18Game.EPlayerNumberi"),
+    ("Gooey", "SetStylesheetScalingFactor__f"),
+    ("Game", "SetGlobalSettingsAudioTo__ifffffffffff"),
 ];
 
 /// Natives the VM itself handles; they never reach a host.
@@ -1844,6 +2390,60 @@ mod tests {
         assert!(call("Game", "GetLevelSlotID__", &[]).is_err());
         assert!(call("Thing", "UpdateScale__", &[Value::Thing(Some(1))]).is_err());
         assert!(call("Thing", "HideRenderMesh__Q5Thing", &[Value::Thing(None)]).is_err());
+    }
+
+    #[test]
+    fn d263_pad_rules_constants_and_a_world_without_the_state() {
+        // The pad rule: every bit of the mask, the mode in the masks.
+        let pad = PadState {
+            mask_a: 1,
+            mask_b: 1,
+            now: 0b0110,
+            old: 0b0100,
+        };
+        assert!(pad.is_pressed(1, 0b0110) && pad.is_pressed(1, 0b0010));
+        assert!(!pad.is_pressed(1, 0b0111) && !pad.is_pressed(2, 0b0010));
+        // Newly down: the whole mask is down now and was not the frame before.
+        assert!(pad.is_just_pressed(1, 0b0010) && pad.is_just_pressed(1, 0b0110));
+        assert!(!pad.is_just_pressed(1, 0b0100) && !pad.is_just_pressed(1, 0b1000));
+        let after = PadState {
+            now: 0b0100,
+            old: 0b0110,
+            ..pad
+        };
+        assert!(after.is_just_released(1, 0b0010) && after.is_just_released(1, 0b0110));
+        assert!(!after.is_just_released(1, 0b0100) && !pad.is_just_released(1, 0b0010));
+        // The second mask gates the edge tests only.
+        let held = PadState { mask_b: 2, ..pad };
+        assert!(held.is_pressed(1, 0b0010) && !held.is_just_pressed(1, 0b0010));
+        assert!(!PadState { mask_b: 2, ..after }.is_just_released(1, 0b0010));
+        assert!(held.is_just_pressed(3, 0b0010));
+        // A mask of no buttons is "all down" in both frames: pressed, never an edge.
+        assert!(pad.is_pressed(1, 0) && !pad.is_just_pressed(1, 0));
+
+        // A null Thing never reaches the world; a Thing does, and this world has no pads.
+        let args = |t| [Value::Thing(t), Value::Int(1), Value::Int(4)];
+        for name in [
+            "IsJustPressed__Q5Thingii",
+            "IsPressed__Q5Thingii",
+            "IsJustReleased__Q5Thingii",
+        ] {
+            assert_eq!(call("Pad", name, &args(None)), Ok(Value::Bool(false)));
+            assert!(call("Pad", name, &args(Some(1))).is_err(), "{name}");
+        }
+        // The two constants the executable returns as literals need no world.
+        assert_eq!(call("Poppet", "GetTextEntryType__", &[]), Ok(Value::Int(2)));
+        assert_eq!(
+            call("Game", "IsTarsierDLCEnabled__", &[]),
+            Ok(Value::Bool(true))
+        );
+        // Everything else asks the world, and a world without the state says so.
+        assert!(call("LAMS", "IsInLams__i", &[Value::Int(1)]).is_err());
+        assert!(call("Game", "GetGameFrame__", &[]).is_err());
+        assert!(call("Game", "GetGlobalSettingsWaterLevel__", &[]).is_err());
+        let to = [Value::Float(1.), Value::Bool(false)];
+        assert!(call("Game", "SetGlobalSettingsGravityTo__fb", &to).is_err());
+        assert!(call("Game", "TrackSpeechKey__Q6String", &[Value::Object(None)]).is_err());
     }
 
     #[test]

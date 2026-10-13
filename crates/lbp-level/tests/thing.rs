@@ -136,14 +136,20 @@ fn world_tail_0x3f8(w: &mut W) {
     }
     w.u8(0).s32(0); // hasLevelLightingBeenSetup, globalSettingsThingUID
     for i in 0..(4 + 9) {
-        w.f32(if i == 4 { 12.5 } else { 0. }); // camera settings, water level/wave, gravity
+        // camera settings, then the water level, wave and gravity triples
+        w.f32(match i {
+            4 => 12.5,
+            7 => 0.75,
+            10 => -2.5,
+            _ => 0.,
+        });
     }
     w.u32(0).u32(2).u32(40).u32(0).u32(2).u32(1).u32(0); // floatarray, two intarrays
-    w.f32(0.).f32(0.).f32(0.).f32(0.).f32(0.).f32(0.); // tint, tint colour v4, target
-    for _ in 0..6 {
-        w.f32(0.); // murkiness, bits
+    w.f32(0.3).f32(0.).f32(0.).f32(0.).f32(0.).f32(0.); // tint, tint colour v4, target
+    for i in 0..6 {
+        w.f32([0.6, 0., 0., 0.9, 0., 0.][i]); // murkiness, bits
     }
-    w.u8(0).u8(0).f32(0.).u32(5).s32(0); // drain sounds, wave pos, gameMode, sackbot
+    w.u8(1).u8(0).f32(0.).u32(5).s32(0); // drain sounds, wave pos, gameMode, sackbot
     w.u32(0).u32(0).s32(0).s32(0).f32(0.).u8(0); // CutsceneCameraManager
     w.s32(0);
     for _ in 0..10 {
@@ -215,6 +221,13 @@ fn walks_world_things_and_reads_render_parts() {
         );
         assert_eq!(pw.global_settings_thing_uids, [40, 0]);
         assert_eq!(pw.global_settings_thing_priority, [1, 0]);
+        // D263: the stored current value of the other one-float global settings.
+        assert_eq!(
+            (pw.water_wave_magnitude, pw.gravity, pw.water_tint),
+            (0.75, -2.5, 0.3)
+        );
+        assert_eq!((pw.water_murkiness, pw.water_bits), (0.6, 0.9));
+        assert!(pw.water_drain_sounds_enabled);
         assert_eq!(r.detached_shapes, 0);
         assert_eq!(r.max_depth, 4);
     }

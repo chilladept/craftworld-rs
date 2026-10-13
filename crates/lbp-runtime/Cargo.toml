@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 lbp-level.workspace = true
+lbp-resource.workspace = true
 lbp-script-vm.workspace = true
 
 [dev-dependencies]

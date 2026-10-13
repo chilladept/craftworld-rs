@@ -124,6 +124,11 @@ impl TranslationTable {
     pub fn get(&self, key: u32) -> Option<&str> {
         self.entries.get(*self.lookup.get(&key)?)?.text.as_deref()
     }
+    /// Does the table have a row with this key? True also for a row whose text is
+    /// missing, which [`Self::get`] answers with `None`.
+    pub fn contains_key(&self, key: u32) -> bool {
+        self.lookup.contains_key(&key)
+    }
     /// The string for a translation tag (hashed with [`lams_key`]).
     pub fn translate(&self, tag: &str) -> Option<&str> {
         self.get(lams_key(tag))

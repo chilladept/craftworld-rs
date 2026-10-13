@@ -2164,3 +2164,526 @@ fn stage4_recorded_calls_are_counted_and_change_nothing_else() {
         assert!(bound().any(|b| b == entry), "{entry:?}");
     }
 }
+
+#[test]
+fn d263_pad_queries_follow_the_players_pad_and_the_setter_feeds_it() {
+    let mut w = LevelWorld::from_things(&level());
+    let head = w.add_player([0.; 3], (0., 0.));
+    let ask = |w: &mut LevelWorld, name: &str, t: Option<u32>, buttons: i32| {
+        let args = [Value::Thing(t), Value::Int(1), Value::Int(buttons)];
+        native(w, "Pad", name, &args).unwrap()
+    };
+    let (just, held, released) = (
+        "IsJustPressed__Q5Thingii",
+        "IsPressed__Q5Thingii",
+        "IsJustReleased__Q5Thingii",
+    );
+    let (yes, no) = (Value::Bool(true), Value::Bool(false));
+    // A record without a pad: every query is false.
+    assert_eq!(w.player_records[0].pad, None);
+    for name in [just, held, released] {
+        assert_eq!(ask(&mut w, name, Some(head), 4), no, "{name}");
+    }
+    // The viewer's side: buttons down this frame, on the pad of player 0.
+    assert!(w.set_pad_buttons(0, 4));
+    assert!(!w.set_pad_buttons(3, 4), "no record for player 3");
+    assert_eq!(ask(&mut w, just, Some(head), 4), yes);
+    assert_eq!(ask(&mut w, held, Some(head), 4), yes);
+    assert_eq!(ask(&mut w, released, Some(head), 4), no);
+    // Every bit of the mask must be down; another mode does not own the pad.
+    assert_eq!(ask(&mut w, just, Some(head), 6), no);
+    let other_mode = [Value::Thing(Some(head)), Value::Int(2), Value::Int(4)];
+    assert_eq!(native(&mut w, "Pad", held, &other_mode), Ok(no.clone()));
+    // A Thing that is nobody's Sackboy, and a null Thing, lead to no pad.
+    assert_eq!(ask(&mut w, held, Some(1), 4), no);
+    assert_eq!(ask(&mut w, held, None, 4), no);
+    // The next frame, still down: held, no longer an edge.
+    w.end_pad_frame();
+    assert_eq!(ask(&mut w, just, Some(head), 4), no);
+    assert_eq!(ask(&mut w, held, Some(head), 4), yes);
+    // Let go: the release edge for one frame.
+    w.set_pad_buttons(0, 0);
+    assert_eq!(ask(&mut w, released, Some(head), 4), yes);
+    assert_eq!(ask(&mut w, held, Some(head), 4), no);
+    w.end_pad_frame();
+    assert_eq!(ask(&mut w, released, Some(head), 4), no);
+    // A second player has his own pad.
+    let second = w.add_player([0.; 3], (0., 0.));
+    assert_eq!(ask(&mut w, held, Some(second), 4), no);
+    assert!(w.set_pad_buttons(1, 4));
+    assert_eq!(ask(&mut w, just, Some(second), 4), yes);
+    assert_eq!(ask(&mut w, held, Some(head), 4), no);
+    // A level tick ends the pad frame.
+    let mut vm = Vm::default();
+    let mut host = Bindings::new(w);
+    let mut scripts = LevelScripts::new(&vm, &host.world);
+    scripts.tick_level(&mut vm, &mut host, 1000);
+    assert_eq!(ask(&mut host.world, just, Some(second), 4), no);
+    assert_eq!(ask(&mut host.world, held, Some(second), 4), yes);
+}
+
+/// A binary translation table: (key, text) rows, keys ascending.
+fn translation_table(
+    rows: &[(u32, &str)],
+) -> std::sync::Arc<lbp_resource::translation::TranslationTable> {
+    use lbp_resource::translation::{parse_translation_table, TranslationLimits};
+    let mut out = (rows.len() as u32).to_be_bytes().to_vec();
+    let mut blob = Vec::new();
+    for (key, text) in rows {
+        out.extend_from_slice(&key.to_be_bytes());
+        out.extend_from_slice(&(blob.len() as u32).to_be_bytes());
+        for unit in std::iter::once(0xfeff).chain(text.encode_utf16()) {
+            blob.extend_from_slice(&unit.to_be_bytes());
+        }
+    }
+    out.extend_from_slice(&blob);
+    std::sync::Arc::new(parse_translation_table(&out, TranslationLimits::default()).unwrap())
+}
+
+#[test]
+fn d263_lams_keys_are_looked_up_in_the_loaded_tables() {
+    use lbp_resource::translation::lams_key;
+    let mut w = LevelWorld::from_things(&level());
+    let key = |tag: &str| Value::Int(lams_key(tag) as i32);
+    let in_lams = |w: &mut LevelWorld, k: Value| native(w, "LAMS", "IsInLams__i", &[k]);
+    let translate = |w: &mut LevelWorld, k: Value| native(w, "LAMS", "Translate__i", &[k]);
+    // The key a script makes is the key the tables are searched with.
+    let made = native(
+        &mut w,
+        "LAMS",
+        "MakeLamsKeyID__Q6String",
+        &[Value::Str("HELLO".into())],
+    );
+    assert_eq!(made, Ok(key("HELLO")));
+    // No table loaded: nothing is in LAMS, and there is no text to give.
+    assert_eq!(in_lams(&mut w, key("HELLO")), Ok(Value::Bool(false)));
+    assert!(translate(&mut w, key("HELLO")).is_err());
+
+    let mut rows = [(lams_key("HELLO"), "Hello!"), (lams_key("BYE"), "Bye")];
+    rows.sort();
+    let base = translation_table(&rows);
+    let patch = translation_table(&[(lams_key("HELLO"), "Hello again")]);
+    w.translations = vec![base.clone()];
+    assert_eq!(in_lams(&mut w, key("HELLO")), Ok(Value::Bool(true)));
+    assert_eq!(in_lams(&mut w, key("BYE")), Ok(Value::Bool(true)));
+    assert_eq!(in_lams(&mut w, key("NOPE")), Ok(Value::Bool(false)));
+    assert_eq!(
+        translate(&mut w, key("HELLO")),
+        Ok(Value::Str("Hello!".into()))
+    );
+    // A key in no table has no text: an error, not an empty string.
+    assert!(translate(&mut w, key("NOPE")).is_err());
+    // The first table that has the key answers.
+    w.translations = vec![patch, base];
+    assert_eq!(
+        translate(&mut w, key("HELLO")),
+        Ok(Value::Str("Hello again".into()))
+    );
+    assert_eq!(translate(&mut w, key("BYE")), Ok(Value::Str("Bye".into())));
+}
+
+#[test]
+fn d263_global_settings_blend_from_start_to_target() {
+    use lbp_runtime::Blend;
+    let (float, flag) = (Value::Float, Value::Bool);
+    let mut things = level();
+    things[0].data.world = Some(WorldPart {
+        water_level: 5.,
+        water_wave_magnitude: 0.5,
+        gravity: -2.5,
+        water_tint: 0.25,
+        water_murkiness: 0.75,
+        water_bits: 0.125,
+        gs_from: [0.; 5],
+        gs_target: [1., 2., 3., 4., 5.],
+        gs_blend: 0.5,
+        ..Default::default()
+    });
+    let mut w = LevelWorld::from_things(&things);
+    let get = |w: &mut LevelWorld, name: &str| {
+        native(w, "Game", &format!("GetGlobalSettings{name}__"), &[])
+    };
+    let set = |w: &mut LevelWorld, name: &str, value: f32, blend: bool| {
+        let name = format!("SetGlobalSettings{name}To__fb");
+        native(w, "Game", &name, &[float(value), flag(blend)]).unwrap()
+    };
+    let factor = |w: &mut LevelWorld, kind: i32, t: f32| {
+        let name = "SetGlobalSettingsBlendFactor__Q24Game.EGlobalSettingsTypef";
+        native(w, "Game", name, &[Value::Int(kind), float(t)])
+    };
+    // The start: each setting at rest on its stored value.
+    for (name, stored) in [
+        ("WaterLevel", 5.),
+        ("WaterWaveMagnitude", 0.5),
+        ("WaterTint", 0.25),
+        ("WaterMurkiness", 0.75),
+        ("WaterBits", 0.125),
+    ] {
+        assert_eq!(get(&mut w, name), Ok(float(stored)), "{name}");
+    }
+    assert_eq!(w.pworld.gravity, Blend::at(-2.5));
+
+    // With blend the value stays until the script raises the factor (type 0 = level).
+    set(&mut w, "WaterLevel", 9., true);
+    assert_eq!(get(&mut w, "WaterLevel"), Ok(float(5.)));
+    factor(&mut w, 0, 0.25).unwrap();
+    assert_eq!(get(&mut w, "WaterLevel"), Ok(float(6.)));
+    // A new target half way: the start is the value in force, the factor 0 again.
+    set(&mut w, "WaterLevel", 2., true);
+    let expected = Blend {
+        from: 6.,
+        to: 2.,
+        t: 0.,
+    };
+    assert_eq!(w.pworld.water, expected);
+    factor(&mut w, 0, 1.).unwrap();
+    assert_eq!(get(&mut w, "WaterLevel"), Ok(float(2.)));
+    // Without blend the setting jumps.
+    set(&mut w, "WaterLevel", 7., false);
+    assert_eq!(w.pworld.water, Blend::at(7.));
+    // A level that is not above 0.0001 reads as no water, 0.0.
+    set(&mut w, "WaterLevel", 0.0001, false);
+    assert_eq!(get(&mut w, "WaterLevel"), Ok(float(0.)));
+    set(&mut w, "WaterLevel", 0.001, false);
+    assert_eq!(get(&mut w, "WaterLevel"), Ok(float(0.001)));
+    set(&mut w, "WaterLevel", -3., false);
+    assert_eq!(get(&mut w, "WaterLevel"), Ok(float(0.)));
+
+    // Each type has its own factor: 1 gravity, 2 wave, 4 murkiness, 6 bits.
+    set(&mut w, "Gravity", 1.5, true);
+    set(&mut w, "WaterWaveMagnitude", 1.5, true);
+    set(&mut w, "WaterMurkiness", 0.25, true);
+    set(&mut w, "WaterBits", 1.125, true);
+    for kind in [1, 2, 4, 6] {
+        factor(&mut w, kind, 0.5).unwrap();
+    }
+    assert_eq!(w.pworld.gravity.value(), -0.5);
+    assert_eq!(get(&mut w, "WaterWaveMagnitude"), Ok(float(1.)));
+    assert_eq!(get(&mut w, "WaterMurkiness"), Ok(float(0.5)));
+    assert_eq!(get(&mut w, "WaterBits"), Ok(float(0.625)));
+    // The tint is one value; its factor (type 3) is kept and does not change it.
+    set(&mut w, "WaterTint", 0.5, true);
+    factor(&mut w, 3, 0.25).unwrap();
+    assert_eq!(get(&mut w, "WaterTint"), Ok(float(0.5)));
+    assert_eq!(w.pworld.water_tint_blend, 0.25);
+    factor(&mut w, 7, 0.75).unwrap();
+    assert_eq!(w.pworld.audio_blend, 0.75);
+    assert!(factor(&mut w, 8, 0.).is_err());
+    assert!(factor(&mut w, -1, 0.).is_err());
+
+    // Lighting (type 5). Stored: from 0, target 1..5, factor 0.5.
+    assert_eq!(w.pworld.lighting(), [0.5, 1., 1.5, 2., 2.5]);
+    let lighting = |w: &mut LevelWorld, values: [f32; 5], blend: bool| {
+        let mut args: Vec<Value> = values.iter().map(|v| float(*v)).collect();
+        args.push(flag(blend));
+        native(w, "Game", "SetGlobalSettingsTo__fffffb", &args).unwrap()
+    };
+    // Arguments: Lighting, Darkness, Fog, FogTint, ColourCorrection; kept in stored
+    // order: lighting, colour correction, fog, fog tint, darkness.
+    lighting(&mut w, [10., 50., 30., 40., 20.], true);
+    assert_eq!(w.pworld.lighting_from, [0.5, 1., 1.5, 2., 2.5]);
+    assert_eq!(w.pworld.lighting_to, [10., 20., 30., 40., 50.]);
+    assert_eq!(w.pworld.lighting(), [0.5, 1., 1.5, 2., 2.5]);
+    factor(&mut w, 5, 1.).unwrap();
+    assert_eq!(w.pworld.lighting(), [10., 20., 30., 40., 50.]);
+    lighting(&mut w, [1., 5., 3., 4., 2.], false);
+    assert_eq!(w.pworld.lighting_from, [1., 2., 3., 4., 5.]);
+    assert_eq!(
+        (w.pworld.lighting(), w.pworld.lighting_blend),
+        ([1., 2., 3., 4., 5.], 1.)
+    );
+
+    let drain = "SetGlobalSettingsWaterDrainSoundsEnabled__b";
+    assert!(!w.pworld.water_drain_sounds);
+    native(&mut w, "Game", drain, &[flag(true)]).unwrap();
+    assert!(w.pworld.water_drain_sounds);
+    // A wrong argument type is an error.
+    let bad = [Value::Int(1), flag(false)];
+    assert!(native(&mut w, "Game", "SetGlobalSettingsGravityTo__fb", &bad).is_err());
+
+    // Without a PWorld the setters do nothing and the getters give 0.0.
+    let mut bare = LevelWorld::default();
+    let before = bare.pworld.clone();
+    set(&mut bare, "WaterLevel", 3., false);
+    lighting(&mut bare, [1.; 5], false);
+    factor(&mut bare, 0, 0.5).unwrap();
+    native(&mut bare, "Game", drain, &[flag(true)]).unwrap();
+    assert_eq!(bare.pworld, before);
+    assert_eq!(get(&mut bare, "WaterBits"), Ok(float(0.)));
+    assert_eq!(get(&mut bare, "WaterLevel"), Ok(float(0.)));
+}
+
+#[test]
+fn d263_game_state_queries_and_the_scoring_slot_test() {
+    let int = Value::Int;
+    let mut slot = base();
+    slot.class_name = "SlotID".into();
+    slot.strings_a = ["SlotID", "Type", "SlotNumber", "Mode__"]
+        .map(String::from)
+        .to_vec();
+    slot.type_refs = vec![ty(3, 0), ty(3, 0)];
+    let mut vm = Vm::default();
+    vm.load(slot, Some(BASE));
+
+    let mut things = level();
+    things[0].data.world = Some(WorldPart {
+        frame: 40,
+        ..Default::default()
+    });
+    let mut w = LevelWorld::from_things(&things);
+    // The level's slot is known to the caller here; the primary slot stays empty.
+    w.level_slot_id = (1, 7);
+    let mut host = Bindings::new(w);
+    assert!(lbp_runtime::add_engine_objects(&mut vm, &mut host, 1000).is_empty());
+    let w = &mut host.world;
+    let (level_slot, primary) = (w.level_slot.unwrap(), w.primary_level_slot.unwrap());
+    assert_eq!(vm.field(level_slot, "Type"), Some(&int(1)));
+    assert_eq!(vm.field(level_slot, "SlotNumber"), Some(&int(7)));
+    assert_eq!(vm.field(primary, "Type"), Some(&int(0)));
+
+    // The frame is the PWorld's, and steps with it.
+    let game = |w: &mut LevelWorld, name: &str| native(w, "Game", name, &[]);
+    assert_eq!(game(w, "GetGameFrame__"), Ok(int(40)));
+    w.advance_frame();
+    assert_eq!(game(w, "GetGameFrame__"), Ok(int(41)));
+    assert_eq!(
+        game(&mut LevelWorld::default(), "GetGameFrame__"),
+        Ok(int(0))
+    );
+
+    // Sackboys in the level, and the score data type: players - 1, or 6 in versus.
+    let me = Value::Thing(Some(1));
+    let data_type = |w: &mut LevelWorld| {
+        let me = [Value::Thing(Some(1))];
+        native(w, "Score_Board", "GetGameScoreDataType__", &me)
+    };
+    assert_eq!(game(w, "GetNumYellowHeadAvatars__"), Ok(int(0)));
+    assert_eq!(data_type(w), Ok(int(0)));
+    w.add_player([0.; 3], (0., 0.));
+    w.add_player([0.; 3], (0., 0.));
+    assert_eq!(game(w, "GetNumYellowHeadAvatars__"), Ok(int(2)));
+    assert_eq!(data_type(w), Ok(int(1)));
+    w.pworld.game_mode = 1;
+    assert_eq!(data_type(w), Ok(int(6)));
+
+    // Message strings are filtered unless the slot's type is 2.
+    let filter = |w: &mut LevelWorld| {
+        let name = "Messaging_ShouldFilterMessageStrings__";
+        native(w, "GameMessagingManager", name, &[])
+    };
+    assert_eq!(filter(w), Ok(Value::Bool(true)));
+
+    // Valid for scoring: type 0, 1 or 8, and not the empty slot (0, 0).
+    let valid = |w: &mut LevelWorld, slot: Value| {
+        let name = "IsSlotIDValidForScoring__Q6SlotIDi";
+        native(w, "Score_Board", name, &[me.clone(), slot, int(0)])
+    };
+    let object = |o| Value::Object(Some(o));
+    assert_eq!(valid(w, object(level_slot)), Ok(Value::Bool(true)));
+    assert_eq!(valid(w, object(primary)), Ok(Value::Bool(false)));
+    for (kind, number, expected) in [(0, 5, true), (8, 0, true), (2, 7, false), (3, 1, false)] {
+        w.level_slot_id = (kind, number);
+        assert_eq!(
+            valid(w, object(level_slot)),
+            Ok(Value::Bool(expected)),
+            "slot ({kind}, {number})"
+        );
+    }
+    w.level_slot_id = (2, 7);
+    assert_eq!(filter(w), Ok(Value::Bool(false)));
+    // A SlotID the world did not make cannot be read: an error, not a guess.
+    assert!(valid(w, Value::Object(None)).is_err());
+
+    // Constants for one local player (INFERRED) and the two the executable returns.
+    assert_eq!(
+        native(
+            w,
+            "OffScreenIndicator",
+            "GetPlayerIndicatorActivityType__i",
+            &[int(0)]
+        ),
+        Ok(int(0))
+    );
+    assert_eq!(
+        native(
+            w,
+            "Game",
+            "GetNumKeyNames__Q25Gooey.EGooeyNetworkAction",
+            &[int(80)]
+        ),
+        Ok(int(0))
+    );
+    assert_eq!(
+        native(
+            w,
+            "Game",
+            "GetKeyIndex__Q25Gooey.EGooeyNetworkActionQ6String",
+            &[int(80), Value::Str("Larry".into())]
+        ),
+        Ok(int(-1))
+    );
+    assert_eq!(
+        native(w, "ModalOverlay", "IsPartyLeaderOverlayActive__", &[]),
+        Ok(Value::Bool(false))
+    );
+    assert_eq!(game(w, "GetNumKnownItemsCollectedAtStart__"), Ok(int(0)));
+    assert_eq!(game(w, "IsTarsierDLCEnabled__"), Ok(Value::Bool(true)));
+    assert_eq!(native(w, "Poppet", "GetTextEntryType__", &[]), Ok(int(2)));
+    assert_eq!(
+        native(
+            w,
+            "Resource",
+            "LoadAnimatedTextureByFilename__g",
+            &[int(4242)]
+        ),
+        Ok(Value::Ref(4242))
+    );
+    // Every state query in the list has an answer of its declared type.
+    for (name, declared) in lbp_script_vm::natives::STATE_QUERIES {
+        let got = w.state_query(name);
+        let ok = match declared {
+            "bool" => matches!(got, Ok(Value::Bool(_))),
+            _ => matches!(got, Ok(Value::Int(_))),
+        };
+        assert!(ok, "{name}: {got:?}");
+    }
+}
+
+#[test]
+fn d263_recorded_calls_keep_their_arguments_for_a_later_stage() {
+    use lbp_runtime::{EngineRequest, KEPT_REQUESTS, MAX_REQUESTS};
+    use lbp_script_vm::natives::RECORDED_ONLY;
+    let mut things = level();
+    things[0].data.world = Some(WorldPart {
+        frame: 9,
+        ..Default::default()
+    });
+    let mut w = LevelWorld::from_things(&things);
+    let me = Value::Thing(Some(1));
+    let (text, flag, int) = (|t: &str| Value::Str(t.into()), Value::Bool, Value::Int);
+    let gooey = Value::Object(None);
+    let message = vec![
+        text("Hi"),
+        text("Larry"),
+        me.clone(),
+        flag(true),
+        int(2),
+        flag(false),
+    ];
+    let mut audio = vec![int(3)];
+    audio.extend((0..11).map(|i| Value::Float(i as f32)));
+    let manager = "GameMessagingManager";
+    let calls: Vec<(&str, &str, Vec<Value>)> = vec![
+        (
+            manager,
+            "Messaging_NewTriggerMessage__Q6StringQ6StringQ5Thingbib",
+            message.clone(),
+        ),
+        (
+            manager,
+            "Messaging_NewTriggerMessageNoPrompt__Q6StringQ6StringQ5Thingbib",
+            message.clone(),
+        ),
+        (
+            manager,
+            "Messaging_NewTriggerMessageSubtitles__Q6StringQ5Thingbb",
+            vec![text("Sub"), me.clone(), flag(false), flag(true)],
+        ),
+        (
+            manager,
+            "Messaging_NewLevelLinkPrompt__Q5Thing",
+            vec![me.clone()],
+        ),
+        (
+            manager,
+            "Messaging_NewWormHolePrompt__Q5Thing",
+            vec![Value::Thing(None)],
+        ),
+        (
+            manager,
+            "Messaging_NewGameEvent__iiQ5Thingb",
+            vec![int(4), int(3), me.clone(), flag(false)],
+        ),
+        (
+            "HUD",
+            "RegisterOverlayCallback__Q5ThingQ6String",
+            vec![me.clone(), text("RenderHUD")],
+        ),
+        (
+            "HUD",
+            "PreloadGlyphs__Q11Fonts.EFontQ6String",
+            vec![int(6), text("Hi")],
+        ),
+        ("Game", "TrackSpeechKey__Q6String", vec![text("KEY")]),
+        (
+            "Trigger_Speech_Bubble",
+            "NotifyNpcsOfMouthStart__i",
+            vec![me.clone(), int(-1)],
+        ),
+        ("Thing", "AddToAnimatingDivergentList__", vec![me.clone()]),
+        ("Thing", "SetAnimLoop__b", vec![me.clone(), flag(true)]),
+        (
+            "Gooey",
+            "SetLastNavSelectionMode__b",
+            vec![gooey.clone(), flag(true)],
+        ),
+        (
+            "Gooey",
+            "PerFrameUpdate__Q18Game.EPlayerNumberi",
+            vec![gooey.clone(), int(0), int(1)],
+        ),
+        (
+            "Gooey",
+            "SetStylesheetScalingFactor__f",
+            vec![gooey, Value::Float(1.5)],
+        ),
+        (
+            "Game",
+            "SetGlobalSettingsAudioTo__ifffffffffff",
+            audio.clone(),
+        ),
+    ];
+    for (class, name, args) in &calls {
+        assert_eq!(native(&mut w, class, name, args), Ok(Value::Void), "{name}");
+        assert!(RECORDED_ONLY.contains(&(*class, *name)), "{name}");
+    }
+    // With the 13 of stage 4 these are all the recorded-only natives.
+    assert_eq!(calls.len() + 13, RECORDED_ONLY.len());
+    // Every call is counted once by name.
+    assert_eq!(w.engine_calls.len(), calls.len());
+    assert!(w.engine_calls.values().all(|n| *n == 1));
+    // Ten of them are kept with their arguments, in call order, with the frame.
+    let kept: Vec<&str> = w.requests.iter().map(|r| r.name).collect();
+    assert_eq!(kept, KEPT_REQUESTS);
+    assert_eq!(
+        w.requests[0],
+        EngineRequest {
+            name: "Messaging_NewTriggerMessage",
+            thing: Some(1),
+            args: message,
+            frame: 9,
+        }
+    );
+    assert_eq!(w.requests[2].args[0], text("Sub"));
+    assert_eq!(w.requests[4].thing, None, "a prompt for a null Thing");
+    assert_eq!(w.requests[5].args[..2], [int(4), int(3)]);
+    assert_eq!(w.requests[6].args[1], text("RenderHUD"));
+    assert_eq!(w.requests[7].args, [text("KEY")]);
+    assert_eq!(w.requests[8].thing, Some(1));
+    assert_eq!(w.requests[8].args, [int(-1)]);
+    assert_eq!(w.requests[9].args, audio);
+    // The loop flag is kept on its Thing.
+    assert_eq!(w.things[1].anim_loop, Some(true));
+    assert_eq!(w.things[2].anim_loop, None);
+    // A wrong argument is still an error, and nothing is recorded for it.
+    let bad = [me, int(1)];
+    assert!(native(&mut w, "Thing", "SetAnimLoop__b", &bad).is_err());
+    assert_eq!(w.engine_calls["SetAnimLoop"], 1);
+    // The list of kept requests is bounded; the rest are counted.
+    let key = [text("K")];
+    for _ in 0..MAX_REQUESTS {
+        native(&mut w, "Game", "TrackSpeechKey__Q6String", &key).unwrap();
+    }
+    assert_eq!(w.requests.len(), MAX_REQUESTS);
+    assert_eq!(w.requests_dropped, KEPT_REQUESTS.len() as u64);
+}

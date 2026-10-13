@@ -29,7 +29,11 @@
 //! output targets the pass visited and the reaction calls by script GUID. `triggers` is the PTrigger
 //! census over the levels read, `switches` the PSwitch census with the input tables built
 //! from the outputs' targets, `pworld` the census of the PWorld values scripts read (game
-//! mode, pause flag, frame, water level, global-setting arrays). Names and counts only; no bytecode. Output: a NEW JSON file under
+//! mode, pause flag, frame, water level, global-setting arrays). The English base and patch
+//! translation tables (the two GUIDs the story browser reads) are handed to every level
+//! world, patch first, so `LAMS.IsInLams__i` and `Translate__i` answer from them;
+//! `translation_tables` says what was loaded. `play_all.requests_kept` counts the recorded
+//! calls kept with their arguments, by name. Names and counts only; no bytecode. Output: a NEW JSON file under
 //! ignored `local-analysis/`. Counting unit: Thing with a PScript part (instances) or
 //! distinct script class (function names).
 use lbp_catalog::{attachment::AttachedSource, LoadControl};
@@ -561,6 +565,8 @@ struct Played {
     unbound: BTreeMap<String, u64>,
     /// `Game.GotoScoreboard__b` requests recorded.
     scoreboard_requests: usize,
+    /// Recorded calls kept with their arguments (`LevelWorld::requests`), by name.
+    requests: BTreeMap<&'static str, u64>,
     /// Global-settings slots that hold a Thing UID at the end.
     global_settings_held: usize,
     /// Switch outputs whose signal at the end differs from the stored one, by switch type.
@@ -720,6 +726,10 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
     unbound.truncate(40);
     let outputs_changed = outputs_changed(&host.world, false);
     let deactivated = host.world.things.iter().filter(|t| t.deactivated).count();
+    let mut requests = BTreeMap::<&'static str, u64>::new();
+    for r in &host.world.requests {
+        *requests.entry(r.name).or_default() += 1;
+    }
     let json = serde_json::json!({
         "instances": level.instances.len(),
         "ticks": level.ticks,
@@ -746,6 +756,9 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
         "global_settings_thing_priority": host.world.pworld.global_settings_thing_priority,
         "engine_calls": host.world.engine_calls,
         "scoreboard_requests": host.world.scoreboard_requests,
+        "requests_kept": requests,
+        "requests_dropped": host.world.requests_dropped,
+        "lighting_in_force": host.world.pworld.lighting(),
         "stopped_by_fault": level.stopped.len(),
         "threads_running_at_end": level.threads(),
         "pending_at_end": level.pending(),
@@ -794,6 +807,7 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
             .collect(),
         engine_faults: engine_faults.len(),
         scoreboard_requests: host.world.scoreboard_requests.len(),
+        requests,
         global_settings_held: host
             .world
             .pworld
@@ -827,6 +841,7 @@ struct PlayTotals {
     unbound: BTreeMap<String, (u64, usize)>,
     scoreboard_requests: usize,
     levels_with_scoreboard_requests: usize,
+    requests: BTreeMap<&'static str, u64>,
     global_settings_held: usize,
     faults: BTreeMap<String, (u64, usize)>,
     thread_faults: BTreeMap<String, (u64, usize)>,
@@ -860,6 +875,9 @@ impl PlayTotals {
         self.deactivated += p.deactivated;
         self.scoreboard_requests += p.scoreboard_requests;
         self.levels_with_scoreboard_requests += usize::from(p.scoreboard_requests > 0);
+        for (name, n) in &p.requests {
+            *self.requests.entry(name).or_default() += n;
+        }
         self.global_settings_held += p.global_settings_held;
         if let Some(f) = &p.first_tick {
             self.first_reactions.absorb(f.reactions.clone());
@@ -921,6 +939,7 @@ impl PlayTotals {
             "unbound_natives_fault": opts.strict,
             "scoreboard_requests": self.scoreboard_requests,
             "levels_with_scoreboard_requests": self.levels_with_scoreboard_requests,
+            "requests_kept": self.requests,
             "global_setting_slots_held_at_end": self.global_settings_held,
             "levels_played": self.levels,
             "levels_with_faults": self.levels_with_faults,
@@ -1043,6 +1062,14 @@ fn run() -> Result<(), String> {
     let catalog = lbp_catalog::load(Path::new(args[1]), &control)?;
     let source = AttachedSource::attach(Path::new(args[2]), &catalog, &control)?;
     let (scripts, scripts_not_read) = lbp_ui_script::load::load(&source, &catalog, &control)?;
+    // The English tables, patch first (as the story browser layers them). INFERRED that
+    // these are loaded while a level plays; a table that cannot be read is left out.
+    let (strings, table_status) = lbp_preview::story::load_strings(&source, &catalog, &control);
+    let translations: Vec<std::sync::Arc<_>> = [strings.patch, strings.base]
+        .into_iter()
+        .flatten()
+        .map(std::sync::Arc::new)
+        .collect();
     let mut vm = Vm::default();
     let scripts_loaded = scripts.len();
     let with_guid = scripts.iter().filter(|(g, _)| g.is_some()).count();
@@ -1088,6 +1115,7 @@ fn run() -> Result<(), String> {
             }
         };
         let mut world = LevelWorld::from_things(&report.things);
+        world.translations = translations.clone();
         // `--all --play`: each level on its own VM (same load order, so the same class
         // ids), so no heap object or static outlives its level.
         let mut fresh = match (&play_opts, every) {
@@ -1219,6 +1247,14 @@ fn run() -> Result<(), String> {
         "scripts_loaded": scripts_loaded,
         "scripts_with_guid": with_guid,
         "scripts_not_read": scripts_not_read,
+        "translation_tables": {
+            "unit": "table read; distinct LAMS key, summed over the tables",
+            "read": translations.len(),
+            "keys": translations.iter().map(|t| t.distinct_keys()).sum::<usize>(),
+            "status": table_status.iter()
+                .map(|t| format!("g{}: {:?} {}", t.guid, t.state, t.detail))
+                .collect::<Vec<_>>(),
+        },
         "levels": totals.levels,
         "levels_not_read": totals.levels_not_read,
         "things": totals.things,

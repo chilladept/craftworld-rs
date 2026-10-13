@@ -16,11 +16,15 @@
 //! 24 and `Update__` by 11; the remaining names are UI, switch and enter/leave handlers).
 use lbp_level::parts::{ScriptObject, ScriptPart, ScriptValue, ShapeColor, SwitchSignal};
 use lbp_level::thing::ThingRecord;
+use lbp_resource::translation::TranslationTable;
 use lbp_script_vm::natives::{
-    Bindings, CameraFromToUp, PlayerRecord, ResourceKind, SwitchInput, World, SCORE_BOARD_SCRIPT,
+    Bindings, CameraFromToUp, PadState, PlayerRecord, ResourceKind, SwitchInput, World, GS_GRAVITY,
+    GS_LIGHTING, GS_WATER_BITS, GS_WATER_LEVEL, GS_WATER_MURKINESS, GS_WATER_TINT,
+    GS_WATER_WAVE_MAGNITUDE, SCORE_BOARD_SCRIPT,
 };
 use lbp_script_vm::{ClassId, Host, MemberKind, ObjectId, Step, Task, Value, Vm};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 mod switches;
 pub mod transform;
@@ -75,6 +79,9 @@ pub struct ThingState {
     /// Render-mesh editor texture a script set (`SetRenderMeshEditorTexture`), as passed
     /// (a resource handle, or null).
     pub render_mesh_texture: Option<Value>,
+    /// Loop flag a script set (`Thing.SetAnimLoop__b`). The game sets it only on a Thing
+    /// that has an animation; here it is kept on any Thing and nothing animates by it.
+    pub anim_loop: Option<bool>,
 }
 
 /// A PSwitch at run time: the stored settings and its outputs. The switch pass
@@ -317,7 +324,95 @@ pub struct LevelWorld {
     /// `Game.IsTutorialLevel__`. False unless the caller sets it (INFERRED: which levels
     /// the game sets it for is not established).
     pub tutorial_level: bool,
+    /// Type and SlotNumber of the level's slot and of the primary slot: what the two
+    /// SlotID objects are made with and what the natives that read a SlotID answer from.
+    /// INFERRED: (0, 0), an empty slot (see [`add_engine_objects`]).
+    pub level_slot_id: (i32, i32),
+    pub primary_level_slot_id: (i32, i32),
+    /// The translation tables that are loaded, in the order they are searched
+    /// (`LAMS.IsInLams__i`, `LAMS.Translate__i`). Empty unless the caller hands tables
+    /// in: then no key is in LAMS. Which tables the game has loaded while a level plays
+    /// was not read.
+    pub translations: Vec<Arc<TranslationTable>>,
+    /// The recorded calls of [`KEPT_REQUESTS`] with their arguments, oldest first, for a
+    /// later stage to show (speech bubbles, prompts, audio settings). At most
+    /// [`MAX_REQUESTS`]; the calls past that are counted in `requests_dropped`.
+    pub requests: Vec<EngineRequest>,
+    pub requests_dropped: u64,
 }
+
+/// One recorded call kept with its arguments ([`LevelWorld::requests`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct EngineRequest {
+    /// The name [`World::engine_call`] was given.
+    pub name: &'static str,
+    /// The Thing the call is about (a bubble, a level link), when it has one.
+    pub thing: Option<u32>,
+    /// The native's parameters as passed.
+    pub args: Vec<Value>,
+    /// `PWorld.Frame` when the call was made.
+    pub frame: i32,
+}
+
+/// The recorded calls whose arguments are kept in [`LevelWorld::requests`].
+pub const KEPT_REQUESTS: [&str; 10] = [
+    "Messaging_NewTriggerMessage",
+    "Messaging_NewTriggerMessageNoPrompt",
+    "Messaging_NewTriggerMessageSubtitles",
+    "Messaging_NewLevelLinkPrompt",
+    "Messaging_NewWormHolePrompt",
+    "Messaging_NewGameEvent",
+    "RegisterOverlayCallback",
+    "TrackSpeechKey",
+    "NotifyNpcsOfMouthStart",
+    "SetGlobalSettingsAudioTo",
+];
+
+/// Most requests [`LevelWorld::requests`] keeps.
+pub const MAX_REQUESTS: usize = 4096;
+
+/// A global setting as the PWorld keeps it: a start value, a target and a blend factor.
+/// FOUND (01.33, the setters 0xce608, 0xce654, 0xce6a0, 0xcef3c, 0xd51b0 and the getters
+/// 0x5ec6f8, 0x5ec4f8, 0x5ec340, 0x5ec25c).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Blend {
+    pub from: f32,
+    pub to: f32,
+    pub t: f32,
+}
+
+impl Blend {
+    /// A setting at rest on `value`: start = target = value, t = 1.0.
+    pub fn at(value: f32) -> Self {
+        Blend {
+            from: value,
+            to: value,
+            t: 1.,
+        }
+    }
+    /// The value in force: from + (to - from) * t.
+    pub fn value(&self) -> f32 {
+        (self.to - self.from) * self.t + self.from
+    }
+    /// `SetGlobalSettings<X>To(value, blend)`. With blend the start becomes the value in
+    /// force and t 0, so the setting stays where it is until t is raised; without blend
+    /// the setting jumps to `value`.
+    pub fn set_to(&mut self, value: f32, blend: bool) {
+        *self = if blend {
+            Blend {
+                from: self.value(),
+                to: value,
+                t: 0.,
+            }
+        } else {
+            Blend::at(value)
+        };
+    }
+}
+
+/// `Game.GetGlobalSettingsWaterLevel__` gives the blended level only above this, else
+/// 0.0. FOUND (01.33, 0xce438: the constant the level is compared with, 1.0e-4).
+pub const WATER_LEVEL_MIN: f32 = 0.0001;
 
 /// Slots of the PWorld global-settings arrays (FOUND: the natives index two arrays of
 /// 8 x s32, PWorld+0x5d8 and +0x5f8).
@@ -344,6 +439,40 @@ pub struct WorldState {
     /// [`GLOBAL_SETTINGS`] entries), then what `Game.SetGlobalSettingUID` makes of them.
     pub global_settings_thing_uids: Vec<i32>,
     pub global_settings_thing_priority: Vec<i32>,
+    /// D263: the one-float global settings (`Game.EGlobalSettingsType` 0, 1, 2, 4, 6).
+    /// INFERRED start: each at rest on the value the level file stores (start = target =
+    /// stored, t = 1.0); the stored start, target and blend factor are not read.
+    pub water: Blend,
+    pub gravity: Blend,
+    pub water_wave_magnitude: Blend,
+    pub water_murkiness: Blend,
+    pub water_bits: Blend,
+    /// Type 3, the water tint: one value (FOUND: no start and target pair) and its blend
+    /// factor, which only `SetGlobalSettingsBlendFactor` writes here.
+    pub water_tint: f32,
+    pub water_tint_blend: f32,
+    /// Type 5, the lighting group, in stored order: lighting, colour correction, fog,
+    /// fog tint, darkness. Start values: the level file's `from` and `target` settings
+    /// and the blend factor stored after them (INFERRED that this is the group's t).
+    pub lighting_from: [f32; 5],
+    pub lighting_to: [f32; 5],
+    pub lighting_blend: f32,
+    /// Type 7, audio: only the blend factor lives in the PWorld.
+    pub audio_blend: f32,
+    /// PWorld `waterDrainSoundsEnabled`.
+    pub water_drain_sounds: bool,
+}
+
+impl WorldState {
+    /// The lighting group in force, in stored order: from + (to - from) * t per value.
+    /// FOUND that the game takes "the blend in force" as the new start (0xd978c);
+    /// INFERRED that it is this per-value blend.
+    pub fn lighting(&self) -> [f32; 5] {
+        std::array::from_fn(|i| {
+            (self.lighting_to[i] - self.lighting_from[i]) * self.lighting_blend
+                + self.lighting_from[i]
+        })
+    }
 }
 
 /// VM value for a stored script field; `None` for a field the instance does not store.
@@ -525,6 +654,18 @@ impl LevelWorld {
                 water_level: p.water_level,
                 global_settings_thing_uids: p.global_settings_thing_uids.clone(),
                 global_settings_thing_priority: p.global_settings_thing_priority.clone(),
+                water: Blend::at(p.water_level),
+                gravity: Blend::at(p.gravity),
+                water_wave_magnitude: Blend::at(p.water_wave_magnitude),
+                water_murkiness: Blend::at(p.water_murkiness),
+                water_bits: Blend::at(p.water_bits),
+                water_tint: p.water_tint,
+                water_tint_blend: 1.,
+                lighting_from: p.gs_from,
+                lighting_to: p.gs_target,
+                lighting_blend: p.gs_blend,
+                audio_blend: 1.,
+                water_drain_sounds: p.water_drain_sounds_enabled,
             };
             for slots in [
                 &mut w.pworld.global_settings_thing_uids,
@@ -960,6 +1101,41 @@ impl LevelWorld {
         Some(chip)
     }
 
+    /// Writes the buttons that are down this frame on a player's pad and returns whether
+    /// the player has a record. The first write gives the record its pad, with both mode
+    /// masks 1 (INFERRED: mode 1 is gameplay, the mode the level scripts ask with, and
+    /// gameplay owns the pad). Call it before the tick; [`LevelWorld::end_pad_frame`]
+    /// then makes these the buttons of the frame before.
+    ///
+    /// `buttons` is the game's button word (see [`PadState`]). A player who was never
+    /// given buttons has no pad, and every `Pad` query about him is false.
+    pub fn set_pad_buttons(&mut self, number: i32, buttons: u32) -> bool {
+        let Some(r) = self.player_records.iter_mut().find(|r| r.number == number) else {
+            return false;
+        };
+        let pad = r.pad.get_or_insert(PadState {
+            mask_a: 1,
+            mask_b: 1,
+            ..Default::default()
+        });
+        pad.now = buttons;
+        true
+    }
+
+    /// The end of a frame for the pads: this frame's buttons become the old ones. FOUND
+    /// (01.33, 0x3866e8) that the game copies them once a frame; INFERRED where in the
+    /// frame. Here it is the end of [`LevelScripts::tick_level`], so every script of a
+    /// tick sees the same edge.
+    pub fn end_pad_frame(&mut self) {
+        for pad in self
+            .player_records
+            .iter_mut()
+            .filter_map(|r| r.pad.as_mut())
+        {
+            pad.old = pad.now;
+        }
+    }
+
     /// One world frame has passed: `PWorld.Frame` (and `simFrame`) go up by one.
     ///
     /// INFERRED: the game's increment was not located. Here it happens at the end of
@@ -1205,6 +1381,147 @@ impl World for LevelWorld {
             .script_guid
             .is_some_and(|g| g == SCORE_BOARD_SCRIPT || self.score_board_scripts.contains(&g)))
     }
+    /// The first loaded table that has the key gives the text (FOUND, 01.33, 0x159c1c:
+    /// the search `IsInLams` makes also hands out the string). With no table loaded, a
+    /// key in no table, or a row whose text did not decode: an error (what the game
+    /// returns for a missing key was not read).
+    fn translate(&mut self, key: i32) -> Result<String, String> {
+        let key = key as u32;
+        let Some(table) = self.translations.iter().find(|t| t.contains_key(key)) else {
+            return Err(format!(
+                "LAMS key {key:#010x} is in none of the {} loaded tables",
+                self.translations.len()
+            ));
+        };
+        table
+            .get(key)
+            .map(str::to_owned)
+            .ok_or_else(|| format!("LAMS key {key:#010x} has no text"))
+    }
+    /// FOUND (01.33, 0x159c1c): true when a loaded table has a row with the key.
+    fn in_lams(&mut self, key: i32) -> Result<bool, String> {
+        let key = key as u32;
+        Ok(self.translations.iter().any(|t| t.contains_key(key)))
+    }
+    /// FOUND (01.33, 0x156b18 and the pad readers): PYellowHead -> player number ->
+    /// record -> pad. Here the Things with a known player number are the Sackboys
+    /// [`LevelWorld::add_player`] made; a level file's own PYellowHead Things have none
+    /// (INFERRED, as [`World::yellowhead`]).
+    fn pad(&mut self, thing: u32) -> Result<Option<PadState>, String> {
+        self.state(thing)?;
+        let number = self.players.iter().find(|p| p.thing == thing);
+        Ok(number.and_then(|p| {
+            let record = self.player_records.iter().find(|r| r.number == p.number);
+            record?.pad
+        }))
+    }
+    /// The contents of the two SlotID objects the world hands out. A native cannot read
+    /// a script object, so any other SlotID (one a script built) is an error. INFERRED:
+    /// the scripts do not change the objects they were handed.
+    fn slot_id(&mut self, slot: &Value) -> Result<(i32, i32), String> {
+        match slot {
+            Value::Object(Some(o)) if Some(*o) == self.level_slot => Ok(self.level_slot_id),
+            Value::Object(Some(o)) if Some(*o) == self.primary_level_slot => {
+                Ok(self.primary_level_slot_id)
+            }
+            other => Err(format!("SlotID {other:?} is not one the world made")),
+        }
+    }
+    /// FOUND (01.33): see the `SetGlobalSettings<X>To` entries in the native table.
+    /// Nothing for a level without a PWorld.
+    fn set_global_setting_to(&mut self, kind: i32, value: f32, blend: bool) -> Result<(), String> {
+        if self.world.is_none() {
+            return Ok(());
+        }
+        let p = &mut self.pworld;
+        let setting = match kind {
+            GS_WATER_LEVEL => &mut p.water,
+            GS_GRAVITY => &mut p.gravity,
+            GS_WATER_WAVE_MAGNITUDE => &mut p.water_wave_magnitude,
+            GS_WATER_MURKINESS => &mut p.water_murkiness,
+            GS_WATER_BITS => &mut p.water_bits,
+            GS_WATER_TINT => {
+                p.water_tint = value;
+                return Ok(());
+            }
+            _ => return Err(format!("global setting {kind} is not one float")),
+        };
+        setting.set_to(value, blend);
+        Ok(())
+    }
+    /// FOUND (01.33, 0xd9dac): see `Game.SetGlobalSettingsTo__fffffb` in the native table.
+    fn set_lighting_to(&mut self, values: [f32; 5], blend: bool) -> Result<(), String> {
+        if self.world.is_none() {
+            return Ok(());
+        }
+        // Arguments: Lighting, Darkness, Fog, FogTint, ColourCorrection. Stored order:
+        // lighting, colour correction, fog, fog tint, darkness.
+        let [lighting, darkness, fog, fog_tint, colour_correction] = values;
+        let target = [lighting, colour_correction, fog, fog_tint, darkness];
+        let p = &mut self.pworld;
+        if blend {
+            p.lighting_from = p.lighting();
+            p.lighting_blend = 0.;
+        } else {
+            p.lighting_from = target;
+            p.lighting_blend = 1.;
+        }
+        p.lighting_to = target;
+        Ok(())
+    }
+    /// FOUND (01.33, 0xd623c): the blend factor of that type. A type outside the 8 is an
+    /// error (the game writes past the array).
+    fn set_global_setting_blend(&mut self, kind: i32, t: f32) -> Result<(), String> {
+        if self.world.is_none() {
+            return Ok(());
+        }
+        let p = &mut self.pworld;
+        let slot = match kind {
+            GS_WATER_LEVEL => &mut p.water.t,
+            GS_GRAVITY => &mut p.gravity.t,
+            GS_WATER_WAVE_MAGNITUDE => &mut p.water_wave_magnitude.t,
+            GS_WATER_TINT => &mut p.water_tint_blend,
+            GS_WATER_MURKINESS => &mut p.water_murkiness.t,
+            GS_LIGHTING => &mut p.lighting_blend,
+            GS_WATER_BITS => &mut p.water_bits.t,
+            7 => &mut p.audio_blend,
+            _ => {
+                return Err(format!(
+                    "global setting {kind} outside 0..{GLOBAL_SETTINGS}"
+                ))
+            }
+        };
+        *slot = t;
+        Ok(())
+    }
+    /// FOUND (01.33, the getters): the blended value, for the tint the stored value.
+    /// 0.0 for a level without a PWorld, and for a water level that is not above
+    /// [`WATER_LEVEL_MIN`] (a level without water). Not modelled: an editor flag that
+    /// also makes the water level 0.0.
+    fn global_setting_value(&mut self, kind: i32) -> Result<f32, String> {
+        if self.world.is_none() {
+            return Ok(0.);
+        }
+        let p = &self.pworld;
+        Ok(match kind {
+            // The game's own comparison: the level must be above the constant.
+            GS_WATER_LEVEL => Some(p.water.value())
+                .filter(|level| WATER_LEVEL_MIN < *level)
+                .unwrap_or(0.),
+            GS_WATER_WAVE_MAGNITUDE => p.water_wave_magnitude.value(),
+            GS_WATER_TINT => p.water_tint,
+            GS_WATER_MURKINESS => p.water_murkiness.value(),
+            GS_WATER_BITS => p.water_bits.value(),
+            _ => return Err(format!("global setting {kind} has no getter")),
+        })
+    }
+    /// FOUND (01.33, 0x5ec908): one byte of the PWorld; nothing without one.
+    fn set_water_drain_sounds(&mut self, enabled: bool) -> Result<(), String> {
+        if self.world.is_some() {
+            self.pworld.water_drain_sounds = enabled;
+        }
+        Ok(())
+    }
     fn get_member(
         &mut self,
         kind: MemberKind,
@@ -1413,7 +1730,8 @@ impl World for LevelWorld {
     /// Counted by name in [`LevelWorld::engine_calls`]. The render-mesh calls are also
     /// kept on their Thing (nothing draws by them yet) and a scoreboard request in
     /// [`LevelWorld::scoreboard_requests`]. A null Thing is counted and nothing more, as
-    /// the game does nothing for it.
+    /// the game does nothing for it. The calls of [`KEPT_REQUESTS`] are kept with their
+    /// arguments in [`LevelWorld::requests`], and `SetAnimLoop` on its Thing.
     fn engine_call(
         &mut self,
         name: &'static str,
@@ -1424,12 +1742,25 @@ impl World for LevelWorld {
         if let ("GotoScoreboard", Some(Value::Bool(b))) = (name, args.first()) {
             self.scoreboard_requests.push(*b);
         }
+        if KEPT_REQUESTS.contains(&name) {
+            if self.requests.len() < MAX_REQUESTS {
+                self.requests.push(EngineRequest {
+                    name,
+                    thing,
+                    args: args.to_vec(),
+                    frame: self.pworld.frame,
+                });
+            } else {
+                self.requests_dropped += 1;
+            }
+        }
         let Some(thing) = thing else { return Ok(()) };
         let t = self.thing_mut(thing)?;
         match (name, args.first()) {
             ("HideRenderMesh", _) => t.render_mesh_hidden = true,
             ("SetRenderMeshEditorColour", Some(Value::Vec4(c))) => t.render_mesh_colour = Some(*c),
             ("SetRenderMeshEditorTexture", Some(v)) => t.render_mesh_texture = Some(v.clone()),
+            ("SetAnimLoop", Some(Value::Bool(b))) => t.anim_loop = Some(*b),
             _ => {}
         }
         Ok(())
@@ -1502,8 +1833,48 @@ impl World for LevelWorld {
     /// - `Game.IsPSNDemoBuild__` is false: the full game, not the demo.
     /// - `Game.GetPartyLeadersPlayerNumber__` is the first player record's number, -1
     ///   with no record.
+    ///
+    /// D263. From state the world keeps (the rules are FOUND, see the native table):
+    /// - `Messaging_ShouldFilterMessageStrings__`: true unless the level slot's type is
+    ///   2. For type 2 the game asks the network session about the local player; here
+    ///   false (INFERRED: that test holds for the one local player).
+    /// - `Game.GetGameFrame__`: `PWorld.Frame`, 0 for a level without a PWorld.
+    /// - `Game.GetNumYellowHeadAvatars__`: the Sackboys [`LevelWorld::add_player`] made.
+    /// - `Score_Board.GetGameScoreDataType__`: 6 in game mode 1, else the number of
+    ///   player records - 1, not below 0.
+    ///
+    /// D263, constants that hold for one local player in a level (INFERRED):
+    /// - `OffScreenIndicator.GetPlayerIndicatorActivityType__i` is 0, no indicator: the
+    ///   game gives 1 or 2 for a Sackboy off the screen or a second session entry. Not
+    ///   exact for a player whose Sackboy is not spawned yet.
+    /// - `Game.GetNumKeyNames__` is 0 and `Game.GetKeyIndex__` is -1: the reader keeps no
+    ///   Sackbot names, so the name list is empty. Exact for a level without a named
+    ///   Sackbot.
+    /// - `ModalOverlay.IsPartyLeaderOverlayActive__` is false: nothing here opens a
+    ///   modal overlay (start menu, Popit, prompt).
+    /// - `Game.GetNumKnownItemsCollectedAtStart__` is 0: a fresh profile, as the empty
+    ///   progression flags.
     fn state_query(&mut self, native: &str) -> Result<Value, String> {
         Ok(match native {
+            "GameMessagingManager.Messaging_ShouldFilterMessageStrings__" => {
+                Value::Bool(self.level_slot_id.0 != 2)
+            }
+            "Game.GetGameFrame__" => Value::Int(if self.world.is_some() {
+                self.pworld.frame
+            } else {
+                0
+            }),
+            "Game.GetNumYellowHeadAvatars__" => Value::Int(self.players.len() as i32),
+            "Score_Board.GetGameScoreDataType__" => Value::Int(if self.pworld.game_mode == 1 {
+                6
+            } else {
+                (self.player_records.len() as i32 - 1).max(0)
+            }),
+            "OffScreenIndicator.GetPlayerIndicatorActivityType__i"
+            | "Game.GetNumKeyNames__Q25Gooey.EGooeyNetworkAction"
+            | "Game.GetNumKnownItemsCollectedAtStart__" => Value::Int(0),
+            "Game.GetKeyIndex__Q25Gooey.EGooeyNetworkActionQ6String" => Value::Int(-1),
+            "ModalOverlay.IsPartyLeaderOverlayActive__" => Value::Bool(false),
             "Game.IsVcrPaused__" | "Game.IsPSNDemoBuild__" => Value::Bool(false),
             "Game.IsTutorialLevel__" => Value::Bool(self.tutorial_level),
             "Game.GetPartyLeadersPlayerNumber__" => {
@@ -1671,14 +2042,20 @@ pub fn add_engine_objects(
     // slot the game state holds. Here one object each is made ahead and handed out every
     // time (the scripts of the levels only read it). INFERRED: Type 0 and SlotNumber 0,
     // an empty slot: the level's own slot is in the game's slot list, not in the level
-    // file, and is not known here.
+    // file, and is not known here. A caller that knows the slot sets
+    // `LevelWorld::level_slot_id` / `primary_level_slot_id` before this runs.
     if let Some(class) = vm.class_by_name("SlotID") {
         for primary in [false, true] {
+            let (kind, number) = if primary {
+                host.world.primary_level_slot_id
+            } else {
+                host.world.level_slot_id
+            };
             match vm.instantiate(class) {
                 Ok(o) => {
                     if let Some(fields) = vm.fields_mut(o) {
-                        fields.insert("Type".into(), Value::Int(0));
-                        fields.insert("SlotNumber".into(), Value::Int(0));
+                        fields.insert("Type".into(), Value::Int(kind));
+                        fields.insert("SlotNumber".into(), Value::Int(number));
                     }
                     if primary {
                         host.world.primary_level_slot = Some(o);
@@ -2252,6 +2629,7 @@ impl LevelScripts {
         report.absorb(self.trigger_events(vm, host, budget));
         report.absorb(self.switch_reactions(vm, host, budget));
         host.world.advance_frame();
+        host.world.end_pad_frame();
         report
     }
 
