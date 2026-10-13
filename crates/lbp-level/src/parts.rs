@@ -88,8 +88,8 @@
 //!   gameplayType i32. EggLink: plan res, shareable bool, hasPainting bool (> 0x3e0),
 //!   painting desc when set. SlotID: slotType i32, slotNumber u32.
 //! - SWITCH (PSwitch + SwitchOutput/SwitchSignal/SwitchTarget; inverted, the outputs'
-//!   signals and targets, type, manualActivation and behavior are kept as
-//!   `PartData::switch`, rscript-plan stage 3): inverted bool, radius
+//!   signals and targets, type, manualActivation, behavior and the logic state fields are
+//!   kept as `PartData::switch`, rscript-plan stage 3): inverted bool, radius
 //!   f32, minRadius f32 (>= 0x382), colorIndex s32, name wstr, crappyOldLbp1Switch bool
 //!   (>= 0x38f), behaviorOld s32, outputs array of ref SwitchOutput {SwitchSignal
 //!   (activation f32, ternary s32, player i32), targets array {ref Thing, port i32},
@@ -309,6 +309,16 @@ pub struct PartData {
     /// PSwitch as stored, the fields the script world uses (rscript-plan stage 3).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub switch: Option<Switch>,
+    /// PMicrochip as stored: the circuit-board Thing (rscript-plan stage 3).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub microchip: Option<Microchip>,
+}
+
+/// PMicrochip as stored, the field kept: the Thing that is the chip's circuit board (the
+/// components on the board are its children). Null on a chip without a board.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+pub struct Microchip {
+    pub circuit_board: Option<usize>,
 }
 
 /// SwitchSignal as stored: activation f32, ternary s32, player i32 (-1 = no player).
@@ -333,10 +343,27 @@ pub struct SwitchOutput {
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Switch {
     pub inverted: bool,
+    pub crappy_old_lbp1_switch: bool,
     pub outputs: Vec<Option<SwitchOutput>>,
     pub switch_type: i32,
     pub manual_activation: SwitchSignal,
+    pub activation_hold_time: i32,
+    pub include_touching: i32,
+    pub bullets_required: i32,
+    pub bullets_detected: i32,
+    pub bullet_refresh_time: i32,
+    pub reset_when_full: bool,
+    pub timer_count: f32,
+    pub team_filter: i32,
     pub behavior: i32,
+    pub random_behavior: i32,
+    pub random_pattern: i32,
+    pub random_on_time_min: i32,
+    pub random_on_time_max: i32,
+    /// On an AND or OR gate the executable reads this word as the gate's output mode.
+    pub random_off_time_min: i32,
+    pub random_off_time_max: i32,
+    pub retarded_old_joint: bool,
 }
 
 /// PTrigger as stored, in serialized order. `in_things` are the Things inside the
@@ -1020,7 +1047,8 @@ fn part_body(
             r.i32()?;
         }
         "MICROCHIP" => {
-            thing_ref(r, things)?;
+            let circuit_board = thing_ref(r, things)?;
+            things.list[me].data.microchip = Some(Microchip { circuit_board });
             r.bool()?;
             r.bool()?;
             r.s32()?;
@@ -1869,9 +1897,7 @@ fn switch(r: &mut Reader, things: &mut Things) -> Result<Switch> {
     }
     r.s32()?;
     r.wstr()?;
-    if v >= 0x38f {
-        r.bool()?;
-    }
+    let crappy_old_lbp1_switch = v >= 0x38f && r.bool()?;
     r.s32()?;
     let count = r.count(1)?;
     let mut outputs = Vec::with_capacity(count.min(4096));
@@ -1908,20 +1934,20 @@ fn switch(r: &mut Reader, things: &mut Things) -> Result<Switch> {
     if v < 0x368 {
         r.f32()?;
     }
-    r.s32()?;
+    let activation_hold_time = r.s32()?;
     r.bool()?;
     r.f32()?;
     let include_touching = r.s32()?;
     if v >= 0x398 && kind == 36 && include_touching == 1 {
         r.resource(true)?;
     }
-    r.s32()?;
-    r.s32()?;
+    let bullets_required = r.s32()?;
+    let bullets_detected = r.s32()?;
     if v < 0x398 {
         r.i32()?;
     }
-    r.i32()?;
-    r.bool()?;
+    let bullet_refresh_time = r.i32()?;
+    let reset_when_full = r.bool()?;
     if v < 0x398 {
         r.i32()?;
     }
@@ -1930,17 +1956,18 @@ fn switch(r: &mut Reader, things: &mut Things) -> Result<Switch> {
     }
     thing_array(r, things)?;
     r.bool()?;
-    r.f32()?;
-    r.i32()?;
+    let timer_count = r.f32()?;
+    let team_filter = r.i32()?;
     let behavior = r.i32()?;
-    for _ in 0..6 {
-        r.i32()?;
+    let mut random = [0i32; 6];
+    for x in &mut random {
+        *x = r.i32()?;
     }
     if v < 0x3ad {
         r.u8()?;
         r.s32()?;
     }
-    r.bool()?;
+    let retarded_old_joint = r.bool()?;
     r.i32()?;
     if v > 0x34c {
         r.i32()?;
@@ -1969,10 +1996,26 @@ fn switch(r: &mut Reader, things: &mut Things) -> Result<Switch> {
     }
     Ok(Switch {
         inverted,
+        crappy_old_lbp1_switch,
         outputs,
         switch_type: kind,
         manual_activation,
+        activation_hold_time,
+        include_touching,
+        bullets_required,
+        bullets_detected,
+        bullet_refresh_time,
+        reset_when_full,
+        timer_count,
+        team_filter,
         behavior,
+        random_behavior: random[0],
+        random_pattern: random[1],
+        random_on_time_min: random[2],
+        random_on_time_max: random[3],
+        random_off_time_min: random[4],
+        random_off_time_max: random[5],
+        retarded_old_joint,
     })
 }
 
