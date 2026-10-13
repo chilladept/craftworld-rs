@@ -4403,3 +4403,81 @@ Next: stage 4, player and game state.
 - Not tested: the viewer window; any value against the game in RPCS3.
 **+0 newly viewable / +0 newly Complete (runtime feature).**
 Next: stage 5, show what the scripts do.
+
+## D263 the natives the stage 4 runs reached (2026-10-13)
+- Between RScript plan stages 4 and 5 (`docs/rscript-plan.md`). The stage 4 runs called 110 natives without
+  a binding; the 47 reached in the most levels are bound now (164 -> 211), from research notes that give
+  each one a class: real value from kept state, real value from new state, constant, recorded only.
+- New state (FOUND unless marked):
+  - Pad: `PlayerRecord::pad` is a `PadState` (two mode masks, buttons now, buttons of the frame before).
+    `Pad.IsPressed` (0x388e2c), `IsJustPressed` (0x388358), `IsJustReleased` (0x389400): the button
+    argument is a mask and all its bits must be down. The Thing's player has no pad until
+    `LevelWorld::set_pad_buttons` writes one, so the three are false; `end_pad_frame` (called at the end
+    of `tick_level`) makes the buttons the old ones. Only the four d-pad bits have FOUND names; no button
+    name is in the code.
+  - LAMS: `LevelWorld::translations`, searched in order. `IsInLams` (0x159c1c) is true when a table has
+    the key; `Translate` gives the first table's text. `level_scripts` loads the English base and patch
+    tables (2 read, 29,477 keys, all in the base table).
+  - Global settings: `Blend` (start, target, t; value = start + (target - start) * t) for water level,
+    gravity, wave magnitude, murkiness and water bits; one tint value; the lighting group of five values
+    under one t; 8 blend factors. `SetGlobalSettingsTo` (0xd9dac), `...GravityTo` (0xcef3c),
+    `...WaterLevelTo` (0xce608), `...WaterWaveMagnitudeTo` (0xce654), `...WaterTintTo` (0xd5d68, shape),
+    `...WaterMurkinessTo` (0xd51b0), `...WaterBitsTo` (0xce6a0), `...WaterDrainSoundsEnabled` (0x5ec908),
+    `SetGlobalSettingsBlendFactor` (0xd623c), the five water getters (0x5ec6f8, 0x5ec4f8, 0x5ec424,
+    0x5ec340, 0x5ec25c). The water level getter gives 0.0 unless the level is above 0.0001 (both
+    constants read).
+  - `lbp-level` keeps the stored wave magnitude, gravity, tint, murkiness, water bits and the drain-sound
+    flag.
+- From state already kept: `Game.GetGameFrame` (0x19f63c), `GetNumYellowHeadAvatars` (0x5ed9f8),
+  `Score_Board.GetGameScoreDataType` (0x16aa4c), `IsSlotIDValidForScoring` (0x229bb8),
+  `Messaging_ShouldFilterMessageStrings` (0x736260), `Resource.LoadAnimatedTextureByFilename` (0x617c0c).
+- Constants: `Poppet.GetTextEntryType` 2 (0x56a838) and `Game.IsTarsierDLCEnabled` true (0x5e68d8) are
+  literals in the executable. INFERRED for one local player: `GetPlayerIndicatorActivityType` 0,
+  `GetNumKeyNames` 0 and `GetKeyIndex` -1, `IsPartyLeaderOverlayActive` false,
+  `GetNumKnownItemsCollectedAtStart` 0.
+- Recorded only (16; 29 in `RECORDED_ONLY`): `Messaging_NewTriggerMessage`, `...NoPrompt`,
+  `...Subtitles`, `Messaging_NewLevelLinkPrompt`, `Messaging_NewWormHolePrompt`, `Messaging_NewGameEvent`,
+  `HUD.RegisterOverlayCallback`, `HUD.PreloadGlyphs`, `Game.TrackSpeechKey`,
+  `Trigger_Speech_Bubble.NotifyNpcsOfMouthStart`, `Thing.AddToAnimatingDivergentList`,
+  `Thing.SetAnimLoop`, `Gooey.SetLastNavSelectionMode`, `Gooey.PerFrameUpdate`,
+  `Gooey.SetStylesheetScalingFactor`, `Game.SetGlobalSettingsAudioTo`. Ten are kept with their arguments
+  and the frame in `LevelWorld::requests` (at most 4,096); `SetAnimLoop` is kept on its Thing.
+- INFERRED: both pad mode masks are 1 (mode 1 = gameplay); the old buttons are copied at the end of a
+  tick; the English tables are the ones loaded in a level; every setting starts at rest on its stored
+  value (the stored start, target and factor are not read); the lighting group starts from the stored
+  `from`, `target` and blend factor; `SetGlobalSettingsWaterTintTo` stores its argument; the type 2 answer
+  of the message filter; the scripts do not change the SlotID objects they are handed.
+- MEASURED runs (378 levels, 13,547 scripted Things, release, 60 ticks; before -> now):
+  - plain: unbound natives called 83 -> 51; unbound calls 88,892 -> 67,001; recorded-only calls
+    3,379 -> 13,504; Things stopped by a fault 4 -> 26; levels with a fault 2 -> 22.
+  - with the trigger visit: 99 -> 82; 941,081 -> 755,187; 13,855 -> 76,172; 4 -> 35; 2 -> 31.
+  - with every output pulsed: 110 -> 85; 952,819 -> 763,188; 17,206 -> 83,687; 4 -> 58; 2 -> 46.
+  - Native calls in the pulsed run: 4,046,434; 3,283,246 bound; 763,188 defaulted.
+  - New faults: a null object in `TriggerLevelLink.IsSourceSlotLocked` (22 Things in 20 levels plain, 46
+    in 36 pulsed), reached because `IsTarsierDLCEnabled` is true and the next native,
+    `Slot.GetSlotGroup__Q6SlotID`, is unbound and returns null; `Race_End.Enter` reads
+    `Race_Start.ColorIndex` on a Thing without that member (8 Things, with the trigger visit; cause not
+    looked into). Faults as before: `Thing.GetCOM__` (3), the
+    Pod's null Thing (1).
+  - With the trigger visit the scoreboards of 100 levels go on: 19 natives are new there
+    (`Score_Board.PostScore`, `SetScoreLocked`, `CreateMagicWall`, `Cam.SetOverrideCamera`,
+    `Game.StartAsyncSection` and others).
+  - Requests kept, pulsed run: 1,771 speech bubbles and subtitles, 2,009 game events, 167 level-link and
+    103 wormhole prompts, 137 overlay callbacks, 297 audio settings, 1,806 speech keys.
+  - Most called without a binding (pulsed): `Native.IsEnemyAI`, `Native.SetWalkInput`, `Thing.IsDead`,
+    `Thing.IsInLimbo` 114,228 calls in 26 levels each, `Thing.GetBodyRoot` 65,490 in 27.
+- Left unbound on purpose: `Slot.GetLevelIcon` (slot database and a default icon),
+  `Game.GetNumKnownItemsInLevelAtStart` (0 would be a wrong fact), the 11 audio getters (the reader drops
+  the stored audio settings).
+- Not modelled: any pad input (the viewer does not call `set_pad_buttons` yet); the button names other
+  than the d-pad and the meaning of the mode masks; which tables the game loads, and tables in the viewer;
+  the tint colours, the lighting block, the physics gravity and the renderer values behind the global
+  settings; the off-screen indicator for a Sackboy off screen; Sackbot names; the second test of the
+  scoring slot test; a SlotID a script built itself (an error).
+- Tests: 32 world tests in `level_world.rs` (5 new: pads, LAMS tables, global-settings blends, game-state
+  queries with the scoring slot test, recorded calls with their arguments), 12 unit and 13 VM tests in
+  `lbp-script-vm`, the level reader test for the new PWorld fields. fmt, the CI clippy line, the CI test
+  set, the Python tests and `cargo check` of both viewers pass.
+- Not tested: the viewer window; any value against the game in RPCS3.
+**+0 newly viewable / +0 newly Complete (runtime feature).**
+Next: stage 5, show what the scripts do; `Slot.GetSlotGroup` for the level links.

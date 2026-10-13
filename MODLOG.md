@@ -1,5 +1,29 @@
 # Development log
 
+## 2026-10-13 - D263 the natives the stage 4 runs reached are bound
+
+Between RScript plan stages 4 and 5. 47 natives bound from the stage 4c research notes, 164 -> 211 in the
+table, 16 of them recorded only (29 in all). New state: `PlayerRecord::pad` (`PadState`: two mode masks,
+buttons now and old) with `LevelWorld::set_pad_buttons` and `end_pad_frame`, so `Pad.IsJustPressed`,
+`IsPressed` and `IsJustReleased` follow the game's rule (FOUND 0x388358, 0x388e2c, 0x389400) and are false
+until input is fed; `LevelWorld::translations` for `LAMS.IsInLams` and `Translate` (FOUND 0x159c1c;
+`level_scripts` loads the English base and patch tables, 29,477 keys); the global-settings blends
+(`Blend`: start, target, t) for water level, gravity, wave, murkiness and water bits, the tint, the
+lighting group and the 8 blend factors, with 9 setters, the blend factor and 5 water getters (FOUND
+0xce608, 0xd9dac, 0xd623c, 0x5ec6f8); `lbp-level` keeps the stored wave, gravity, tint, murkiness, bits and
+drain-sound flag. From kept state: `GetGameFrame`, `GetNumYellowHeadAvatars`, `GetGameScoreDataType`,
+`IsSlotIDValidForScoring`, `Messaging_ShouldFilterMessageStrings`, `LoadAnimatedTextureByFilename`.
+Constants: `Poppet.GetTextEntryType` 2 and `IsTarsierDLCEnabled` true (FOUND literals); no off-screen
+indicator, no key names, no modal overlay, no items known at start (INFERRED for one local player).
+Recorded with their arguments in `LevelWorld::requests`: the trigger messages, the level-link and wormhole
+prompts, game events, overlay callbacks, speech keys, the audio settings. PC run, 378 levels, 60 ticks,
+every output pulsed: unbound natives called 110 -> 85, unbound calls 952,819 -> 763,188, recorded-only
+calls 17,206 -> 83,687; Things stopped by a fault 4 -> 58 (plain 4 -> 26), because `IsTarsierDLCEnabled`
+true leads the level links to the unbound `Slot.GetSlotGroup` (46 Things) and `Race_End.Enter` reads
+`Race_Start.ColorIndex` on a Thing without it (8). Not done: feeding the pads and the tables in the viewer,
+the slot database, `GetNumKnownItemsInLevelAtStart`, the audio getters. +0 viewable, +0 Complete.
+`docs/level-scripts.md` part 14.
+
 ## 2026-10-13 - D262 the level scripts get world, position, player and game state
 
 RScript plan stage 4. `LevelWorld` now answers what the scripts ask the engine about the level. First half:
