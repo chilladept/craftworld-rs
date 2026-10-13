@@ -17,8 +17,9 @@
 //!   game calls the script function `SwitchPerformReaction__b` or
 //!   `SwitchPerformReaction__bf` on the target's own script.
 //!
-//! The logic types are computed; sensors and the other types whose signal comes from the
-//! world (players, tags, physics, the pads) keep the signal the level file stores.
+//! The logic types are computed, and so are the tag sensor and the player sensor
+//! (`sensors.rs`); the other types whose signal comes from the world (physics, the pads)
+//! keep the signal the level file stores.
 //!
 //! Not modelled:
 //! - The dirty flags. The game re-runs the event-driven switch types only when something
@@ -36,6 +37,7 @@
 //! - Switch types 0x24/0x25 standing in for their microchip's switch in the ordering.
 //! - The other object kinds a signal is applied to (lights, emitters, movers and so on).
 //! - The activating player the game records on the target before the dispatch.
+use crate::sensors::{player_sensor, tag_sensor};
 use crate::{InputWire, LevelWorld, SwitchState, ThingState};
 use lbp_script_vm::natives::SwitchInput;
 use std::collections::BTreeSet;
@@ -116,7 +118,11 @@ impl SwitchContext<'_> {
 }
 
 /// The wire on input port `port` of a Thing and the signal on it.
-fn wired(world: &LevelWorld, thing: u32, port: usize) -> Option<(InputWire, SwitchInput)> {
+pub(crate) fn wired(
+    world: &LevelWorld,
+    thing: u32,
+    port: usize,
+) -> Option<(InputWire, SwitchInput)> {
     let wire = (*world.things.get(thing as usize)?.inputs.get(port)?)?;
     let s = world.things.get(wire.switch as usize)?.switch.as_ref()?;
     Some((wire, s.outputs.get(wire.output)?.as_ref()?.signal))
@@ -135,7 +141,7 @@ fn off() -> Option<(SwitchInput, Invert)> {
     Some((SIGNAL_OFF, Invert::Standard))
 }
 
-fn clamp(x: f32, low: f32, high: f32) -> f32 {
+pub(crate) fn clamp(x: f32, low: f32, high: f32) -> f32 {
     if x < low {
         low
     } else if x > high {
@@ -206,21 +212,26 @@ fn board_port_offset(owner: &ThingState) -> Option<usize> {
     })
 }
 
+/// The ternary output 0 holds, taken back through the inversion when the switch is
+/// inverted: what a ternary rule with a hold band keeps (FOUND, 0x11873c).
+pub(crate) fn held_ternary(cx: &SwitchContext<'_>) -> i32 {
+    let held = cx.current(0).ternary;
+    if cx.switch.inverted {
+        i32::from(held == 0)
+    } else {
+        held
+    }
+}
+
 /// The ternary of a timer's activation (FOUND, 0x11873c with a zero dead zone): 0 at or
-/// below 0, 1 at or above 1, in between what output 0 holds (taken back through the
-/// inversion when the switch is inverted).
+/// below 0, 1 at or above 1, in between what output 0 holds ([`held_ternary`]).
 fn timer_ternary(cx: &SwitchContext<'_>, activation: f32) -> i32 {
     if activation <= 0. {
         0
     } else if activation >= 1. {
         1
     } else {
-        let held = cx.current(0).ternary;
-        if cx.switch.inverted {
-            i32::from(held == 0)
-        } else {
-            held
-        }
+        held_ternary(cx)
     }
 }
 
@@ -231,8 +242,8 @@ fn timer_ternary(cx: &SwitchContext<'_>, activation: f32) -> i32 {
 /// round through a second table (0x11bfd4), then applies the old-joint deadband
 /// (PSwitch+0xc8). The handlers do not change the switch's state.
 ///
-/// Types whose signal comes from the world keep the stored signal as it is (it was
-/// stored after the inversion).
+/// The other types whose signal comes from the world keep the stored signal as it is (it
+/// was stored after the inversion).
 pub fn compute_output(
     cx: &SwitchContext<'_>,
     output: usize,
@@ -314,12 +325,15 @@ pub fn compute_output(
                 player: memory.manual.player,
             })
         }
+        // The player sensor, 0x119910, and the tag sensor, 0x118d5c, FOUND.
+        3 => standard(player_sensor(cx)),
+        4 => standard(tag_sensor(cx)),
         // PRESSURE, SACKBOT_*, INACTIVE, DEATH, CUTSCENE_CAM_ACTIVE and the later types
         // whose signal is not made in the pass, 0x11bf08, FOUND: {0.0, 0, -1}.
         7 | 11..=13 | 26 | 31 | 33 | 46..=53 | 56 | 58..=64 => off(),
         // Past the table, 0x11bd58, FOUND: {0.0, 0, -1} (INFERRED: not inverted).
         t if t >= SWITCH_KIND_TYPES => return SIGNAL_OFF,
-        // RANDOM (19, 0x11c2e0) and the sensors: the stored signal.
+        // RANDOM (19, 0x11c2e0) and the other sensors: the stored signal.
         _ => None,
     };
     let Some((mut new, invert)) = computed else {
@@ -1095,6 +1109,7 @@ impl LevelWorld {
     /// pass with the reactions called switch by switch.
     pub fn update_switches(&mut self) -> Vec<TargetVisit> {
         self.prepare_switches();
+        self.refresh_tags();
         let order = self.switch_order().to_vec();
         order
             .into_iter()
@@ -1522,8 +1537,9 @@ mod tests {
             w.update_switches();
             assert_eq!(out(&w, 0, 0), SIGNAL_OFF, "{ty}");
         }
-        // Sensors and the random switch keep the stored signal, also when inverted.
-        for ty in [0, 3, 4, 6, 18, 19, 30, 38, 41, 54, 65] {
+        // The other sensors and the random switch keep the stored signal, also when
+        // inverted.
+        for ty in [0, 6, 18, 19, 30, 38, 41, 54, 65] {
             let mut t = switch(&[(sig(0.5, 1, 2), &[])]);
             let s = t.switch.as_mut().unwrap();
             (s.switch_type, s.inverted) = (ty, true);

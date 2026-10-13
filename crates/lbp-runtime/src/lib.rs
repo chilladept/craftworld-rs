@@ -26,6 +26,7 @@ use lbp_script_vm::{ClassId, Host, MemberKind, ObjectId, Step, Task, Value, Vm};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+mod sensors;
 mod switches;
 pub mod transform;
 pub use switches::*;
@@ -85,6 +86,29 @@ pub struct ThingState {
     /// Loop flag a script set (`Thing.SetAnimLoop__b`). The game sets it only on a Thing
     /// that has an animation; here it is kept on any Thing and nothing animates by it.
     pub anim_loop: Option<bool>,
+    /// PSwitchKey, when the Thing has one: the tag a tag sensor finds it by.
+    pub switch_key: Option<TagKey>,
+}
+
+/// What a tag sensor matches a tag by: the colour index and the name.
+///
+/// FOUND (01.33, the tag map lookup 0xceac0): an entry matches when the colour index and
+/// the name handle are both the same. The handle is counted by reference, so equal
+/// handles are equal strings (INFERRED); here `name` is the index of the string in
+/// [`LevelWorld::tag_names`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct TagKey {
+    pub colour: i32,
+    pub name: u32,
+}
+
+/// One tag in the world's tag map ([`LevelWorld::refresh_tags`]): where it was when the
+/// switch pass started, and its Thing.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TagRecord {
+    pub x: f32,
+    pub y: f32,
+    pub thing: u32,
 }
 
 /// A PSwitch at run time: the stored settings and its outputs. The switch pass
@@ -106,6 +130,19 @@ pub struct SwitchState {
     pub gate_mode: i32,
     pub team_filter: i32,
     pub include_touching: i32,
+    /// Radius and MinRadius: the outer and inner edge of a sensor's range.
+    pub radius: f32,
+    pub min_radius: f32,
+    /// AngleRange: the half angle of a sensor's cone in degrees (180 = all round).
+    pub angle_range: f32,
+    /// The tag a tag sensor looks for.
+    pub key: TagKey,
+    /// KeySensorMode of a tag sensor: 1 hands on the tag's own signal.
+    pub key_sensor_mode: i32,
+    /// RequireAll of a player sensor.
+    pub require_all: bool,
+    pub detect_unspawned_players: bool,
+    pub player_mode: i32,
     /// RetardedOldJoint: the output deadband of [`compute_output`].
     pub old_joint: bool,
     /// CrappyOldLbp1Switch as stored (census only; see `force`).
@@ -348,6 +385,11 @@ pub struct LevelWorld {
     /// [`MAX_REQUESTS`]; the calls past that are counted in `requests_dropped`.
     pub requests: Vec<EngineRequest>,
     pub requests_dropped: u64,
+    /// The names of the level's tags and tag sensors; a [`TagKey`] holds an index.
+    pub tag_names: Vec<String>,
+    /// The world's tag map as the last switch pass left it
+    /// ([`LevelWorld::refresh_tags`]): per key, the tags by ascending x.
+    pub tags: BTreeMap<TagKey, Vec<TagRecord>>,
 }
 
 /// One recorded call kept with its arguments ([`LevelWorld::requests`]).
@@ -563,6 +605,21 @@ fn part_name(native: &str) -> Option<&'static str> {
 impl LevelWorld {
     pub fn from_things(list: &[ThingRecord]) -> Self {
         let handle = |i: usize| u32::try_from(i).ok();
+        // Equal names get one index, as the game's name handles.
+        let mut tag_names = Vec::<String>::new();
+        let mut names = BTreeMap::<String, u32>::new();
+        let mut key = |colour: i32, name: &str| {
+            let name = match names.get(name) {
+                Some(&i) => i,
+                None => {
+                    let i = tag_names.len() as u32;
+                    names.insert(name.to_owned(), i);
+                    tag_names.push(name.to_owned());
+                    i
+                }
+            };
+            TagKey { colour, name }
+        };
         let mut w = LevelWorld {
             things: list
                 .iter()
@@ -609,6 +666,14 @@ impl LevelWorld {
                         gate_mode: s.random_off_time_min,
                         team_filter: s.team_filter,
                         include_touching: s.include_touching,
+                        radius: s.radius,
+                        min_radius: s.min_radius,
+                        angle_range: s.angle_range,
+                        key: key(s.colour_index, &s.name),
+                        key_sensor_mode: s.key_sensor_mode,
+                        require_all: s.require_all,
+                        detect_unspawned_players: s.detect_unspawned_players,
+                        player_mode: i32::from(s.player_mode),
                         old_joint: s.retarded_old_joint,
                         old_lbp1_switch: s.crappy_old_lbp1_switch,
                         force: false,
@@ -629,12 +694,18 @@ impl LevelWorld {
                         .render_mesh
                         .as_ref()
                         .and_then(|m| m.mesh.as_ref()?.guid),
+                    switch_key: t
+                        .data
+                        .switch_key
+                        .as_ref()
+                        .map(|k| key(k.colour_index, &k.name)),
                     ..Default::default()
                 })
                 .collect(),
             player_records: vec![PlayerRecord::default()],
             ..Default::default()
         };
+        w.tag_names = tag_names;
         // Children in Thing-list order.
         let mut last_child: Vec<Option<u32>> = vec![None; list.len()];
         for i in 0..list.len() {
@@ -2606,6 +2677,7 @@ impl LevelScripts {
     ) -> StepReport {
         let mut report = StepReport::default();
         host.world.prepare_switches();
+        host.world.refresh_tags();
         for switch in host.world.switch_order().to_vec() {
             for v in host.world.update_switch(switch) {
                 let r = &mut report.reactions;

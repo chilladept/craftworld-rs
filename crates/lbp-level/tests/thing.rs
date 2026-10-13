@@ -509,6 +509,63 @@ fn script_part_keeps_field_names_and_values() {
 }
 
 #[test]
+fn switch_and_switch_key_keep_the_sensor_fields() {
+    // One Thing with a SWITCH (a tag sensor with one output) and a SWITCH_KEY. Head 0x3e5
+    // has no playerMode; head 0x3f8 has it.
+    for (head, flags) in [(0x3e5, 0u8), (0x3e5, 1), (0x3f8, 0), (0x3f8, 1)] {
+        let mut w = W::new(flags);
+        if head > 0x3e6 {
+            w.u32(1).raw(&[0x11; 20]); // cross-play hashes
+        }
+        w.u32(1)
+            .thing_header(1, 0, 0, 0, 0x3f, bit(0x19) | bit(0x1a));
+        w.u32(2).u8(1).f32(30.).f32(5.); // PSwitch tag, inverted, radius, minRadius
+        w.s32(3).s32(2).raw(&[0, b'A', 0, b'b']); // colorIndex, name
+        w.u8(0).s32(0); // crappyOldLbp1Switch, behaviorOld
+        w.u32(1).u32(5).f32(0.5).s32(1).u32(u32::MAX); // one output: tag, signal
+        w.u32(0).s32(0); // no targets, userDefinedName
+        w.u8(0).s32(4).u32(0); // hideInPlayMode, type, referenceThing
+        w.f32(0.).s32(0).u32(u32::MAX); // manualActivation
+        w.s32(0).u8(1).f32(45.).s32(0); // holdTime, requireAll, angleRange, includeTouching
+        w.s32(2).s32(0).u32(0).u8(0); // bullets required, detected, refresh time, reset
+        w.u32(0).u8(0).f32(0.).u32(1).u32(0); // inputList, rigid, timerCount, team, behavior
+        for _ in 0..6 {
+            w.u32(0); // random*
+        }
+        w.u8(0).u32(1).u32(0).u8(0).u8(0); // oldJoint, keySensorMode, colour, wires, types
+        w.u8(1).u8(0); // detectUnspawnedPlayers, playSwitchAudio
+        if head > 0x3ec {
+            w.u8(2); // playerMode
+        }
+        w.u32(6).s32(3).s32(2).raw(&[0, b'A', 0, b'b']).u8(0); // PSwitchKey
+        if head > 0x3e6 {
+            rlevel_tail_0x3f8(&mut w);
+        } else {
+            w.u32(0).u32(0).u32(0).u32(0).u32(0).u8(0).u8(0); // RLevel tail
+        }
+        let r = run(&w, head);
+        assert_eq!(r.stop, None, "head {head:x} flags {flags}");
+        let s = r.things[0].data.switch.as_ref().unwrap();
+        assert_eq!((s.inverted, s.switch_type), (true, 4));
+        assert_eq!((s.radius, s.min_radius, s.angle_range), (30., 5., 45.));
+        assert_eq!((s.colour_index, s.name.as_str()), (3, "Ab"));
+        assert_eq!(
+            (s.require_all, s.bullets_required, s.team_filter),
+            (true, 2, 1)
+        );
+        assert_eq!((s.key_sensor_mode, s.detect_unspawned_players), (1, true));
+        assert_eq!(s.player_mode, if head > 0x3ec { 2 } else { 0 });
+        let o = s.outputs[0].as_ref().unwrap();
+        assert_eq!(
+            (o.signal.activation, o.signal.ternary, o.signal.player),
+            (0.5, 1, -1)
+        );
+        let k = r.things[0].data.switch_key.as_ref().unwrap();
+        assert_eq!((k.colour_index, k.name.as_str()), (3, "Ab"));
+    }
+}
+
+#[test]
 fn script_objects_keep_contents_and_shared_identity() {
     // Fields: a wide string, an f32 array, and an object array holding a back-reference to
     // the string, a null and a nested instance without a layout.

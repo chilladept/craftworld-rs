@@ -82,13 +82,15 @@
 //!   0x3c4), type i8, dir i8, prevDesiredPosition v3, prevDesiredPosSet bool,
 //!   startOrientation m44, speed f32, pathIsAbsolute bool (> 0x3c4)); attractor block when
 //!   configuration == 0xe and v > 0x3e3 (f32, i32, f32, f32, i32, f32, f32, 4 u8).
-//! - SWITCH_KEY (PSwitchKey): colorIndex s32, name wstr, hideInPlayMode bool (v < 0x3ed)
-//!   or a u8 flag byte (v >= 0x3ed).
+//! - SWITCH_KEY (PSwitchKey; colour and name kept as `PartData::switch_key`): colorIndex
+//!   s32, name wstr, hideInPlayMode bool (v < 0x3ed) or a u8 flag byte (v >= 0x3ed).
 //! - GAMEPLAY_DATA (PGameplayData): fluffCost s32, eggLink ref EggLink, keyLink ref SlotID,
 //!   gameplayType i32. EggLink: plan res, shareable bool, hasPainting bool (> 0x3e0),
 //!   painting desc when set. SlotID: slotType i32, slotNumber u32.
 //! - SWITCH (PSwitch + SwitchOutput/SwitchSignal/SwitchTarget; inverted, the outputs'
-//!   signals and targets, type, manualActivation, behavior and the logic state fields are
+//!   signals and targets, type, manualActivation, behavior, the logic state fields and
+//!   the sensor settings (radius, minRadius, colorIndex, name, requireAll, angleRange,
+//!   keySensorMode, detectUnspawnedPlayers, playerMode) are
 //!   kept as `PartData::switch`, rscript-plan stage 3): inverted bool, radius
 //!   f32, minRadius f32 (>= 0x382), colorIndex s32, name wstr, crappyOldLbp1Switch bool
 //!   (>= 0x38f), behaviorOld s32, outputs array of ref SwitchOutput {SwitchSignal
@@ -312,6 +314,17 @@ pub struct PartData {
     /// PMicrochip as stored: the circuit-board Thing (rscript-plan stage 3).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub microchip: Option<Microchip>,
+    /// PSwitchKey as stored: the tag a tag sensor looks for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub switch_key: Option<SwitchKey>,
+}
+
+/// PSwitchKey as stored, the fields kept: the tag's colour index and its name (empty for
+/// a tag without a label).
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct SwitchKey {
+    pub colour_index: i32,
+    pub name: String,
 }
 
 /// PMicrochip as stored, the field kept: the Thing that is the chip's circuit board (the
@@ -364,6 +377,19 @@ pub struct Switch {
     pub random_off_time_min: i32,
     pub random_off_time_max: i32,
     pub retarded_old_joint: bool,
+    /// Sensor range: `radius` the outer edge, `min_radius` the inner one (0 below 0x382).
+    pub radius: f32,
+    pub min_radius: f32,
+    /// The tag a tag sensor looks for: colour index and name, as on a PSwitchKey.
+    pub colour_index: i32,
+    pub name: String,
+    pub require_all: bool,
+    /// Half angle of the sensor's cone in degrees.
+    pub angle_range: f32,
+    pub key_sensor_mode: i32,
+    pub detect_unspawned_players: bool,
+    /// 0 below 0x3ed.
+    pub player_mode: i8,
 }
 
 /// PTrigger as stored, in serialized order. `in_things` are the Things inside the
@@ -1051,9 +1077,12 @@ fn part_body(
         }
         "PHYSICS_TWEAK" => physics_tweak(r, things)?,
         "SWITCH_KEY" => {
-            r.s32()?;
-            r.wstr()?;
+            let key = SwitchKey {
+                colour_index: r.s32()?,
+                name: r.wstring()?,
+            };
             r.u8()?;
+            things.list[me].data.switch_key = Some(key);
         }
         "GAMEPLAY_DATA" => {
             r.s32()?;
@@ -1938,12 +1967,10 @@ fn switch_signal(r: &mut Reader) -> Result<SwitchSignal> {
 fn switch(r: &mut Reader, things: &mut Things) -> Result<Switch> {
     let v = r.rev.version();
     let inverted = r.bool()?;
-    r.f32()?;
-    if v >= 0x382 {
-        r.f32()?;
-    }
-    r.s32()?;
-    r.wstr()?;
+    let radius = r.f32()?;
+    let min_radius = if v >= 0x382 { r.f32()? } else { 0. };
+    let colour_index = r.s32()?;
+    let name = r.wstring()?;
     let crappy_old_lbp1_switch = v >= 0x38f && r.bool()?;
     r.s32()?;
     let count = r.count(1)?;
@@ -1982,8 +2009,8 @@ fn switch(r: &mut Reader, things: &mut Things) -> Result<Switch> {
         r.f32()?;
     }
     let activation_hold_time = r.s32()?;
-    r.bool()?;
-    r.f32()?;
+    let require_all = r.bool()?;
+    let angle_range = r.f32()?;
     let include_touching = r.s32()?;
     if v >= 0x398 && kind == 36 && include_touching == 1 {
         r.resource(true)?;
@@ -2015,7 +2042,7 @@ fn switch(r: &mut Reader, things: &mut Things) -> Result<Switch> {
         r.s32()?;
     }
     let retarded_old_joint = r.bool()?;
-    r.i32()?;
+    let key_sensor_mode = r.i32()?;
     if v > 0x34c {
         r.i32()?;
         r.bool()?;
@@ -2023,15 +2050,11 @@ fn switch(r: &mut Reader, things: &mut Things) -> Result<Switch> {
     if v > 0x34f {
         r.i8()?;
     }
-    if v > 0x390 {
-        r.bool()?;
-    }
+    let detect_unspawned_players = v > 0x390 && r.bool()?;
     if v > 0x3a4 {
         r.bool()?;
     }
-    if v > 0x3ec {
-        r.i8()?;
-    }
+    let player_mode = if v > 0x3ec { r.i8()? } else { 0 };
     if v > 0x3ee && kind == 65 {
         r.i32()?;
         r.bytes(20)?;
@@ -2063,6 +2086,15 @@ fn switch(r: &mut Reader, things: &mut Things) -> Result<Switch> {
         random_off_time_min: random[4],
         random_off_time_max: random[5],
         retarded_old_joint,
+        radius,
+        min_radius,
+        colour_index,
+        name,
+        require_all,
+        angle_range,
+        key_sensor_mode,
+        detect_unspawned_players,
+        player_mode,
     })
 }
 

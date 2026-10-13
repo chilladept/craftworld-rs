@@ -22,10 +22,15 @@
 //! natives (they return their type's default and are counted); `--strict` makes them fault
 //! instead. `--visit-triggers` then adds a player who stands on every PTrigger's Thing in
 //! turn (two ticks on it, one far away), so the level's `Enter`, `Inside` and `Leave`
-//! scripts run; the report counts the events raised and run. `--pulse-switches` then runs
+//! scripts run; the report counts the events raised and run. He then visits every player
+//! sensor the same way (in its range, then far away), so the sensors turn on and off.
+//! `--pulse-switches` then runs
 //! two more ticks in which every switch output is forced on, then off, through the per-tick
 //! switch pass, so the `SwitchPerformReaction` scripts run with true, then false (a test
-//! drive: the pass itself computes the logic types and keeps the sensors' stored signals). `switch_reactions` counts the
+//! drive: the pass itself computes the logic types and the tag and player sensors, and
+//! keeps the stored signals of the other sensors). `sensors` in `switches` is the census of
+//! the tag and player sensors and the tags; `play_all.sensors_unlike_stored` counts the
+//! sensors whose output differed from the stored one on some tick. `switch_reactions` counts the
 //! output targets the pass visited and the reaction calls by script GUID. `triggers` is the PTrigger
 //! census over the levels read, `switches` the PSwitch census with the input tables built
 //! from the outputs' targets, `pworld` the census of the PWorld values scripts read (game
@@ -286,12 +291,69 @@ struct Switches {
     /// Battery (28) and toggle (17) outputs by stored output signal against the stored
     /// ManualActivation ("t<type> out=<ternary>/<player> manual=<ternary>/<player>").
     manual_outputs: BTreeMap<String, usize>,
+    /// Player sensors (3), tag sensors (4) and tags (PSwitchKey) by setting.
+    sensors: BTreeMap<String, usize>,
 }
 
 impl Switches {
+    /// Census of the tag and player sensors and of the tags.
+    fn add_sensors(&mut self, world: &LevelWorld) {
+        let mut count = |name: String, holds: bool| {
+            *self.sensors.entry(name).or_default() += usize::from(holds);
+        };
+        let placed = |i: usize| {
+            let proxy = world.sensor_proxy(i as u32) as usize;
+            world.things[proxy].world_matrix.is_some()
+        };
+        let keys: BTreeSet<_> = world.things.iter().filter_map(|t| t.switch_key).collect();
+        for (i, t) in world.things.iter().enumerate() {
+            if t.switch_key.is_some() {
+                let wired = matches!(t.inputs.first(), Some(Some(_)));
+                count("tags".into(), true);
+                count("tags port 0 wired".into(), wired);
+                count("tags without a position".into(), !placed(i));
+            }
+            let Some(s) = t.switch.as_ref() else {
+                continue;
+            };
+            let p = match s.switch_type {
+                3 => "player",
+                4 => "tag",
+                _ => continue,
+            };
+            let (cone, layer) = (s.angle_range < 180., s.include_touching != 0);
+            let bullets = s.bullets_required.clamp(-1, 5);
+            count(p.into(), true);
+            count(format!("{p} inverted"), s.inverted);
+            count(format!("{p} angle_range below 180"), cone);
+            count(format!("{p} include_touching not 0"), layer);
+            count(format!("{p} cone or layer test"), cone || layer);
+            count(format!("{p} include_touching={}", s.include_touching), true);
+            count(format!("{p} radius negative"), s.radius < 0.);
+            count(format!("{p} min_radius not 0"), s.min_radius != 0.);
+            count(format!("{p} bullets_required={bullets}"), true);
+            count(format!("{p} detect_unspawned"), s.detect_unspawned_players);
+            count(format!("{p} without a position"), !placed(i));
+            if s.switch_type == 3 {
+                count("player require_all".into(), s.require_all);
+                count(format!("player player_mode={}", s.player_mode), true);
+            } else {
+                let versus = s.team_filter != 0 && matches!(world.pworld.game_mode, 1 | 5);
+                count(format!("tag key_sensor_mode={}", s.key_sensor_mode), true);
+                count(format!("tag team_filter={}", s.team_filter), true);
+                count("tag team_filter not 0 in game mode 1 or 5".into(), versus);
+                count(
+                    "tag without a tag in the level".into(),
+                    !keys.contains(&s.key),
+                );
+            }
+        }
+    }
+
     fn add(&mut self, vm: &Vm, world: &LevelWorld, found: &[lbp_runtime::Instance]) {
         self.collisions += world.input_collisions;
         self.ports_dropped += world.input_ports_dropped;
+        self.add_sensors(world);
         for t in &world.things {
             if let Some(s) = &t.switch {
                 self.count += 1;
@@ -440,6 +502,7 @@ impl Switches {
             "logic_settings": self.logic,
             "timers_by_behaviour": self.timer_behaviours,
             "battery_and_toggle_outputs_stored_against_manual": self.manual_outputs,
+            "sensors": self.sensors,
         })
     }
 }
@@ -573,6 +636,14 @@ struct Played {
     outputs_changed: BTreeMap<i32, usize>,
     /// Things deactivated at the end.
     deactivated: usize,
+    /// Player sensors the `--visit-triggers` player stood at.
+    sensors_visited: usize,
+    /// Tag and player sensors by "t<type>", and those whose output 0, while their Thing
+    /// was not deactivated, differed from the stored signal on some tick (the pulse
+    /// ticks aside): any field, and the ternary.
+    sensors: BTreeMap<String, usize>,
+    sensors_unlike: BTreeMap<String, usize>,
+    sensors_unlike_ternary: BTreeMap<String, usize>,
     /// After the first tick: the switch pass counts, the outputs changed (all, and of
     /// Things that are not deactivated) and the Things deactivated.
     first_tick: Option<FirstTick>,
@@ -650,6 +721,28 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
     };
     let mut camera_before_in_use = None;
     let mut first_tick = None;
+    let sensors: Vec<usize> = (0..host.world.things.len())
+        .filter(|&i| {
+            let s = host.world.things[i].switch.as_ref();
+            s.is_some_and(|s| matches!(s.switch_type, 3 | 4))
+        })
+        .collect();
+    let (mut unlike, mut unlike_ternary) = (BTreeSet::new(), BTreeSet::new());
+    let mut note_sensors = |world: &LevelWorld| {
+        for &i in &sensors {
+            let t = &world.things[i];
+            let o = t.switch.as_ref().and_then(|s| s.outputs.first()?.as_ref());
+            let Some(o) = o.filter(|_| !t.deactivated) else {
+                continue;
+            };
+            if o.signal != o.stored {
+                unlike.insert(i);
+            }
+            if o.signal.ternary != o.stored.ternary {
+                unlike_ternary.insert(i);
+            }
+        }
+    };
     for tick in 0..opts.ticks {
         if opts.in_use_from.is_some_and(|t| t > 0 && t == tick) {
             camera_before_in_use = Some(camera_json(&host.world.camera));
@@ -658,6 +751,7 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
         let t = level.tick_level(vm, &mut host, BUDGET_PER_CALL);
         ticks_with_faults += usize::from(!t.faults.is_empty());
         note_faults(&t);
+        note_sensors(&host.world);
         if tick == 0 {
             first_tick = Some(FirstTick {
                 reactions: t.reactions.clone(),
@@ -671,7 +765,7 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
     // `--visit-triggers`: a player stands on each trigger's Thing for two ticks (Enter,
     // then Inside) and far away for one (Leave), in Thing order.
     let mut visit = StepReport::default();
-    let mut visited = 0usize;
+    let (mut visited, mut sensors_visited) = (0usize, 0usize);
     if opts.visit {
         let spots: Vec<[f32; 3]> = host
             .world
@@ -690,9 +784,41 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
                 let t = level.tick_level(vm, &mut host, BUDGET_PER_CALL);
                 ticks_with_faults += usize::from(!t.faults.is_empty());
                 note_faults(&t);
+                note_sensors(&host.world);
                 visit.absorb(t);
             }
             visited += 1;
+        }
+        // Then the player sensors: two ticks in the sensor's range (at its point, or
+        // midway between the two edges when it has an inner one), one far away.
+        let spots: Vec<[f32; 3]> = host
+            .world
+            .things
+            .iter()
+            .enumerate()
+            .filter_map(|(i, t)| {
+                let s = t.switch.as_ref().filter(|s| s.switch_type == 3)?;
+                let proxy = host.world.sensor_proxy(i as u32) as usize;
+                let m = host.world.things[proxy].world_matrix?;
+                let dx = if s.min_radius > 0. && s.radius > s.min_radius {
+                    (s.min_radius + s.radius) / 2.
+                } else {
+                    0.
+                };
+                Some([m[12] + dx, m[13], m[14]])
+            })
+            .collect();
+        for s in spots {
+            for dx in [0., 0., VISIT_AWAY] {
+                host.world
+                    .move_player(player, [s[0] + dx, s[1], s[2]], (s[2] - 1., s[2] + 1.));
+                let t = level.tick_level(vm, &mut host, BUDGET_PER_CALL);
+                ticks_with_faults += usize::from(!t.faults.is_empty());
+                note_faults(&t);
+                note_sensors(&host.world);
+                visit.absorb(t);
+            }
+            sensors_visited += 1;
         }
     }
     // `--pulse-switches`: one tick with every switch output forced on, one with it forced
@@ -726,11 +852,22 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
     unbound.truncate(40);
     let outputs_changed = outputs_changed(&host.world, false);
     let deactivated = host.world.things.iter().filter(|t| t.deactivated).count();
+    let by_type = |things: &mut dyn Iterator<Item = usize>| {
+        let mut m = BTreeMap::<String, usize>::new();
+        for i in things {
+            let ty = host.world.things[i].switch.as_ref().map(|s| s.switch_type);
+            *m.entry(format!("t{}", ty.unwrap_or(-1))).or_default() += 1;
+        }
+        m
+    };
+    let sensor_count = by_type(&mut sensors.iter().copied());
+    let sensors_unlike = by_type(&mut unlike.iter().copied());
+    let sensors_unlike_ternary = by_type(&mut unlike_ternary.iter().copied());
     let mut requests = BTreeMap::<&'static str, u64>::new();
     for r in &host.world.requests {
         *requests.entry(r.name).or_default() += 1;
     }
-    let json = serde_json::json!({
+    let mut json = serde_json::json!({
         "instances": level.instances.len(),
         "ticks": level.ticks,
         "tick_hz": lbp_runtime::TICK_HZ,
@@ -786,6 +923,10 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
             Some(format!("thing {}: {}.{}", i.thing, e.class, e.function))
         }).collect::<Vec<_>>(),
     });
+    json["player_sensors_visited"] = serde_json::json!(sensors_visited);
+    json["sensors"] = serde_json::json!(sensor_count);
+    json["sensors_unlike_stored"] = serde_json::json!(sensors_unlike);
+    json["sensors_unlike_stored_ternary"] = serde_json::json!(sensors_unlike_ternary);
     sum.absorb(visit);
     sum.absorb(pulse);
     Played {
@@ -819,6 +960,10 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
         unbound: host.unbound,
         outputs_changed,
         deactivated,
+        sensors_visited,
+        sensors: sensor_count,
+        sensors_unlike,
+        sensors_unlike_ternary,
         first_tick,
     }
 }
@@ -848,6 +993,10 @@ struct PlayTotals {
     outputs_changed: BTreeMap<i32, usize>,
     levels_with_outputs_changed: usize,
     deactivated: usize,
+    sensors_visited: usize,
+    sensors: BTreeMap<String, usize>,
+    sensors_unlike: BTreeMap<String, usize>,
+    sensors_unlike_ternary: BTreeMap<String, usize>,
     first_reactions: ReactionReport,
     first_changed: BTreeMap<i32, usize>,
     first_changed_active: BTreeMap<i32, usize>,
@@ -873,6 +1022,16 @@ impl PlayTotals {
         }
         self.levels_with_outputs_changed += usize::from(!p.outputs_changed.is_empty());
         self.deactivated += p.deactivated;
+        self.sensors_visited += p.sensors_visited;
+        for (sum, level) in [
+            (&mut self.sensors, &p.sensors),
+            (&mut self.sensors_unlike, &p.sensors_unlike),
+            (&mut self.sensors_unlike_ternary, &p.sensors_unlike_ternary),
+        ] {
+            for (ty, n) in level {
+                *sum.entry(ty.clone()).or_default() += n;
+            }
+        }
         self.scoreboard_requests += p.scoreboard_requests;
         self.levels_with_scoreboard_requests += usize::from(p.scoreboard_requests > 0);
         for (name, n) in &p.requests {
@@ -933,7 +1092,7 @@ impl PlayTotals {
                 Some((key, n))
             })
             .collect();
-        serde_json::json!({
+        let mut doc = serde_json::json!({
             "unit": "native call; scripted Thing; fault (a Thing stops at its first fault)",
             "ticks_per_level": opts.ticks,
             "unbound_natives_fault": opts.strict,
@@ -981,7 +1140,12 @@ impl PlayTotals {
             "unbound_natives": ranked(&self.unbound, "native", usize::MAX),
             "faults_by_kind": ranked(&self.faults, "fault", 200),
             "thread_faults_by_kind": ranked(&self.thread_faults, "fault", 100),
-        })
+        });
+        doc["player_sensors_visited"] = serde_json::json!(self.sensors_visited);
+        doc["sensors"] = serde_json::json!(self.sensors);
+        doc["sensors_unlike_stored"] = serde_json::json!(self.sensors_unlike);
+        doc["sensors_unlike_stored_ternary"] = serde_json::json!(self.sensors_unlike_ternary);
+        doc
     }
 }
 

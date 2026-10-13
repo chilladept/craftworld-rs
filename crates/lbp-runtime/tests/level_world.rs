@@ -2716,3 +2716,82 @@ fn d263_a_script_cast_tests_the_things_class_chain() {
     assert!(!w.thing_is(1, "Other"));
     assert!(!w.thing_is(2, "Lamp") && !w.thing_is(99, "Lamp"));
 }
+
+#[test]
+fn d264_sensors_read_the_level_parts() {
+    use lbp_level::parts::SwitchKey;
+    let mut t: Vec<ThingRecord> = (0..5)
+        .map(|index| ThingRecord {
+            index,
+            ..Default::default()
+        })
+        .collect();
+    let at = |x: f32| {
+        let mut m = identity();
+        m[12] = x;
+        pos(m)
+    };
+    let output = || Some(SwitchOutput::default());
+    // Thing 0: a tag sensor for (2, "Door"). Things 1 and 2: tags, one with another name.
+    // Thing 3: a player sensor. Thing 4: nothing.
+    t[0].data.pos = at(0.);
+    t[0].data.switch = Some(Switch {
+        switch_type: 4,
+        radius: 100.,
+        angle_range: 180.,
+        colour_index: 2,
+        name: "Door".into(),
+        bullets_required: 1,
+        outputs: vec![output()],
+        ..Default::default()
+    });
+    t[1].data.pos = at(30.);
+    t[1].data.switch_key = Some(SwitchKey {
+        colour_index: 2,
+        name: "Gate".into(),
+    });
+    t[2].data.pos = at(50.);
+    t[2].data.switch_key = Some(SwitchKey {
+        colour_index: 2,
+        name: "Door".into(),
+    });
+    t[3].data.pos = at(1000.);
+    t[3].data.switch = Some(Switch {
+        switch_type: 3,
+        radius: 40.,
+        min_radius: 10.,
+        angle_range: 180.,
+        bullets_required: 1,
+        require_all: true,
+        player_mode: 1,
+        outputs: vec![output()],
+        ..Default::default()
+    });
+    let mut w = LevelWorld::from_things(&t);
+    // Equal names share an index; the sensor's key is the second tag's.
+    assert_eq!(w.tag_names, ["Door", "Gate", ""]);
+    let key = w.things[0].switch.as_ref().unwrap().key;
+    assert_eq!(w.things[2].switch_key, Some(key));
+    assert_ne!(w.things[1].switch_key, Some(key));
+    let s = w.things[3].switch.as_ref().unwrap();
+    assert_eq!((s.radius, s.min_radius, s.require_all), (40., 10., true));
+    assert_eq!((s.player_mode, s.angle_range), (1, 180.));
+    let out = |w: &LevelWorld, thing: usize| {
+        let s = w.things[thing].switch.as_ref().unwrap();
+        s.outputs[0].as_ref().unwrap().signal
+    };
+    // The tag sensor finds its tag 50 away; the player sensor has nobody.
+    w.update_switches();
+    assert_eq!(w.tags[&key].len(), 1);
+    let s = out(&w, 0);
+    assert!((s.activation - 0.5 / 0.75).abs() < 1e-5 && s.ternary == 1);
+    assert_eq!(out(&w, 3).ternary, 0);
+    // A player between the two edges of the player sensor turns it on.
+    let p = w.add_player([1025., 0., 0.], (-1., 1.));
+    w.update_switches();
+    let s = out(&w, 3);
+    assert_eq!((s.activation, s.ternary, s.player), (0.5, 1, 0));
+    w.move_player(p, [1005., 0., 0.], (-1., 1.));
+    w.update_switches();
+    assert_eq!(out(&w, 3).ternary, 0);
+}
