@@ -1,5 +1,27 @@
 # Development log
 
+## 2026-10-13 - D264 tag sensors and player sensors run in the switch pass
+
+Between RScript plan stages 4 and 5. `lbp-level` keeps the PSwitch fields the sensors read (Radius,
+MinRadius, the key colour index and name, RequireAll, AngleRange, KeySensorMode, DetectUnspawnedPlayers,
+PlayerMode) and the PSwitchKey colour index and name; the same 378 levels read with the same Thing counts.
+`lbp-runtime/src/sensors.rs`: `LevelWorld::refresh_tags` rebuilds the tag map (colour, name) -> tags by x
+at the start of each pass (FOUND 0xd5c1c); `tag_signal` (FOUND 0x12f6f4: the Thing's input port 0, on when
+unwired, off when deactivated); the tag sensor (FOUND 0x118d5c: x window, team filter 0xf9a64, own-chip
+rule, range, closeness, the BulletsRequired-th strongest, KeySensorMode 1 handing on the tag's signal) and
+the player sensor (FOUND 0x119910: PlayerMode, RequireAll, BulletsRequired, closeness of the farthest one
+needed, the nearest player on the output); the ternary with its hold band (FOUND 0x11873c); inversion
+afterwards. INFERRED: no cone test for AngleRange below 180 (1,811 player and 2,975 tag sensors; the
+direction is not established) and no layer test for IncludeTouching 1 (212 and 489; needs the bodies' z
+spans); positions are the Things' positions; the leader is the first player record; the sensor's body has
+no owning player. `level_scripts`: a sensor census, and `--visit-triggers` also stands the player at every
+player sensor. PC run, 378 levels, 60 ticks: 5,627 player and 16,953 tag sensors, 19,629 tags; sensors
+unlike the stored signal on some tick 184 / 5,446 plain and 5,204 / 6,272 with the visit; reaction calls
+262 -> 323 plain, 283 -> 8,970 with the visit, 5,704 -> 14,346 pulsed; unbound natives called 52 -> 52,
+85 -> 88, 88 -> 88; Things stopped by a fault stay at 4 in all three runs. Not done: the cone direction,
+the layer test, cursors, DetectUnspawnedPlayers on player sensors, the other sensors, the randomiser,
+sequencers. +0 viewable, +0 Complete. `docs/level-scripts.md` part 15.
+
 ## 2026-10-13 - D263 the natives the stage 4 runs reached are bound
 
 Between RScript plan stages 4 and 5. 48 natives bound from the stage 4c research notes, 164 -> 212 in the

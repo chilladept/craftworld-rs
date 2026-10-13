@@ -4487,3 +4487,70 @@ Next: stage 5, show what the scripts do.
 - Not tested: the viewer window; any value against the game in RPCS3.
 **+0 newly viewable / +0 newly Complete (runtime feature).**
 Next: stage 5, show what the scripts do.
+
+## D264 tag sensors and player sensors (2026-10-13)
+- Between RScript plan stages 4 and 5 (`docs/rscript-plan.md`). The switch pass of D261 kept every
+  sensor's stored signal. The tag sensor (switch type 4) and the player sensor (type 3) are computed now,
+  from research notes on the two handlers; the other sensors, the randomiser and the sequencers still keep
+  the stored signal.
+- Reader: `lbp-level` keeps the PSwitch fields Radius, MinRadius, the key colour index and name,
+  RequireAll, AngleRange, KeySensorMode, DetectUnspawnedPlayers and PlayerMode, and the PSwitchKey part's
+  colour index and name (`PartData::switch_key`). The bytes read are the same; the 378 levels read as
+  before, with the same Thing counts per level.
+- Rules (FOUND in the 01.33 EBOOT), in `lbp-runtime/src/sensors.rs`:
+  - Tag map: per (colour index, name) the tags with x and y, sorted by x, rebuilt as the first step of
+    the switch pass (0xd5c1c); `LevelWorld::refresh_tags`, `LevelWorld::tags`.
+  - A sensor or tag is placed by its microchip's Thing when it is on a chip, else by its own Thing;
+    distances in x and y only.
+  - Tag signal (0x12f6f4): off on a deactivated Thing, else the signal wired to the Thing's input port 0,
+    {1.0, 1, -1} with nothing wired.
+  - Range: MinRadius^2 <= d^2 <= Radius^2; none with a negative Radius. Closeness: (1 - d / Radius) / 0.75
+    with MinRadius 0, else 1 - (d - MinRadius) / (Radius - MinRadius); 1.0 with a negative Radius.
+  - Ternary (0x11873c): with s = activation * 3.75, off at s <= 0.25, on at s >= 0.75, in between what
+    output 0 holds (read back through the inversion).
+  - Tag sensor (0x118d5c): the tags within the Radius in x, by x; a tag that is off is skipped (in
+    KeySensorMode 1: one with activation 0); team filter (0xf9a64); a tag on the sensor's own chip is
+    skipped unless DetectUnspawnedPlayers is set; range; kept by falling strength, cut to BulletsRequired;
+    the output is the weakest kept one, closeness clamped to 0..1, or in mode 1 the tag's own signal.
+  - Player sensor (0x119910): the players' Sackboys; PlayerMode 0 counts the leader only; RequireAll
+    needs every one that counts, else BulletsRequired; closeness of the farthest one needed; the output's
+    player is the nearest.
+  - The inversion is applied afterwards, also to "off".
+- INFERRED choices, with the sensors they touch (378 levels):
+  - No cone test for AngleRange below 180: 1,811 player and 2,975 tag sensors. The test is known, the
+    direction is not.
+  - No layer test for IncludeTouching 1: 212 player and 489 tag sensors (1,932 and 3,353 with either of
+    the two). The formulas are known, the bodies' z spans are not kept.
+  - The points are the Things' positions (the game takes body centres for the player sensor): all 5,627
+    player sensors.
+  - The leader is the first player record: 4,280 player sensors with PlayerMode 0; no effect with one
+    player.
+  - The sensor's body has no owning player: 8 tag sensors with TeamFilter 1, none in a versus or team
+    level, so no effect.
+- MEASURED census: 5,627 player sensors (227 inverted, 408 RequireAll, 360 with BulletsRequired above 1,
+  47 with a negative Radius, 89 with a MinRadius, 192 with DetectUnspawnedPlayers; PlayerMode 0 / 1 / 2:
+  4,280 / 759 / 588); 16,953 tag sensors (1,677 inverted, KeySensorMode 0 / 1: 15,984 / 969, 418 with
+  BulletsRequired above 1, 467 with a negative Radius, 130 with a MinRadius, 961 without a matching tag in
+  their level); 19,629 tags, 5,316 with input port 0 wired.
+- MEASURED runs (378 levels, 13,547 scripted Things, release, 60 ticks; before -> now):
+  - plain: sensors unlike the stored signal on some tick 184 player and 5,446 tag (184 and 4,364 by
+    ternary); outputs unlike the file at the end 24,612 -> 33,541; reaction calls 262 -> 323; unbound
+    natives called 52 -> 52; unbound calls 67,045 -> 73,329; Things stopped by a fault 4 -> 4.
+  - with the trigger visit, which now also stands at all 5,627 player sensors: 5,204 and 6,272 (5,203
+    and 5,152 by ternary); 24,665 -> 40,244; 283 -> 8,970; 85 -> 88; 758,850 -> 1,002,475; 4 -> 4.
+  - with every output pulsed: 9,486 -> 9,486; 5,704 -> 14,346; 88 -> 88; 766,940 -> 1,010,588; 4 -> 4.
+  - Fault kinds 2 and levels with a fault 2 in all three runs, as before.
+  - New without a binding (visit run): `Game.PlayTutorialMonitorVideo`,
+    `Profile.SetLBP2GameProgressionFlag`, `Game.TryToAwardPin`.
+- Viewer: the play-mode Sackboy is already the level world's player, so the player sensors follow him;
+  no viewer change.
+- Not modelled: the cone and the layer test (above); sensors and tags on a cursor; the owning player of
+  a body; a tag skipped by a Thing flag in one game state; players out of play, a player sitting in
+  something and DetectUnspawnedPlayers on a player sensor; the snapshot copy of the tag map; the other
+  sensor types, the randomiser, sequencers.
+- Tests: 9 unit tests in `sensors.rs`, one world test (`d264_sensors_read_the_level_parts`), one reader
+  test (`switch_and_switch_key_keep_the_sensor_fields`). fmt, the CI clippy line, the CI test set, the
+  Python tests and `cargo check` of both viewers pass.
+- Not tested: the viewer window; any sensor against the game in RPCS3.
+**+0 newly viewable / +0 newly Complete (runtime feature).**
+Next: stage 5, show what the scripts do; the cone direction and the layer test.

@@ -124,6 +124,15 @@ UI (`UpdateUI__`) and photo natives are not planned.
   Pulsed run: unbound natives called 110 -> 88, unbound calls 952,819 -> 766,940; Things
   stopped by a fault stay at 4. Still open: feeding the pads, the slot database, the
   Sackbot group.
+- D264 (part 15): the tag sensor and the player sensor are computed each tick by the rules
+  FOUND in the executable (tag map refreshed at the start of the pass, range, closeness,
+  the on / hold / off thresholds, the N-th strongest tag, RequireAll, inversion
+  afterwards); the reader keeps the sensor fields and the PSwitchKey. 5,627 player and
+  16,953 tag sensors in 378 levels. With a player visiting every trigger and player
+  sensor: reaction calls 283 -> 8,970 (5,704 -> 14,346 pulsed), Things stopped by a fault
+  stay at 4. INFERRED: no cone test (4,786 sensors with AngleRange below 180) and no
+  layer test (701 with IncludeTouching 1). Still open: those two, the other sensors, the
+  randomiser, sequencers.
 
 ## Rules
 

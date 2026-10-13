@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D263
+# Current state (overwrite each milestone) — after D264
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -11,7 +11,22 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D263 the natives the stage 4 runs reached (2026-10-13)
+## Latest: D264 tag sensors and player sensors (2026-10-13)
+- The switch pass computes the tag sensor (type 4) and the player sensor (type 3) each tick; the other
+  sensors keep the stored signal. FOUND in the EBOOT (0x118d5c, 0x119910, 0x11873c, 0xd5c1c, 0x12f6f4,
+  0xf9a64): the tag map by (colour index, name), rebuilt when the pass starts; a tag's signal from its
+  Thing's input port 0, on when unwired; range by Radius and MinRadius in x and y; closeness; on at 0.85 of
+  the Radius, off at 0.95, hold between; the BulletsRequired-th strongest tag; KeySensorMode 1 hands on the
+  tag's signal; RequireAll and PlayerMode for players; inversion afterwards. `lbp-level` keeps the sensor
+  fields of PSwitch and the PSwitchKey colour and name. `lbp-runtime/src/sensors.rs`.
+- INFERRED: no cone test (AngleRange below 180: 1,811 player and 2,975 tag sensors) and no layer test
+  (IncludeTouching 1: 212 and 489); positions are the Things' positions; the leader is the first record.
+- MEASURED, 378 levels, 60 ticks: 5,627 player and 16,953 tag sensors, 19,629 tags. Sensors that differ
+  from the stored signal on some tick: 184 / 5,446 (plain), 5,204 / 6,272 with a player visiting every
+  trigger and player sensor. Reaction calls 262 -> 323, 283 -> 8,970 with the visit, 5,704 -> 14,346
+  pulsed. Things stopped by a fault stay at 4. Next: stage 5. `docs/level-scripts.md` part 15.
+
+## Before: D263 the natives the stage 4 runs reached (2026-10-13)
 - 48 natives bound (164 -> 212), 16 of them recorded only. FOUND in the EBOOT: a pad per player record
   with the pressed / just pressed / just released rules (0x388e2c, 0x388358, 0x389400); `LAMS.IsInLams`
   as a search of the loaded translation tables (0x159c1c); the global-settings blends, start + (target -
