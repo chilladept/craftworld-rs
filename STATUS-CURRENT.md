@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D265
+# Current state (overwrite each milestone) — after D266
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -11,7 +11,27 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D265 the message list (2026-10-13)
+## Latest: D266 the viewer draws the messages (2026-10-13)
+- RScript plan stage 5, PR 2. `lbp-bevy-viewer --level-scripts` loads the English base and patch
+  translation tables for its level world (as `level_scripts`) and draws `LevelWorld::messages`: a plain
+  box per open bubble above its anchor Thing (speaker name, text, close prompt string of
+  `CLOSE_PROMPT_KEY`) and the subtitle at the bottom centre. Without tables it still runs: no prompt line.
+- `lbp-runtime/src/message_view.rs` (tested in CI): `LevelWorld::message_overlay` (what is drawn),
+  `display_text` (markup out), `close_prompt`, `place_bubbles`, `place_subtitle`. The viewer's
+  `speech_overlay.rs` measures and paints with egui. The viewer prints a `Messages at tick N` line on
+  each change; the window has a messages line.
+- MEASURED: the tables' markup is seven tags in angle brackets (emphasis 1,838 places, line break 280,
+  icon 299, font 68, player and slot icons 46 of 29,477 strings). Line break -> new line, icon -> its
+  name in square brackets, the rest left out.
+- INFERRED: the box above the Thing, pushed back inside the screen at an edge; bubbles of one Thing
+  stacked; every open bubble drawn; captions and think bubbles like speech; empty bubbles and the
+  level-link and wormhole prompts not drawn; the look. The prompt is text only (event 2 not modelled).
+- Checked: pulsed run equal to D265 (Things stopped by a fault 4); one level seen in the window without
+  taking focus (one bubble at its Thing; clamped at the upper edge from the follow camera). Not seen: a
+  subtitle, a name, a prompt line, a stack. Next: PR 3, global settings applied.
+  `docs/level-scripts.md` part 17.
+
+## Before: D265 the message list (2026-10-13)
 - RScript plan stage 5, PR 1. `LevelWorld::messages` (`lbp-runtime/src/messages.rs`) is the game's list
   of open speech bubbles, captions, subtitles and level-link and wormhole prompts, run by the messaging
   natives. FOUND in the EBOOT (0x3e8dc0, 0x3e4124, 0x3e8aa0, 0x3e3248, 0x3e528c, the cores 0x7382e0 ..

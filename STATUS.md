@@ -4622,3 +4622,52 @@ Next: stage 5, show what the scripts do; the cone direction and the layer test.
 - Not tested: the viewer window; any message against the game in RPCS3.
 **+0 newly viewable / +0 newly Complete (runtime feature).**
 Next: stage 5 PR 2, the viewer draws the open messages; then global settings, Things, camera.
+
+## D266 the viewer draws the messages (2026-10-13)
+- RScript plan stage 5, PR 2 (`docs/rscript-plan.md`). D265 gave the level world the game's message
+  list. The Bevy viewer now draws it under `--level-scripts`. Nothing new was read in the EBOOT.
+- Tables: `level_play.rs` loads the English base and patch translation tables for its level world,
+  patch first, through `lbp_preview::story::load_strings` (the loader `level_scripts` uses since D263).
+  `LAMS.IsInLams` and `LAMS.Translate` answer in the viewer, so bubble texts are translated. A table
+  that cannot be read is left out; the viewer still runs, the scripts pass their own text for a missing
+  key and a bubble shows no close prompt.
+- New `lbp-runtime/src/message_view.rs`, everything that needs no window:
+  - `LevelWorld::message_overlay` -> `MessageOverlay`: the bubbles to draw (`BubbleView`: id, anchor
+    Thing, place in level units, style, speaker name, text, prompt string), the subtitle, and counts of
+    what is left out.
+  - `LevelWorld::close_prompt`: the string of `CLOSE_PROMPT_KEY` in the loaded tables.
+  - `display_text`: the string without the game's markup.
+  - `place_bubbles`, `place_subtitle`: where the boxes go, in screen pixels.
+- New `lbp-bevy-viewer/src/speech_overlay.rs`: measures the lines with egui and paints boxes in the
+  look of the viewer's windows, behind them; also under `--qa-hide-ui`. `level_play.rs` projects the
+  anchor through `LevelDisplay` and the camera, shows a messages line in the "Level scripts" window and
+  prints `Messages at tick N: ...` on each tick a message entered the list or was closed.
+- MEASURED, the two English tables (29,477 strings): the markup is tags in angle brackets. Emphasis
+  (`em` 1,821 places, `i` 17), line break 280, pad icon 299, font 68, player and slot icons 46. Three
+  strings have other words in angle brackets; square brackets are plain text.
+- Rules, all INFERRED (the HUD script's placement and the bubble art were not read):
+  - Every open bubble with text and a placed anchor is drawn, in list order; captions and think
+    bubbles like speech. Empty bubbles, the level-link prompt and the wormhole prompt are not drawn.
+  - A box is centred on its anchor's screen point, 24 pixels above it; bubbles of one Thing stack
+    upwards, the first lowest; a stack is moved back inside the screen as a whole (8 pixel margin); an
+    anchor behind the camera draws nothing.
+  - The subtitle: one box at the bottom centre, the last of the list with text.
+  - Markup: line break -> new line; icon -> its name in square brackets; emphasis, font, player and
+    slot tags left out with the text between kept; unknown tags stay as text.
+  - The close prompt is a line of text. No key closes a bubble (event 2 is not modelled).
+- MEASURED:
+  - Pulsed run (378 levels, 60 ticks, `--visit-triggers --pulse-switches`): the `play_all` block is
+    equal to D265; Things stopped by a fault 4; requests 2,381, opened 1,187, closed 1,152.
+  - Viewer, release, comp_01_rocket_funland, 1280 x 720, shown without taking focus: tables 2; one
+    bubble without a prompt opens on tick 1 at Thing 246 and is drawn. Framed on the Thing the box is
+    above the magic mouth; from the Sackboy follow camera started at the Thing's place the Thing is
+    above the frame and the box sits at the upper edge. Frames under ignored `local-analysis/`.
+- Tests: 6 unit tests in `message_view.rs` and the world test
+  `d266_the_overlay_reads_the_worlds_messages_and_tables`, with made-up text (`lbp-runtime`: 46 unit, 36
+  world). fmt, the CI clippy line, the CI test set, the Python tests and `cargo check` of both viewers
+  pass; clippy on the Bevy viewer passes.
+- Not tested: a subtitle, a speaker's name, a close prompt line, a stack of bubbles and a caption in
+  the window; any bubble against the game in RPCS3.
+**+0 newly viewable / +0 newly Complete (viewer feature).**
+Next: stage 5 PR 3, global settings applied; then Things, camera. Open: the player's close button, the
+game's bubble placement and art.

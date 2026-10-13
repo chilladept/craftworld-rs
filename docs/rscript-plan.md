@@ -144,6 +144,16 @@ UI (`UpdateUI__`) and photo natives are not planned.
   anchor Thing. Follows: PR 2 the viewer draws the list (tables loaded, bubbles at the
   anchor, subtitles), PR 3 global settings applied, PR 4 hidden, moved and tinted Things,
   PR 5 camera and screen natives. Still open: the player's close button.
+- Stage 5, PR 2 (D266, part 17): the viewer draws the message list. `--level-scripts`
+  loads the English translation tables for its level world and shows each open bubble
+  as a plain box above its anchor Thing (speaker name, text, close prompt line) and the
+  subtitle at the bottom centre. `lbp-runtime/src/message_view.rs` decides what is drawn,
+  takes the markup tags out of the text (seven tags, MEASURED on the tables) and places
+  the boxes (kept on the screen, bubbles of one Thing stacked), with tests in CI.
+  INFERRED: placement, look, that every open bubble is drawn. The pulsed run is equal
+  to D265 (Things stopped by a fault 4). Follows: PR 3 global settings applied, PR 4
+  hidden, moved and tinted Things, PR 5 camera and screen natives. Still open: the
+  player's close button, the game's bubble placement and art.
 
 ## Rules
 

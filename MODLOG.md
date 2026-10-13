@@ -1,5 +1,25 @@
 # Development log
 
+## 2026-10-13 - D266 the viewer draws speech bubbles and the subtitle
+
+RScript plan stage 5, PR 2. `lbp-bevy-viewer --level-scripts` loads the English base and patch translation
+tables for its level world (`lbp_preview::story::load_strings`, as `level_scripts`) and draws the open
+messages of `LevelWorld::messages`: a plain box per bubble above its anchor Thing with the speaker's name,
+the text and the close prompt's string (`CLOSE_PROMPT_KEY`), and the subtitle at the bottom centre. New
+`lbp-runtime/src/message_view.rs` holds what needs no window: `LevelWorld::message_overlay`, `close_prompt`,
+`display_text`, `place_bubbles`, `place_subtitle`; new viewer module `speech_overlay.rs` measures and paints
+with egui. MEASURED on the two English tables (29,477 strings): the markup is seven tags in angle brackets
+(emphasis 1,838 places, line break 280, icon 299, font 68, player and slot icons 46); a line break becomes a
+new line, an icon its name in square brackets, the others are left out. INFERRED: the box 24 pixels above
+the anchor's screen point, moved back inside the screen at an edge; bubbles of one Thing stacked, the first
+lowest; every open bubble drawn; captions and think bubbles like speech; empty bubbles and the level-link
+and wormhole prompts not drawn; the look. Nothing new read in the EBOOT. The prompt is text only: event 2
+is still not modelled. Without tables the viewer runs and shows no prompt line. The viewer prints a
+`Messages at tick N` line on each change. PC: the pulsed run's `play_all` block equals D265 (Things stopped
+by a fault 4); one level seen in the window without taking focus (one bubble at Thing 246; at the upper edge
+from the follow camera). Tests: 6 unit tests and one world test with made-up text. Not seen in the window:
+a subtitle, a name, a prompt line, a stack. +0 viewable, +0 Complete. `docs/level-scripts.md` part 17.
+
 ## 2026-10-13 - D265 the level world keeps the game's message list
 
 RScript plan stage 5, PR 1. New `lbp-runtime/src/messages.rs`: `LevelWorld::messages` holds the open speech
