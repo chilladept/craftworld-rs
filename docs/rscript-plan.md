@@ -89,6 +89,12 @@ UI (`UpdateUI__`) and photo natives are not planned.
   stopped by a fault 4,940 -> 1,722 of 13,547; 76,269 calls to 64 unbound natives are
   defaulted and counted. Largest stops left: switch inputs 1,143, `PWorld.GameMode` 220,
   local transforms 199, TriggerLevelLink 113.
+- Stage 2 done (D259, part 10): PTrigger kept by the reader; the inside test, hysteresis,
+  layer rule and the Enter/Inside/Leave targets FOUND in the executable. 23,990 triggers
+  in 378 levels, 4,662 with a script on their Thing or its parent. With a player visiting
+  each trigger: 11,430 Enter, 895 Inside and 7,357 Leave calls run, no new fault, 29 more
+  unbound natives reached (switch inputs and outputs lead). The viewer feeds the
+  play-mode Sackboy to the triggers.
 
 ## Rules
 

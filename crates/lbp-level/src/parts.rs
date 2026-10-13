@@ -301,6 +301,22 @@ pub struct PartData {
     /// back-reference is not repeated here.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub script: Option<ScriptPart>,
+    /// PTrigger as stored (rscript-plan stage 2).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trigger: Option<Trigger>,
+}
+
+/// PTrigger as stored, in serialized order. `in_things` are the Things inside the
+/// trigger when the level was saved.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct Trigger {
+    pub trigger_type: i8,
+    pub in_things: Vec<Option<usize>>,
+    pub radius_multiplier: f32,
+    pub all_z_layers: bool,
+    pub hysteresis_multiplier: f32,
+    pub enabled: bool,
+    pub z_offset: f32,
 }
 
 /// PScript / ScriptInstance as stored: the script resource and, when the instance has a
@@ -841,13 +857,16 @@ fn part_body(
             r.i32()?;
         }
         "TRIGGER" => {
-            r.i8()?;
-            thing_array(r, things)?;
-            r.f32()?;
-            r.bool()?;
-            r.f32()?;
-            r.bool()?;
-            r.f32()?;
+            let trigger = Trigger {
+                trigger_type: r.i8()?,
+                in_things: thing_array(r, things)?,
+                radius_multiplier: r.f32()?,
+                all_z_layers: r.bool()?,
+                hysteresis_multiplier: r.f32()?,
+                enabled: r.bool()?,
+                z_offset: r.f32()?,
+            };
+            things.list[me].data.trigger = Some(trigger);
         }
         "STICKERS" => {
             let (main, total) = stickers(r)?;

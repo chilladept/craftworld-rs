@@ -4229,3 +4229,30 @@ Next: foot placement while standing; ledge-fall capture.
   against game ticks (rule read, no per-tick comparison); both feet stay 0.6 higher than the game's.
 **+0 newly viewable / +0 newly Complete (runtime feature).**
 Next: ledge-fall capture.
+
+## D259 trigger events (2026-10-12)
+- RScript plan stage 2 (`docs/rscript-plan.md`); detail in `docs/level-scripts.md` part 10.
+- FOUND (EBOOT trigger pass 0xe3bc0, per trigger 0x1364f0, test 0x135fe0, add 0x135a18, remove 0x1346fc):
+  the player's position is taken into the trigger Thing's space; type 0 circle, 1 box, 4 sphere of the
+  radius multiplier, times the hysteresis multiplier while the in-list is not empty; without the
+  all-layers flag the trigger's z plus z offset must lie in the z span of the Sackboy's body; Enter on
+  joining the in-list, Leave on removal, Inside for each Thing in it; Enter and Leave go to the script of
+  the trigger's Thing or its parent's, Inside to the parent's; ordinary triggers test players only.
+- Change: `lbp-level` keeps PTrigger (`PartData::trigger`); `lbp-runtime` `TriggerState`,
+  `LevelWorld::add_player`, `move_player`, `update_triggers`, `LevelScripts::trigger_events`, `tick_level`;
+  `lbp-script-vm` binds `Native.GetNumInThings__Q5Thing` (FOUND 0x648770) and
+  `PartList.HasPYellowHead__Q5Thing` (INFERRED), 118 bound; viewer `level_play.rs` feeds the play-mode
+  Sackboy; `level_scripts` writes a trigger census and takes `--visit-triggers`.
+- MEASURED (378 levels, 60 ticks, then a visit to each of 21,755 triggers with a POS): 23,990 PTrigger
+  Things (type 0 23,715, type 1 275; script on the Thing 2,388, on the parent 2,274, none 19,328); events
+  raised 39,212 Enter / 101,918 Inside / 39,178 Leave; run by a script 11,430 / 895 / 7,357; Things
+  stopped by a fault 1,722 with and without the visit; unbound natives reached 65 -> 94.
+- INFERRED: the player's point is his Thing position; triggers run in Thing order after the updates;
+  `PYellowHead.PlayerNumber` is the player index. PLACEHOLDER: the viewer Sackboy's z span (lane +-100).
+- Not modelled: the engine object kinds with their own trigger handling or wider candidate lists, the
+  Sackboy states that never count, the world-bounds cull.
+- Tests: `stage2_trigger_holds_the_player_by_shape_hysteresis_and_layer`,
+  `stage2_trigger_events_call_the_parent_script` (new). fmt, clippy, tests: see the PR checks.
+- Not tested: the viewer window with a walking Sackboy; any trigger against the game in RPCS3.
+**+0 newly viewable / +0 newly Complete (runtime feature).**
+Next: stage 3, switch events and inputs.

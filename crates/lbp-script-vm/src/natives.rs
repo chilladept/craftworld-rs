@@ -81,6 +81,10 @@ pub trait World {
     fn switch_input(&mut self, _thing: u32, _port: i32) -> Result<SwitchInput, String> {
         Err(not_available("switch inputs"))
     }
+    /// How many Things are inside the Thing's PTrigger; 0 without one.
+    fn trigger_count(&mut self, _thing: u32) -> Result<i32, String> {
+        Err(not_available("triggers"))
+    }
     /// LAMS text by key (the strings the U3 text browser reads).
     fn translate(&mut self, _key: i32) -> Result<String, String> {
         Err(not_available("translated text"))
@@ -830,6 +834,18 @@ const TABLE: &[(&str, &str, NativeFn)] = &[
     }),
     ("PartList", "HasPTrigger__Q5Thing", |w, c| {
         Ok(Value::Bool(w.has_part(subject(c)?, "PTrigger")?))
+    }),
+    // INFERRED from the name, as the other `HasP` natives (its code was not read).
+    ("PartList", "HasPYellowHead__Q5Thing", |w, c| {
+        Ok(Value::Bool(w.has_part(subject(c)?, "PYellowHead")?))
+    }),
+    // FOUND (01.33, 0x648770): the PTrigger's in-list count; 0 for a null Thing or a
+    // Thing without the part.
+    ("Native", "GetNumInThings__Q5Thing", |w, c| {
+        Ok(Value::Int(match param(c, 0)? {
+            Value::Thing(None) => 0,
+            t => w.trigger_count(some_thing(t)?)?,
+        }))
     }),
     ("PartList", "HasPShape__Q5Thing", |w, c| {
         Ok(Value::Bool(w.has_part(subject(c)?, "PShape")?))

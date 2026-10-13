@@ -42,6 +42,79 @@ pub struct ThingState {
     pub anim_speed: Option<f32>,
     /// Animation position a script set (`Native.SetAnimPos`, INFERRED time or fraction).
     pub anim_pos: Option<f32>,
+    /// PTrigger, when the Thing has one.
+    pub trigger: Option<TriggerState>,
+}
+
+/// A PTrigger at run time: the stored settings and the Things inside it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TriggerState {
+    /// 0 circle, 1 box, 4 sphere (see [`LevelWorld::update_triggers`]).
+    pub trigger_type: i8,
+    pub radius: f32,
+    pub hysteresis: f32,
+    pub all_z_layers: bool,
+    pub enabled: bool,
+    pub z_offset: f32,
+    /// Things inside, in the order they entered (the stored list first).
+    pub inside: Vec<u32>,
+}
+
+/// A player's Sackboy as a Thing of the level (see [`LevelWorld::add_player`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlayerState {
+    pub thing: u32,
+    /// Nearest and farthest z his body covers (the layers he stands in).
+    pub layers: (f32, f32),
+}
+
+/// What a trigger did to a Thing this tick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum TriggerEventKind {
+    Enter,
+    Inside,
+    Leave,
+}
+
+impl TriggerEventKind {
+    /// The script function the game calls for the event.
+    pub fn function(self) -> &'static str {
+        match self {
+            Self::Enter => "Enter__Q5Thing",
+            Self::Inside => "Inside__Q5Thing",
+            Self::Leave => "Leave__Q5Thing",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TriggerEvent {
+    /// The Thing with the PTrigger.
+    pub trigger: u32,
+    pub kind: TriggerEventKind,
+    /// The Thing that entered, is inside or left.
+    pub thing: u32,
+}
+
+/// `p` in the space of the stored-order matrix `m` (translation at 12..14, columns the
+/// axes), or `None` when `m` cannot be inverted.
+fn to_local(m: &[f32; 16], p: [f32; 3]) -> Option<[f32; 3]> {
+    let (a, b, c) = (&m[0..3], &m[4..7], &m[8..11]);
+    let cross = |u: &[f32], v: &[f32]| {
+        [
+            u[1] * v[2] - u[2] * v[1],
+            u[2] * v[0] - u[0] * v[2],
+            u[0] * v[1] - u[1] * v[0],
+        ]
+    };
+    let dot = |u: &[f32], v: &[f32]| u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
+    let (bc, ca, ab) = (cross(b, c), cross(c, a), cross(a, b));
+    let det = dot(a, &bc);
+    if det == 0. || !det.is_finite() {
+        return None;
+    }
+    let d = [p[0] - m[12], p[1] - m[13], p[2] - m[14]];
+    Some([dot(&bc, &d) / det, dot(&ca, &d) / det, dot(&ab, &d) / det])
 }
 
 /// Camera state scripts set through `Cam.*` natives, for the viewer to read.
@@ -111,6 +184,8 @@ pub struct LevelWorld {
     pub crafteroids: Vec<(ObjectId, Option<u32>)>,
     /// `Game.SetPlayerScoreMultiplierTimer` by player number.
     pub score_multiplier_timers: BTreeMap<i32, i32>,
+    /// Players' Sackboys ([`LevelWorld::add_player`]); none until a caller adds one.
+    pub players: Vec<PlayerState>,
 }
 
 /// VM value for a stored script field; `None` for a field the instance does not store.
@@ -168,6 +243,10 @@ fn part_name(native: &str) -> String {
         }
         out.push(c.to_ascii_uppercase());
     }
+    // The one part whose reader name does not split at the capital.
+    if out == "YELLOW_HEAD" {
+        out = "YELLOWHEAD".into();
+    }
     out
 }
 
@@ -185,6 +264,15 @@ impl LevelWorld {
                     shape_colour: t.data.shape.as_ref().map(|s| match s.color {
                         ShapeColor::Packed(c) => unpack_colour(c),
                         ShapeColor::Vector(v) => v,
+                    }),
+                    trigger: t.data.trigger.as_ref().map(|g| TriggerState {
+                        trigger_type: g.trigger_type,
+                        radius: g.radius_multiplier,
+                        hysteresis: g.hysteresis_multiplier,
+                        all_z_layers: g.all_z_layers,
+                        enabled: g.enabled,
+                        z_offset: g.z_offset,
+                        inside: g.in_things.iter().filter_map(|i| handle((*i)?)).collect(),
                     }),
                     ..Default::default()
                 })
@@ -365,6 +453,116 @@ impl LevelWorld {
         }
     }
 
+    /// Adds a player's Sackboy as a new Thing (YELLOWHEAD, CREATURE, BODY, POS; no parent)
+    /// at `position`, covering the z span `layers`. Triggers test players only.
+    pub fn add_player(&mut self, position: [f32; 3], layers: (f32, f32)) -> u32 {
+        let thing = self.things.len() as u32;
+        self.things.push(ThingState {
+            parts: vec!["BODY", "POS", "YELLOWHEAD", "CREATURE"],
+            ..Default::default()
+        });
+        // `PYellowHead.PlayerNumber`, read by scripts a player walks into: the player's
+        // index (INFERRED: an s32 `Game.EPlayerNumber`, as `Game.GetPlayerNumber__i`).
+        let number = Value::Int(self.players.len() as i32);
+        let part = self.part_handle(thing, "YELLOWHEAD") as usize - 1;
+        self.part_handles[part]
+            .members
+            .insert("PlayerNumber".into(), number);
+        self.players.push(PlayerState { thing, layers });
+        self.move_player(thing, position, layers);
+        thing
+    }
+
+    /// Puts a player's Sackboy at `position` (no rotation) with the z span `layers`.
+    pub fn move_player(&mut self, thing: u32, position: [f32; 3], layers: (f32, f32)) {
+        let mut m = [0.; 16];
+        (m[0], m[5], m[10], m[15]) = (1., 1., 1., 1.);
+        m[12..15].copy_from_slice(&position);
+        if let Some(t) = self.things.get_mut(thing as usize) {
+            t.world_matrix = Some(m);
+        }
+        if let Some(p) = self.players.iter_mut().find(|p| p.thing == thing) {
+            p.layers = layers;
+        }
+    }
+
+    /// One tick of every PTrigger against the players, in Thing order: updates the
+    /// triggers' `inside` lists and returns what happened.
+    ///
+    /// FOUND in the 01.33 executable (trigger pass 0xe3bc0, per trigger 0x1364f0, test
+    /// 0x135fe0, add 0x135a18, remove 0x1346fc):
+    /// - The position is taken into the trigger Thing's own space (inverse world matrix),
+    ///   so the Thing's scale sizes the trigger. The radius is `radiusMultiplier`, times
+    ///   `hysteresisMultiplier` while anything is inside. Type 0: x^2 + y^2 < r^2; type 1:
+    ///   |x| < r and |y| < r; type 4: x^2 + y^2 + z^2 < r^2; other types hold nothing.
+    /// - A trigger that is not enabled holds nothing.
+    /// - Without `allZLayers`, a Sackboy only counts when the trigger's z plus `zOffset`
+    ///   lies within the z span of his body.
+    /// - A Thing newly inside is appended and raises Enter; one no longer inside is
+    ///   removed and raises Leave; then every Thing in the list raises Inside.
+    /// - Ordinary triggers test the players' Sackboys only.
+    ///
+    /// Not modelled: the seven engine object kinds whose triggers test other Things too,
+    /// the Sackboy states that never count (creature state 5, a YELLOWHEAD flag), the
+    /// world-bounds cull, and the object kinds the engine handles without a script.
+    /// INFERRED: the player's point is his Thing position; triggers run in Thing order.
+    pub fn update_triggers(&mut self) -> Vec<TriggerEvent> {
+        let mut events = Vec::new();
+        let players: Vec<(PlayerState, [f32; 3])> = self
+            .players
+            .iter()
+            .filter_map(|p| {
+                let m = self.things.get(p.thing as usize)?.world_matrix?;
+                Some((*p, [m[12], m[13], m[14]]))
+            })
+            .collect();
+        for (i, t) in self.things.iter_mut().enumerate() {
+            let (Some(g), Some(m)) = (t.trigger.as_mut(), t.world_matrix) else {
+                continue;
+            };
+            let trigger = i as u32;
+            for (p, pos) in &players {
+                let radius = if g.inside.is_empty() {
+                    g.radius
+                } else {
+                    g.radius * g.hysteresis
+                };
+                let z = m[14] + g.z_offset;
+                let inside = g.enabled
+                    && (g.all_z_layers || (p.layers.0..=p.layers.1).contains(&z))
+                    && to_local(&m, *pos).is_some_and(|l| match g.trigger_type {
+                        0 => l[0] * l[0] + l[1] * l[1] < radius * radius,
+                        1 => l[0].abs() < radius && l[1].abs() < radius,
+                        4 => l[0] * l[0] + l[1] * l[1] + l[2] * l[2] < radius * radius,
+                        _ => false,
+                    });
+                let at = g.inside.iter().position(|x| *x == p.thing);
+                let kind = match (inside, at) {
+                    (true, None) => {
+                        g.inside.push(p.thing);
+                        TriggerEventKind::Enter
+                    }
+                    (false, Some(at)) => {
+                        g.inside.remove(at);
+                        TriggerEventKind::Leave
+                    }
+                    _ => continue,
+                };
+                events.push(TriggerEvent {
+                    trigger,
+                    kind,
+                    thing: p.thing,
+                });
+            }
+            events.extend(g.inside.iter().map(|&thing| TriggerEvent {
+                trigger,
+                kind: TriggerEventKind::Inside,
+                thing,
+            }));
+        }
+        events
+    }
+
     /// Handle for a part a Thing carries (index + 1), created on first use.
     fn part_handle(&mut self, thing: u32, part: &'static str) -> u32 {
         if let Some(i) = self
@@ -460,6 +658,10 @@ impl World for LevelWorld {
     fn has_part(&mut self, thing: u32, part: &str) -> Result<bool, String> {
         let want = part_name(part);
         Ok(self.state(thing)?.parts.iter().any(|p| *p == want))
+    }
+    fn trigger_count(&mut self, thing: u32) -> Result<i32, String> {
+        let t = self.state(thing)?;
+        Ok(t.trigger.as_ref().map_or(0, |g| g.inside.len() as i32))
     }
     fn get_member(
         &mut self,
@@ -982,9 +1184,38 @@ pub struct StepReport {
     pub threads_started: usize,
     pub threads_done: usize,
     pub thread_faults: Vec<String>,
+    /// Trigger events raised, by [`TriggerEventKind`] (Enter, Inside, Leave).
+    pub trigger_events: [usize; 3],
+    /// Trigger events whose script function exists and was run, by kind.
+    pub events_run: [usize; 3],
+    /// Trigger events with no script to call (none on the trigger's Thing or its parent).
+    pub events_without_script: usize,
+    /// Trigger events for a Thing already stopped by a fault.
+    pub events_to_stopped: usize,
 }
 
 impl StepReport {
+    /// Adds `other`'s counts and faults to this report.
+    pub fn absorb(&mut self, other: StepReport) {
+        self.done += other.done;
+        self.yielded += other.yielded;
+        self.resumed += other.resumed;
+        self.no_function += other.no_function;
+        self.no_class += other.no_class;
+        self.faults.extend(other.faults);
+        self.threads_started += other.threads_started;
+        self.threads_done += other.threads_done;
+        self.thread_faults.extend(other.thread_faults);
+        for (a, b) in self.trigger_events.iter_mut().zip(other.trigger_events) {
+            *a += b;
+        }
+        for (a, b) in self.events_run.iter_mut().zip(other.events_run) {
+            *a += b;
+        }
+        self.events_without_script += other.events_without_script;
+        self.events_to_stopped += other.events_to_stopped;
+    }
+
     fn add(&mut self, thing: u32, o: Outcome) {
         match o {
             Outcome::Done => self.done += 1,
@@ -1112,6 +1343,75 @@ impl LevelScripts {
         }
     }
 
+    /// Runs the level's triggers against the players ([`LevelWorld::update_triggers`]) and
+    /// calls the script function of each event with the Thing as its argument.
+    ///
+    /// FOUND in the 01.33 executable (0x135a18, 0x1346fc, 0x1364f0): Enter and Leave go
+    /// to the script of the trigger's Thing, or to its parent's when that Thing has no
+    /// script; Inside goes to the parent's script. (There the engine calls Inside for four
+    /// object kinds only; here every parent script that has the function gets it.)
+    /// INFERRED: events are delivered in trigger order.
+    pub fn trigger_events(
+        &mut self,
+        vm: &mut Vm,
+        host: &mut Bindings<LevelWorld>,
+        budget: u64,
+    ) -> StepReport {
+        let mut report = StepReport::default();
+        for e in host.world.update_triggers() {
+            report.trigger_events[e.kind as usize] += 1;
+            let instance = |thing: u32| {
+                let i = self.instances.binary_search_by_key(&thing, |i| i.thing);
+                i.ok().map(|i| self.instances[i])
+            };
+            let parent = host
+                .world
+                .things
+                .get(e.trigger as usize)
+                .and_then(|t| t.parent)
+                .and_then(instance);
+            let target = match e.kind {
+                TriggerEventKind::Inside => parent,
+                _ => instance(e.trigger).or(parent),
+            };
+            let Some(inst) = target else {
+                report.events_without_script += 1;
+                continue;
+            };
+            if self.stopped.contains(&inst.thing) {
+                report.events_to_stopped += 1;
+                continue;
+            }
+            let mut b = budget;
+            let args = [(4, Value::Thing(Some(e.thing)))];
+            let o = self
+                .runner
+                .start_with(vm, host, inst, e.kind.function(), &args, &mut b);
+            if matches!(o, Outcome::Fault(_)) {
+                self.stopped.insert(inst.thing);
+            }
+            if !matches!(o, Outcome::NoFunction | Outcome::NoClass) {
+                report.events_run[e.kind as usize] += 1;
+            }
+            report.add(inst.thing, o);
+        }
+        self.start_threads(vm, host, budget, &mut report);
+        report
+    }
+
+    /// One game tick of a level: [`Self::tick`], then [`Self::trigger_events`], so a
+    /// script an event suspends is resumed on the next tick (order INFERRED).
+    pub fn tick_level(
+        &mut self,
+        vm: &mut Vm,
+        host: &mut Bindings<LevelWorld>,
+        budget: u64,
+    ) -> StepReport {
+        let mut report = self.tick(vm, host, budget);
+        report.absorb(self.trigger_events(vm, host, budget));
+        report
+    }
+
     /// One game tick; `budget` is per call or resume.
     pub fn tick(&mut self, vm: &mut Vm, host: &mut dyn Host, budget: u64) -> StepReport {
         // A Thing suspended at the start of the tick is resumed, not updated again.
@@ -1193,5 +1493,7 @@ mod tests {
         assert_eq!(super::part_name("PSpriteLight"), "SPRITE_LIGHT");
         assert_eq!(super::part_name("PJoint"), "JOINT");
         assert_eq!(super::part_name("PSwitch"), "SWITCH");
+        assert_eq!(super::part_name("PYellowHead"), "YELLOWHEAD");
+        assert_eq!(super::part_name("YellowHead"), "YELLOWHEAD");
     }
 }

@@ -1,5 +1,19 @@
 # Development log
 
+## 2026-10-12 - D259 trigger events reach the level scripts
+
+RScript plan stage 2. `lbp-level` keeps PTrigger. `LevelWorld::add_player`/`move_player` put a player's
+Sackboy in the script world; `update_triggers` runs every trigger against the players and
+`LevelScripts::tick_level` calls `Enter__Q5Thing`, `Inside__Q5Thing` and `Leave__Q5Thing`. Rule FOUND in
+the EBOOT (0xe3bc0, 0x1364f0, 0x135fe0, 0x135a18, 0x1346fc): position in the trigger Thing's space; types
+0 circle, 1 box, 4 sphere; radius multiplier times the hysteresis multiplier while something is inside;
+the trigger's z plus offset must lie in the z span of Sackboy's body unless all layers; Enter and Leave go
+to the Thing's script or its parent's, Inside to the parent's. Bound: `Native.GetNumInThings__Q5Thing`,
+`PartList.HasPYellowHead__Q5Thing` (118). Viewer: the play-mode Sackboy is the player. `level_scripts`:
+trigger census and `--visit-triggers`. PC run, 378 levels: 23,990 triggers, 4,662 scripted; visiting each:
+11,430 Enter, 895 Inside, 7,357 Leave calls run, stopped Things unchanged at 1,722, unbound natives
+reached 65 -> 94. +0 viewable, +0 Complete. `docs/level-scripts.md` part 10.
+
 ## 2026-10-12 - D258 scripts run past unbound natives, counted
 
 RScript plan stage 1. `Bindings::default_unbound`: a native without a binding returns the default of its

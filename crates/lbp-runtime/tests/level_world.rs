@@ -345,6 +345,122 @@ fn schedule_creates_then_updates_and_resumes_suspended_scripts() {
     assert!(level.stopped.is_empty());
 }
 
+/// [`level`] with Thing 2 under the scripted Thing 1, carrying a PTrigger of radius 10
+/// (1.5 times that while something is inside) at (100, 0, 0), scaled 2 in x and y.
+fn trigger_level(trigger_type: i8) -> Vec<ThingRecord> {
+    let mut t = level();
+    t[2].parent = Some(1);
+    t[2].parts = vec!["POS", "TRIGGER"];
+    let mut world = [0.; 16];
+    (world[0], world[5], world[10], world[15]) = (2., 2., 1., 1.);
+    world[12] = 100.;
+    t[2].data.pos = Some(Pos {
+        bone_of: None,
+        anim_hash: 0,
+        world,
+    });
+    t[2].data.trigger = Some(lbp_level::parts::Trigger {
+        trigger_type,
+        in_things: vec![],
+        radius_multiplier: 10.,
+        all_z_layers: false,
+        hysteresis_multiplier: 1.5,
+        enabled: true,
+        z_offset: 0.,
+    });
+    t
+}
+
+#[test]
+fn stage2_trigger_holds_the_player_by_shape_hysteresis_and_layer() {
+    use lbp_runtime::TriggerEventKind::{Enter, Inside, Leave};
+    let mut w = LevelWorld::from_things(&trigger_level(0));
+    assert!(w.update_triggers().is_empty());
+    let p = w.add_player([150., 0., 0.], (-1., 1.));
+    assert_eq!(w.has_part(p, "PYellowHead"), Ok(true));
+    let at = |w: &mut LevelWorld, x: f32, y: f32, layers| {
+        w.move_player(p, [x, y, 0.], layers);
+        w.update_triggers()
+            .iter()
+            .map(|e| {
+                assert_eq!((e.trigger, e.thing), (2, p));
+                e.kind
+            })
+            .collect::<Vec<_>>()
+    };
+    let here = (-1., 1.);
+    // 25 away in a space scaled by 2: 12.5 in the trigger's space, outside radius 10.
+    assert_eq!(at(&mut w, 125., 0., here), []);
+    assert_eq!(at(&mut w, 119., 0., here), [Enter, Inside]);
+    assert_eq!(w.trigger_count(2), Ok(1));
+    // Inside, the radius is 15: 12.5 stays in, 15.5 is out.
+    assert_eq!(at(&mut w, 125., 0., here), [Inside]);
+    assert_eq!(at(&mut w, 131., 0., here), [Leave]);
+    assert_eq!(w.trigger_count(2), Ok(0));
+    // A circle, not a box: (9, 9) in its space is outside.
+    assert_eq!(at(&mut w, 118., 18., here), []);
+    // The trigger's z (0) must lie in the z span of the player's body.
+    assert_eq!(at(&mut w, 100., 0., (50., 60.)), []);
+    w.things[2].trigger.as_mut().unwrap().all_z_layers = true;
+    assert_eq!(at(&mut w, 100., 0., (50., 60.)), [Enter, Inside]);
+    w.things[2].trigger.as_mut().unwrap().enabled = false;
+    assert_eq!(at(&mut w, 100., 0., (50., 60.)), [Leave]);
+
+    let mut w = LevelWorld::from_things(&trigger_level(1));
+    let p = w.add_player([118., 18., 0.], (-1., 1.));
+    assert_eq!(w.update_triggers().len(), 2);
+    w.move_player(p, [121., 0., 0.], (-1., 1.));
+    // Still within the widened box (15).
+    assert_eq!(w.update_triggers().len(), 1);
+    // Type 2 holds nothing.
+    let mut w = LevelWorld::from_things(&trigger_level(2));
+    w.add_player([100., 0., 0.], (-1., 1.));
+    assert!(w.update_triggers().is_empty());
+}
+
+#[test]
+fn stage2_trigger_events_call_the_parent_script() {
+    // Lamp with `Tick` renamed to the Enter entry; no Inside or Leave function.
+    let mut lamp = lamp();
+    lamp.strings_a[4] = "Enter__Q5Thing".into();
+    let mut vm = Vm::default();
+    vm.load(lamp, Some(GUID));
+    let mut host = Bindings::new(LevelWorld::from_things(&trigger_level(0)));
+    let mut level = LevelScripts::new(&vm, &host.world);
+    let count = |host: &mut Bindings<LevelWorld>| {
+        host.world
+            .get_member(MemberKind::Thing, &Value::Thing(Some(1)), "Lamp", "count")
+    };
+    let t = level.tick_level(&mut vm, &mut host, 1000);
+    assert_eq!((t.trigger_events, t.done + t.yielded), ([0, 0, 0], 0));
+    let p = host.world.add_player([100., 0., 0.], (-1., 1.));
+    // Enter runs on Thing 1 (the trigger's Thing 2 has no script) and yields.
+    let t = level.tick_level(&mut vm, &mut host, 1000);
+    assert_eq!((t.trigger_events, t.events_run), ([1, 1, 0], [1, 0, 0]));
+    assert_eq!((t.yielded, t.events_without_script), (1, 0));
+    assert_eq!(count(&mut host), Ok(Value::Int(42)));
+    // Next tick the suspended Enter finishes; Inside has no function.
+    let t = level.tick_level(&mut vm, &mut host, 1000);
+    assert_eq!(
+        (t.trigger_events, t.events_run, t.resumed),
+        ([0, 1, 0], [0, 0, 0], 1)
+    );
+    host.world.move_player(p, [900., 0., 0.], (-1., 1.));
+    let t = level.tick_level(&mut vm, &mut host, 1000);
+    assert_eq!((t.trigger_events, t.events_run), ([0, 0, 1], [0, 0, 0]));
+    assert_eq!(count(&mut host), Ok(Value::Int(42)));
+    assert!(level.stopped.is_empty());
+
+    // A trigger with no script on its Thing or its parent raises events nobody takes.
+    let mut things = trigger_level(0);
+    things[2].parent = Some(0);
+    let mut host = Bindings::new(LevelWorld::from_things(&things));
+    let mut level = LevelScripts::new(&vm, &host.world);
+    host.world.add_player([100., 0., 0.], (-1., 1.));
+    let t = level.tick_level(&mut vm, &mut host, 1000);
+    assert_eq!((t.trigger_events, t.events_without_script), ([1, 1, 0], 2));
+}
+
 fn object(kind: u32, id: usize, body: Option<ScriptObject>) -> ScriptValue {
     ScriptValue::Object {
         kind,

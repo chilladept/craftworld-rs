@@ -1,8 +1,10 @@
 //! `--level-scripts` (docs/level-scripts.md, part 6): with a level, run the level's own
 //! scripts at the game's 30 Hz tick in Bevy's `FixedUpdate`, through the same
 //! `LevelScripts` schedule as the `level_scripts` example: `OnCreate__` on the first
-//! tick, then each tick resume suspended scripts and run `Update__`. A small window shows
-//! the counts. Nothing the scripts change is drawn yet; this is the clock and the counts.
+//! tick, then each tick resume suspended scripts and run `Update__`. With `--play-sackboy`
+//! the Sackboy is the player the level's triggers test, so their `Enter`, `Inside` and
+//! `Leave` scripts run as he walks. A small window shows the counts. Nothing the scripts
+//! change is drawn yet; this is the clock and the counts.
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts, EguiPrimaryContextPass};
 use lbp_catalog::{attachment::AttachedSource, LoadControl};
@@ -10,6 +12,8 @@ use lbp_preview::level_scene;
 use lbp_runtime::{LevelScripts, LevelWorld, StepReport, TICK_HZ};
 use lbp_script_vm::natives::Bindings;
 use lbp_script_vm::Vm;
+use lbp_sim::avian2d::prelude::Position;
+use lbp_sim::character::SackboyBody;
 use std::path::Path;
 
 /// Instruction budget per script call (as the `level_scripts` example).
@@ -28,6 +32,8 @@ struct Play {
     faults: Vec<String>,
     header: String,
     hide_ui: bool,
+    /// The play-mode Sackboy's Thing in the script world, once he exists.
+    player: Option<u32>,
 }
 
 fn value(all: &[String], flag: &str) -> Option<String> {
@@ -113,6 +119,7 @@ pub fn install(app: &mut App) -> Result<(), String> {
         faults,
         header,
         hide_ui,
+        player: None,
     })
     .insert_resource(Time::<Fixed>::from_hz(f64::from(TICK_HZ)))
     .add_systems(FixedUpdate, tick)
@@ -128,7 +135,14 @@ fn note(play: &mut Play, r: &StepReport) {
     }
 }
 
-fn tick(mut play: NonSendMut<Play>) {
+/// Half the z span of the play-mode Sackboy for the triggers' layer rule. PLACEHOLDER:
+/// the game takes the span from his body; it has not been measured.
+const PLAYER_HALF_DEPTH: f32 = 100.;
+
+fn tick(
+    mut play: NonSendMut<Play>,
+    sackboy: Query<(&Position, &lbp_sim::ZSlab), With<SackboyBody>>,
+) {
     let p = &mut *play;
     if p.created.is_none() {
         let r = p.scripts.create(&mut p.vm, &mut p.host, BUDGET_PER_CALL);
@@ -136,16 +150,23 @@ fn tick(mut play: NonSendMut<Play>) {
         p.created = Some(r);
         return;
     }
-    let r = p.scripts.tick(&mut p.vm, &mut p.host, BUDGET_PER_CALL);
+    // The play-mode Sackboy (`--play-sackboy`), when there is one, is the player the
+    // level's triggers test.
+    if let Ok((pos, slab)) = sackboy.single() {
+        let [x, y] = lbp_sim::to_level(pos.0);
+        let at = [x, y, slab.z];
+        let layers = (slab.z - PLAYER_HALF_DEPTH, slab.z + PLAYER_HALF_DEPTH);
+        match p.player {
+            Some(thing) => p.host.world.move_player(thing, at, layers),
+            None => p.player = Some(p.host.world.add_player(at, layers)),
+        }
+    }
+    let r = p
+        .scripts
+        .tick_level(&mut p.vm, &mut p.host, BUDGET_PER_CALL);
     p.ticks_with_faults += usize::from(!r.faults.is_empty());
     note(p, &r);
-    let t = &mut p.totals;
-    t.done += r.done;
-    t.yielded += r.yielded;
-    t.resumed += r.resumed;
-    t.no_function += r.no_function;
-    t.no_class += r.no_class;
-    t.faults.extend(r.faults);
+    p.totals.absorb(r);
 }
 
 fn line(r: &StepReport) -> String {
@@ -180,6 +201,12 @@ fn window(mut contexts: EguiContexts, play: NonSend<Play>) -> Result {
             }
             ui.label(format!("Ticks: {}", line(&play.totals)));
             ui.label(format!("Ticks with faults: {}", play.ticks_with_faults));
+            let [enter, inside, leave] = play.totals.trigger_events;
+            let [e, i, l] = play.totals.events_run;
+            ui.label(format!(
+                "Triggers ({}): enter {enter} ({e} run), inside {inside} ({i} run), leave {leave} ({l} run)",
+                if play.player.is_some() { "player in play" } else { "no player" }
+            ));
             let mut unbound: Vec<_> = play.host.unbound.iter().collect();
             unbound.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
             if !unbound.is_empty() {

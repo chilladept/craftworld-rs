@@ -4,6 +4,7 @@
 //! level_scripts SNAPSHOT GAME-DIRS LEVEL-PATH NEW-JSON --play=TICKS [--flags=N,..]
 //!     [--puter-in-use=TICK]
 //! level_scripts SNAPSHOT GAME-DIRS --all NEW-JSON [--play=TICKS] [--strict]
+//!     [--visit-triggers]
 //!
 //! Loads every magic-confirmed script with its MAP GUID (the U12 loader), reads the level(s)
 //! and reports, per level: scripted Things (PScript with a resource GUID), how many resolve
@@ -19,7 +20,10 @@
 //! fresh VM and adds `play_all`: native calls bound and defaulted, each unbound native with
 //! its calls and levels, and the remaining faults by kind. A play run goes past unbound
 //! natives (they return their type's default and are counted); `--strict` makes them fault
-//! instead. Names and counts only; no bytecode. Output: a NEW JSON file under
+//! instead. `--visit-triggers` then adds a player who stands on every PTrigger's Thing in
+//! turn (two ticks on it, one far away), so the level's `Enter`, `Inside` and `Leave`
+//! scripts run; the report counts the events raised and run. `triggers` is the PTrigger
+//! census over the levels read. Names and counts only; no bytecode. Output: a NEW JSON file under
 //! ignored `local-analysis/`. Counting unit: Thing with a PScript part (instances) or
 //! distinct script class (function names).
 use lbp_catalog::{attachment::AttachedSource, LoadControl};
@@ -54,6 +58,109 @@ struct Totals {
     unconverted: usize,
     objects_built: usize,
     classes: BTreeSet<lbp_script_vm::ClassId>,
+    triggers: Triggers,
+}
+
+/// PTrigger census. Unit: Thing with a PTrigger part.
+#[derive(Default)]
+struct Triggers {
+    count: usize,
+    by_type: BTreeMap<i8, usize>,
+    not_enabled: usize,
+    all_z_layers: usize,
+    stored_inside: usize,
+    no_position: usize,
+    /// Where the script that gets Enter and Leave is: "own", "parent" or "none".
+    script_at: BTreeMap<&'static str, usize>,
+    /// "Class (own)" / "Class (parent)" with the trigger functions the class has.
+    targets: BTreeMap<String, usize>,
+    radius: Vec<f32>,
+    /// Length of the trigger Thing's x axis (its scale).
+    scale: Vec<f32>,
+}
+
+impl Triggers {
+    fn add(&mut self, vm: &Vm, world: &LevelWorld, found: &[lbp_runtime::Instance]) {
+        let class_at = |thing: u32| {
+            let i = found.binary_search_by_key(&thing, |i| i.thing).ok()?;
+            Some(
+                found[i]
+                    .class
+                    .map_or("(class not loaded)", |c| vm.class_name(c)),
+            )
+        };
+        let functions = |thing: u32| {
+            let i = found.binary_search_by_key(&thing, |i| i.thing).ok()?;
+            let c = found[i].class?;
+            Some(
+                ["Enter__Q5Thing", "Inside__Q5Thing", "Leave__Q5Thing"]
+                    .iter()
+                    .filter(|f| vm.has_code(c, f))
+                    .map(|f| &f[..f.len() - "__Q5Thing".len()])
+                    .collect::<Vec<_>>()
+                    .join("+"),
+            )
+        };
+        for (i, t) in world.things.iter().enumerate() {
+            let Some(g) = &t.trigger else {
+                continue;
+            };
+            self.count += 1;
+            *self.by_type.entry(g.trigger_type).or_default() += 1;
+            self.not_enabled += usize::from(!g.enabled);
+            self.all_z_layers += usize::from(g.all_z_layers);
+            self.stored_inside += usize::from(!g.inside.is_empty());
+            self.radius.push(g.radius);
+            match t.world_matrix {
+                Some(m) => self
+                    .scale
+                    .push((m[0] * m[0] + m[1] * m[1] + m[2] * m[2]).sqrt()),
+                None => self.no_position += 1,
+            }
+            let own = class_at(i as u32).map(|c| (c, "own", i as u32));
+            let parent = t.parent.and_then(|p| Some((class_at(p)?, "parent", p)));
+            match own.or(parent) {
+                Some((class, at, thing)) => {
+                    *self.script_at.entry(at).or_default() += 1;
+                    let f = functions(thing).unwrap_or_default();
+                    *self
+                        .targets
+                        .entry(format!("{class} ({at}) [{f}]"))
+                        .or_default() += 1;
+                }
+                None => *self.script_at.entry("none").or_default() += 1,
+            }
+        }
+    }
+
+    fn json(&self) -> serde_json::Value {
+        let spread = |v: &[f32]| {
+            let mut v: Vec<f32> = v.iter().copied().filter(|x| x.is_finite()).collect();
+            v.sort_by(f32::total_cmp);
+            match v.len() {
+                0 => serde_json::Value::Null,
+                n => serde_json::json!({
+                    "min": v[0], "p10": v[n / 10], "median": v[n / 2], "p90": v[n * 9 / 10],
+                    "max": v[n - 1],
+                }),
+            }
+        };
+        let mut targets: Vec<_> = self.targets.iter().collect();
+        targets.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+        serde_json::json!({
+            "unit": "Thing with a PTrigger part",
+            "count": self.count,
+            "by_type": self.by_type,
+            "not_enabled": self.not_enabled,
+            "all_z_layers": self.all_z_layers,
+            "stored_inside_not_empty": self.stored_inside,
+            "no_position": self.no_position,
+            "script_at": self.script_at,
+            "targets": targets,
+            "radius": spread(&self.radius),
+            "thing_scale": spread(&self.scale),
+        })
+    }
 }
 
 fn add_level(vm: &Vm, world: &LevelWorld, t: &mut Totals) -> serde_json::Value {
@@ -61,6 +168,7 @@ fn add_level(vm: &Vm, world: &LevelWorld, t: &mut Totals) -> serde_json::Value {
     t.things += world.things.len();
     t.unconverted += world.unconverted;
     let found = instances(vm, world);
+    t.triggers.add(vm, world, &found);
     let mut level_classes = BTreeMap::<String, usize>::new();
     let mut unresolved = BTreeSet::new();
     for inst in &found {
@@ -105,6 +213,7 @@ struct PlayOptions {
     flags: BTreeSet<i32>,
     in_use_from: Option<u64>,
     strict: bool,
+    visit: bool,
 }
 
 /// One level played: the report and what `--all` adds up.
@@ -112,12 +221,20 @@ struct Played {
     json: serde_json::Value,
     instances: usize,
     stopped: usize,
+    visited: usize,
+    events: [usize; 3],
+    events_run: [usize; 3],
+    events_without_script: usize,
+    events_to_stopped: usize,
     fault_kinds: BTreeMap<String, usize>,
     thread_faults: Vec<String>,
     engine_faults: usize,
     calls: BTreeMap<String, u64>,
     unbound: BTreeMap<String, u64>,
 }
+
+/// How far from a trigger's Thing the `--visit-triggers` player goes to leave it.
+const VISIT_AWAY: f32 = 1.0e7;
 
 /// Runs the `LevelScripts` schedule on one level whose objects are bound to `vm`.
 fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played {
@@ -157,18 +274,37 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
             camera_before_in_use = Some(camera_json(&host.world.camera));
             host.world.pod_computer_in_use = true;
         }
-        let t = level.tick(vm, &mut host, BUDGET_PER_CALL);
+        let t = level.tick_level(vm, &mut host, BUDGET_PER_CALL);
         ticks_with_faults += usize::from(!t.faults.is_empty());
         note_faults(&t);
-        sum.done += t.done;
-        sum.yielded += t.yielded;
-        sum.resumed += t.resumed;
-        sum.no_function += t.no_function;
-        sum.no_class += t.no_class;
-        sum.faults.extend(t.faults);
-        sum.threads_started += t.threads_started;
-        sum.threads_done += t.threads_done;
-        sum.thread_faults.extend(t.thread_faults);
+        sum.absorb(t);
+    }
+    // `--visit-triggers`: a player stands on each trigger's Thing for two ticks (Enter,
+    // then Inside) and far away for one (Leave), in Thing order.
+    let mut visit = StepReport::default();
+    let mut visited = 0usize;
+    if opts.visit {
+        let spots: Vec<[f32; 3]> = host
+            .world
+            .things
+            .iter()
+            .filter_map(|t| {
+                let (g, m) = (t.trigger.as_ref()?, t.world_matrix?);
+                Some([m[12], m[13], m[14] + g.z_offset])
+            })
+            .collect();
+        let player = host.world.add_player([0.; 3], (0., 0.));
+        for s in spots {
+            for dx in [0., 0., VISIT_AWAY] {
+                host.world
+                    .move_player(player, [s[0] + dx, s[1], s[2]], (s[2] - 1., s[2] + 1.));
+                let t = level.tick_level(vm, &mut host, BUDGET_PER_CALL);
+                ticks_with_faults += usize::from(!t.faults.is_empty());
+                note_faults(&t);
+                visit.absorb(t);
+            }
+            visited += 1;
+        }
     }
     let report = |r: &StepReport| {
         serde_json::json!({
@@ -176,6 +312,10 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
             "no_function": r.no_function, "no_class": r.no_class, "faults": r.faults.len(),
             "threads_started": r.threads_started, "threads_done": r.threads_done,
             "thread_faults": r.thread_faults.iter().take(MAX_FAULTS).collect::<Vec<_>>(),
+            "trigger_events_enter_inside_leave": r.trigger_events,
+            "trigger_events_run": r.events_run,
+            "trigger_events_without_script": r.events_without_script,
+            "trigger_events_to_stopped": r.events_to_stopped,
         })
     };
     let mut unbound: Vec<_> = host.unbound.iter().collect();
@@ -187,6 +327,8 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
         "tick_hz": lbp_runtime::TICK_HZ,
         "create": report(&created),
         "ticks_total": report(&sum),
+        "triggers_visited": visited,
+        "visit_total": report(&visit),
         "ticks_with_faults": ticks_with_faults,
         "stopped_by_fault": level.stopped.len(),
         "threads_running_at_end": level.threads(),
@@ -215,10 +357,16 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
             Some(format!("thing {}: {}.{}", i.thing, e.class, e.function))
         }).collect::<Vec<_>>(),
     });
+    sum.absorb(visit);
     Played {
         json,
         instances: level.instances.len(),
         stopped: level.stopped.len(),
+        visited,
+        events: sum.trigger_events,
+        events_run: sum.events_run,
+        events_without_script: sum.events_without_script,
+        events_to_stopped: sum.events_to_stopped,
         fault_kinds,
         thread_faults: sum
             .thread_faults
@@ -240,6 +388,11 @@ struct PlayTotals {
     stopped: usize,
     levels_with_faults: usize,
     engine_faults: usize,
+    visited: usize,
+    events: [usize; 3],
+    events_run: [usize; 3],
+    events_without_script: usize,
+    events_to_stopped: usize,
     calls: BTreeMap<String, (u64, usize)>,
     unbound: BTreeMap<String, (u64, usize)>,
     faults: BTreeMap<String, (u64, usize)>,
@@ -252,6 +405,13 @@ impl PlayTotals {
         self.instances += p.instances;
         self.stopped += p.stopped;
         self.engine_faults += p.engine_faults;
+        self.visited += p.visited;
+        for i in 0..3 {
+            self.events[i] += p.events[i];
+            self.events_run[i] += p.events_run[i];
+        }
+        self.events_without_script += p.events_without_script;
+        self.events_to_stopped += p.events_to_stopped;
         self.levels_with_faults +=
             usize::from(!p.fault_kinds.is_empty() || !p.thread_faults.is_empty());
         let bump = |m: &mut BTreeMap<String, (u64, usize)>, k: &str, n: u64| {
@@ -297,6 +457,11 @@ impl PlayTotals {
             "instances": self.instances,
             "stopped_by_fault": self.stopped,
             "engine_object_faults": self.engine_faults,
+            "triggers_visited": self.visited,
+            "trigger_events_enter_inside_leave": self.events,
+            "trigger_events_run": self.events_run,
+            "trigger_events_without_script": self.events_without_script,
+            "trigger_events_to_stopped": self.events_to_stopped,
             "native_calls": calls,
             "native_calls_bound": calls - unbound,
             "native_calls_unbound": unbound,
@@ -353,13 +518,14 @@ fn run() -> Result<(), String> {
                 && !a.starts_with("--flags=")
                 && !a.starts_with("--puter-in-use=")
                 && *a != "--strict"
+                && *a != "--visit-triggers"
         })
         .collect();
     if args.len() != 5 {
         return Err(
             "usage: level_scripts SNAPSHOT GAME-DIRS LEVEL-PATH|--all NEW-JSON \
                     [--entry=NAME]... [--ticks=N] [--play=TICKS] [--flags=N,..] \
-                    [--puter-in-use=TICK] [--strict]"
+                    [--puter-in-use=TICK] [--strict] [--visit-triggers]"
                 .into(),
         );
     }
@@ -376,6 +542,7 @@ fn run() -> Result<(), String> {
         flags: flags.clone(),
         in_use_from,
         strict: all.iter().any(|a| a == "--strict"),
+        visit: all.iter().any(|a| a == "--visit-triggers"),
     });
     if play.is_some() && !entries.is_empty() {
         return Err("use --play or --entry, not both".into());
@@ -574,6 +741,7 @@ fn run() -> Result<(), String> {
         "unconverted_values": totals.unconverted,
         "objects_built": totals.objects_built,
         "function_names": ranked,
+        "triggers": totals.triggers.json(),
         "per_level": levels,
         "runs": runs,
         "play_all": play_opts.as_ref().filter(|_| every).map(|o| play_totals.json(o)),

@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D258
+# Current state (overwrite each milestone) — after D259
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -11,7 +11,19 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D258 scripts run past unbound natives (2026-10-12)
+## Latest: D259 trigger events (2026-10-12)
+- RScript plan stage 2. PTrigger is kept by `lbp-level`; `LevelWorld::update_triggers` tests the players
+  against every trigger and `LevelScripts::tick_level` calls `Enter__Q5Thing`, `Inside__Q5Thing`,
+  `Leave__Q5Thing`. FOUND in the EBOOT (0xe3bc0, 0x1364f0, 0x135fe0, 0x135a18, 0x1346fc): position in the
+  trigger Thing's space; circle, box or sphere of the radius multiplier, times the hysteresis multiplier
+  while something is inside; layer rule by the z span of Sackboy's body; Enter/Leave to the Thing's script
+  or its parent's, Inside to the parent's. 2 natives bound (118). Viewer: `--level-scripts` with
+  `--play-sackboy` feeds the Sackboy to the triggers (his z span is a PLACEHOLDER).
+- MEASURED, 378 levels: 23,990 triggers, 4,662 scripted. `level_scripts --all --play=60 --visit-triggers`:
+  11,430 Enter, 895 Inside, 7,357 Leave calls run; stopped Things stay 1,722; unbound natives reached
+  65 -> 94. Next: stage 3, switch events. `docs/level-scripts.md` part 10.
+
+## Before: D258 scripts run past unbound natives (2026-10-12)
 - RScript plan stage 1 (`docs/rscript-plan.md`). An unbound native returns its type's default and is counted
   (`Bindings::default_unbound`; viewer and `level_scripts --play`; off in tests). `level_scripts --all
   --play=N` reports bound and unbound calls and the faults left over every level. 19 natives bound (116).
