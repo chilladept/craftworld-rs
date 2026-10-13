@@ -427,6 +427,83 @@ fn virtual_calls_dispatch_on_the_receiver_class() {
 }
 
 #[test]
+fn virtual_calls_on_a_thing_dispatch_on_the_script_it_carries() {
+    /// A host that knows the script of some Things.
+    struct Scripted(BTreeMap<u32, u32>);
+    impl Host for Scripted {
+        fn call_native(&mut self, _: &str, _: &str, _: &[Value]) -> Result<Value, String> {
+            Ok(Value::Void)
+        }
+        fn get_member(
+            &mut self,
+            _: MemberKind,
+            _: &Value,
+            _: &str,
+            _: &str,
+        ) -> Result<Value, String> {
+            Err("no member".into())
+        }
+        fn set_member(
+            &mut self,
+            _: MemberKind,
+            _: &Value,
+            _: &str,
+            _: &str,
+            _: Value,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+        fn thing_script(&mut self, thing: u32) -> Option<u32> {
+            self.0.get(&thing).copied()
+        }
+    }
+    // Base.Name returns 1; Derived overrides it with 2; Other (no relation) has a Name
+    // that returns 3. Base.Ask calls Name virtually on the Thing in register 0, and
+    // Base.Plain calls it with the plain call.
+    const SP: u8 = 10;
+    let mut b = Builder::new();
+    let base_ty = b.ty(SP, "Base", Some(0x300), 0);
+    let name = b.fref(base_ty, "Name");
+    let ask = |op: u8| {
+        vec![
+            i(0xa3, SP, 0, 0, 0),
+            i(op, INT, 4, name, 0),
+            i(0xa5, INT, 0, 4, 0),
+        ]
+    };
+    let number = |n: u32| vec![hi(0x03, 4, n), i(0xa5, INT, 0, 4, 0)];
+    let base = b.build(
+        "Base",
+        None,
+        vec![
+            func("Name", &[0], number(1)),
+            func("Ask", &[0], ask(0xc1)),
+            func("Plain", &[0], ask(0xa4)),
+        ],
+    );
+    let derived = Builder::new().build("Derived", Some(0x300), vec![func("Name", &[0], number(2))]);
+    let other = Builder::new().build("Other", None, vec![func("Name", &[0], number(3))]);
+    let mut vm = Vm::default();
+    let base_id = vm.load(base, Some(0x300));
+    vm.load(derived, Some(0x301));
+    vm.load(other, Some(0x302));
+    // Thing 1 carries Base, 2 Derived, 3 a class that is no Base, 4 a script that is
+    // not loaded; Thing 5 is not known to the host.
+    let mut host = Scripted([(1, 0x300), (2, 0x301), (3, 0x302), (4, 0x999)].into());
+    let mut budget = 1000;
+    let mut call = |f: &str, thing: Option<u32>| {
+        vm.call(&mut host, base_id, f, &[Value::Thing(thing)], &mut budget)
+    };
+    for (thing, want) in [(1, 1), (2, 2), (3, 1), (4, 1), (5, 1)] {
+        assert_eq!(call("Ask", Some(thing)), Ok(Value::Int(want)), "{thing}");
+        // The plain call goes to the class the caller names.
+        assert_eq!(call("Plain", Some(thing)), Ok(Value::Int(1)), "{thing}");
+    }
+    // A null Thing is called as named.
+    assert_eq!(call("Ask", None), Ok(Value::Int(1)));
+}
+
+#[test]
 fn faults_are_explicit() {
     let run = |code: Vec<u64>, stack: i32| {
         let mut f = func("F", &[], code);

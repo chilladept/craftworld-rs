@@ -4963,3 +4963,286 @@ fn d273_two_levels_share_the_session_state() {
     assert_eq!(b.world.players.len(), 1);
     assert_eq!(a.world.things.len(), 3);
 }
+
+/// A script class from the `lamp` template with one function `name` (strings index 4)
+/// and the member names "seen", "snap" and "answer" as field references 0 to 2.
+fn d274_class(class: &str, name: &str, stack: i32, code: Vec<u64>) -> Script {
+    let mut s = lamp();
+    s.class_name = class.into();
+    s.super_class = None;
+    s.strings_a = [class, "System", "seen", "Yield__", name, "snap", "answer"]
+        .map(String::from)
+        .to_vec();
+    let member = |name| MemberRef { type_ref: 0, name };
+    s.field_refs = vec![member(2), member(5), member(6)];
+    let mut f = function(0, 4, 0, code.len() as u32);
+    f.stack_size = stack;
+    s.function_defs = if code.is_empty() { vec![] } else { vec![f] };
+    s.bytecode = code;
+    s
+}
+
+#[test]
+fn d274_a_planet_gets_the_hosts_point_and_keeps_arrived() {
+    const EARTH: u32 = 0x2d08;
+    // `PlanetThing.Update__rb(v4 @16, bool @32) -> bool`: keeps its two arguments in
+    // members, writes the bool out and answers with the member `answer`.
+    let planet = d274_class(
+        "PlanetThing",
+        lbp_runtime::PLANET_UPDATE,
+        64,
+        vec![
+            i(0x97, 5, 16, 0, 0), // thing(r0).seen = r16
+            i(0x97, 1, 32, 0, 1), // thing(r0).snap = r32
+            i(0xa2, 0, 0, 32, 0), // WRITE r32
+            i(0x95, 1, 36, 0, 2), // r36 = thing(r0).answer
+            i(0xa5, 1, 0, 36, 0), // RETURN r36
+        ],
+    );
+    // `Earth : PlanetThing` has no function of its own.
+    let mut earth = d274_class("Earth", "Unused", 16, vec![]);
+    earth.super_class = Some(desc(BASE));
+    // `PlanetsWorld`: its per-tick entry writes its +16 argument out.
+    let world_class = d274_class(
+        lbp_runtime::PLANETS_WORLD_CLASS,
+        "UpdatePlanetsView__bQ11PlanetThingQ11PlanetThingbb",
+        32,
+        vec![i(0xa2, 0, 0, 16, 0), i(0xa5, 0, 0, 0, 0)],
+    );
+    let mut vm = Vm::default();
+    vm.load(planet, Some(BASE));
+    let earth_class = vm.load(earth, Some(EARTH));
+    vm.load(world_class, Some(GUID));
+    // The world script on Thing 1, the planet on Thing 2, after it in Thing order.
+    let mut things = level();
+    things[2].data.script = Some(ScriptPart {
+        script: Some(desc(EARTH)),
+        fields: vec![],
+    });
+    let mut host = Bindings::new(LevelWorld::from_things(&things));
+    let me = Value::Thing(Some(2));
+    let answer = |host: &mut Bindings<LevelWorld>, b: bool| {
+        host.world
+            .set_member(MemberKind::Thing, &me, "Earth", "answer", Value::Bool(b))
+            .unwrap();
+    };
+    let member = |host: &mut Bindings<LevelWorld>, f: &str| {
+        host.world
+            .get_member(MemberKind::Thing, &me, "Earth", f)
+            .unwrap()
+    };
+    answer(&mut host, false);
+    let mut level = LevelScripts::new(&vm, &host.world);
+    // The entry is the class's by name, the code its base class's.
+    let entry = lbp_runtime::frame_entry(&vm, earth_class).expect("a planet entry");
+    assert!(entry.planet && entry.function == lbp_runtime::PLANET_UPDATE);
+    assert!(vm.has_code(earth_class, entry.function));
+    assert!(level.planets.is_empty());
+
+    // Tick 1: the placeholder point, not arrived; the planet runs before the world
+    // script although its Thing comes after it.
+    let t = level.tick_level(&mut vm, &mut host, 1000);
+    assert_eq!((t.done, t.no_function, t.faults.len()), (2, 0, 0));
+    assert_eq!(
+        (t.planet_updates, t.planets_arrived, t.video_updates),
+        (1, 0, 0)
+    );
+    assert_eq!(host.world.written, ["Bool(false)", "Bool(true)"]);
+    let placeholder = lbp_runtime::PLACEHOLDER_PLANET_POINT;
+    assert_eq!(placeholder, [0., 0., 1., 0.]);
+    assert_eq!(member(&mut host, "seen"), Value::Vec4(placeholder));
+    assert_eq!(member(&mut host, "snap"), Value::Bool(false));
+    assert_eq!(
+        level.planets[&2],
+        lbp_runtime::PlanetFrame {
+            point: placeholder,
+            arrived: false,
+            calls: 1
+        }
+    );
+    // Tick 2: the script answers true. The bool it was passed was still false.
+    answer(&mut host, true);
+    let t = level.tick_level(&mut vm, &mut host, 1000);
+    assert_eq!((t.planet_updates, t.planets_arrived), (1, 1));
+    assert_eq!(member(&mut host, "snap"), Value::Bool(false));
+    assert!(level.planets[&2].arrived);
+    // Tick 3: arrived is passed, and a false answer does not take it back.
+    answer(&mut host, false);
+    let t = level.tick_level(&mut vm, &mut host, 1000);
+    assert_eq!((t.planet_updates, t.planets_arrived), (1, 0));
+    assert_eq!(member(&mut host, "snap"), Value::Bool(true));
+    assert!(level.planets[&2].arrived);
+    // The same point again changes nothing; another point clears arrived.
+    level.set_planet_point(2, placeholder);
+    assert!(level.planets[&2].arrived);
+    let point = [1., 0., 0., 0.];
+    level.set_planet_point(2, point);
+    assert!(!level.planets[&2].arrived);
+    level.tick_level(&mut vm, &mut host, 1000);
+    assert_eq!(member(&mut host, "seen"), Value::Vec4(point));
+    assert_eq!(member(&mut host, "snap"), Value::Bool(false));
+    assert_eq!(level.planets[&2].calls, 4);
+    assert_eq!(host.world.written.len(), 8);
+    assert_eq!(host.world.written[6..], ["Bool(false)", "Bool(false)"]);
+    assert!(host.unbound.is_empty() && level.stopped.is_empty());
+
+    // A level without the world script: the planet is called in Thing order, and a
+    // point set before the first call is the one it gets.
+    let mut things = self::level();
+    things[1].data.script = Some(ScriptPart {
+        script: Some(desc(EARTH)),
+        fields: vec![],
+    });
+    let mut host = Bindings::new(LevelWorld::from_things(&things));
+    let me = Value::Thing(Some(1));
+    host.world
+        .set_member(MemberKind::Thing, &me, "Earth", "answer", Value::Bool(true))
+        .unwrap();
+    let mut level = LevelScripts::new(&vm, &host.world);
+    level.set_planet_point(1, point);
+    let t = level.tick(&mut vm, &mut host, 1000);
+    assert_eq!((t.done, t.planet_updates, t.planets_arrived), (1, 1, 1));
+    assert_eq!(
+        host.world
+            .get_member(MemberKind::Thing, &me, "Earth", "seen"),
+        Ok(Value::Vec4(point))
+    );
+}
+
+#[test]
+fn d274_a_virtual_call_on_a_thing_goes_to_its_own_class() {
+    const EARTH: u32 = 0x2d08;
+    // `PlanetThing.Ask`: calls `Place` virtually on its Thing and keeps the answer in
+    // the member `seen`. `PlanetThing.Place` answers 1, `Earth.Place` 2.
+    let mut planet = d274_class("PlanetThing", "Ask", 32, vec![]);
+    planet.strings_a.push("Place".into());
+    planet.function_refs = vec![MemberRef {
+        type_ref: 0,
+        name: 7,
+    }];
+    planet.bytecode = vec![
+        i(0xa3, 10, 0, 0, 0),                  // ARG this
+        i(0xc1, 3, 4, 0, 0),                   // r4 = CALLVsp Place
+        i(0x97, 3, 4, 0, 0),                   // thing(r0).seen = r4
+        i(0xa5, 0, 0, 0, 0),                   // RETURN
+        u64::from(0x03u8) | 4 << 16 | 1 << 32, // r4 = 1
+        i(0xa5, 3, 0, 4, 0),                   // RETURN r4
+    ];
+    planet.function_defs = vec![function(0, 4, 0, 4), function(0, 7, 4, 6)];
+    planet.function_defs[0].stack_size = 32;
+    let mut earth = d274_class(
+        "Earth",
+        "Place",
+        16,
+        vec![u64::from(0x03u8) | 4 << 16 | 2 << 32, i(0xa5, 3, 0, 4, 0)],
+    );
+    earth.super_class = Some(desc(BASE));
+    let mut vm = Vm::default();
+    let planet_class = vm.load(planet, Some(BASE));
+    vm.load(earth, Some(EARTH));
+    // Thing 1 carries the base class's script, Thing 2 the derived one's.
+    let mut things = level();
+    things[1].data.script.as_mut().unwrap().script = Some(desc(BASE));
+    things[2].data.script = Some(ScriptPart {
+        script: Some(desc(EARTH)),
+        fields: vec![],
+    });
+    let mut host = Bindings::new(LevelWorld::from_things(&things));
+    assert_eq!(host.world.thing_script(1), Some(BASE));
+    assert_eq!(host.world.thing_script(2), Some(EARTH));
+    assert_eq!(host.world.thing_script(0), None);
+    assert_eq!(host.world.thing_script(99), None);
+    for (thing, want) in [(1, 1), (2, 2)] {
+        let regs = [(0, Value::Thing(Some(thing)))];
+        let mut budget = 1000;
+        // The function is started on the base class for both Things.
+        vm.start_registers(&mut host, planet_class, "Ask", &regs, &mut budget)
+            .unwrap();
+        let me = Value::Thing(Some(thing));
+        assert_eq!(
+            host.world
+                .get_member(MemberKind::Thing, &me, "PlanetThing", "seen"),
+            Ok(Value::Int(want)),
+            "thing {thing}"
+        );
+    }
+}
+
+#[test]
+fn d274_the_pod_computer_updates_its_video_after_the_things() {
+    // `Lamp.Update__` writes 1; `PodComputer.UpdateVideo__` writes 7.
+    let write = |n: u64| {
+        vec![
+            u64::from(0x03u8) | 4 << 16 | n << 32, // r4 = n
+            i(0xa2, 0, 0, 4, 0),                   // WRITE r4
+            i(0xa5, 0, 0, 0, 0),                   // RETURN
+        ]
+    };
+    let lamp = d274_class("Lamp", lbp_runtime::UPDATE, 16, write(1));
+    let puter = |code| {
+        d274_class(
+            "PodComputer",
+            lbp_runtime::POD_COMPUTER_UPDATE_VIDEO,
+            16,
+            code,
+        )
+    };
+    let mut vm = Vm::default();
+    vm.load(lamp.clone(), Some(GUID));
+    vm.load(puter(write(7)), Some(BASE));
+    let mut host = Bindings::new(LevelWorld::from_things(&level()));
+    assert!(lbp_runtime::add_engine_objects(&mut vm, &mut host, 1000).is_empty());
+    let mut level = LevelScripts::new(&vm, &host.world);
+    // The Things' part of a tick alone does not make the call.
+    let t = level.tick(&mut vm, &mut host, 1000);
+    assert_eq!((t.done, t.video_updates), (1, 0));
+    assert_eq!(host.world.written, ["Int(1)"]);
+    // A whole tick: once, after the Things.
+    for n in 1..=2 {
+        let t = level.tick_level(&mut vm, &mut host, 1000);
+        assert_eq!((t.done, t.video_updates), (1, 1));
+        assert!(t.thread_faults.is_empty());
+        assert_eq!(host.world.written.len(), 1 + 2 * n);
+    }
+    assert_eq!(
+        host.world.written[1..],
+        ["Int(1)", "Int(7)", "Int(1)", "Int(7)"]
+    );
+    // A level of a session makes its own call.
+    let t = level.tick_level_in_session(&mut vm, &mut host, 1000);
+    assert_eq!(t.video_updates, 1);
+
+    // A function that faults is reported once and not called again.
+    let mut vm = Vm::default();
+    vm.load(lamp.clone(), Some(GUID));
+    vm.load(
+        puter(vec![
+            u64::from(0x03u8) | 4 << 16, // r4 = 0
+            i(0xc2, 0, 0, 4, 0),         // ASSERT r4
+            i(0xa5, 0, 0, 0, 0),         // RETURN
+        ]),
+        Some(BASE),
+    );
+    let mut host = Bindings::new(LevelWorld::from_things(&self::level()));
+    assert!(lbp_runtime::add_engine_objects(&mut vm, &mut host, 1000).is_empty());
+    let mut level = LevelScripts::new(&vm, &host.world);
+    let t = level.tick_level(&mut vm, &mut host, 1000);
+    assert_eq!((t.done, t.video_updates, t.thread_faults.len()), (1, 0, 1));
+    assert!(t.thread_faults[0].starts_with("PodComputer UpdateVideo__"));
+    assert!(level.video_update_stopped && level.stopped.is_empty());
+    let t = level.tick_level(&mut vm, &mut host, 1000);
+    assert_eq!((t.done, t.video_updates, t.thread_faults.len()), (1, 0, 0));
+
+    // No pod computer object, or one whose class has no such function: no call.
+    let mut vm = Vm::default();
+    vm.load(lamp, Some(GUID));
+    let mut host = Bindings::new(LevelWorld::from_things(&self::level()));
+    let mut level = LevelScripts::new(&vm, &host.world);
+    let t = level.tick_level(&mut vm, &mut host, 1000);
+    assert_eq!((t.done, t.video_updates), (1, 0));
+    vm.load(puter(vec![]), Some(BASE));
+    assert!(lbp_runtime::add_engine_objects(&mut vm, &mut host, 1000).is_empty());
+    assert!(host.world.pod_computer.is_some());
+    let t = level.tick_level(&mut vm, &mut host, 1000);
+    assert_eq!((t.video_updates, t.thread_faults.len()), (0, 0));
+}

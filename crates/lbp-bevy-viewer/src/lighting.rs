@@ -17,6 +17,25 @@ pub struct Fog {
     pub end: f32,
 }
 
+impl Fog {
+    /// D274: the fog with a script's fog bias (level units) added to its start and its
+    /// end; `display_scale` is display units per level unit. The game's fog starts at
+    /// the level's fog near plus the bias and keeps its span ([`GameFog`]); MEASURED in
+    /// the Pod: 5810 + 20000 = 25810, the start of the closed Pod's fog. A bias that is
+    /// not a number changes nothing.
+    pub fn biased(self, bias: f32, display_scale: f32) -> Self {
+        let by = bias * display_scale;
+        if !by.is_finite() {
+            return self;
+        }
+        Self {
+            start: self.start + by,
+            end: self.end + by,
+            ..self
+        }
+    }
+}
+
 /// P2x: the game's output-space fog from a level's settings (level units). The game's
 /// vertex shader makes `f = (depth - (FogNear + bias)) / (FogFar - FogNear)` (PC Ghidra
 /// read, oracles/results/2026-10-09-shading-ghidra.md); the colour is FogColor divided by
@@ -407,6 +426,10 @@ pub struct LightingState {
     /// D267: what the level's light was built from, when it follows the PWorld lighting
     /// (P3m), so a played level can be lit again when a script changes that.
     pub level: Option<LevelRelight>,
+    /// D274: the fog bias the played level's scripts set (the third value of
+    /// `Cam.SetDOFAndFog`, level units), added to the preview fog ([`Fog::biased`]).
+    /// 0 without `--level-scripts` and until a script sets one.
+    pub fog_bias: f32,
 }
 
 /// D267: a level's light source for the PWorld lighting rule (P3m,
@@ -581,6 +604,20 @@ mod tests {
         let f = fog.lbp_fog();
         assert!((f.x - 5810. * 2.).abs() < 1e-2 && (f.y - 1. / 52648. / 2.).abs() < 1e-9);
         assert_eq!(PreviewLight::generic().lbp_fog(), Vec4::ZERO);
+        // D274: a script's fog bias moves the preview fog's start and end by the same
+        // amount, in display units; the span and the colour stay. No bias: no change.
+        let preview = PreviewLight::from_settings(&s, Vec3::ZERO, 0.5);
+        let stored = preview.fog.expect("the settings have a usable fog");
+        assert_eq!(stored.biased(0., preview.display_scale), stored);
+        let moved = stored.biased(20000., preview.display_scale);
+        assert_eq!(
+            (moved.start - stored.start, moved.end - stored.end),
+            (10000., 10000.)
+        );
+        assert_eq!(moved.end - moved.start, stored.end - stored.start);
+        assert_eq!(moved.color, stored.color);
+        assert_eq!(stored.biased(f32::NAN, 1.), stored);
+        assert_eq!(stored.biased(1., f32::INFINITY), stored);
         // Ambient 0.5 x 0.45 x 2; rims x 0.6 x 2.
         let ambient = 0.45;
         let rim_high = Vec3::new(0.0, 0.1, 0.4) * 1.2;

@@ -1,5 +1,17 @@
 # Development log
 
+## 2026-10-13 - D274 Earth and Moon by their own scripts, the fog bias, the video update
+
+Pod picture PR 1. FOUND (EBOOT 01.33): the engine calls each planet's `Update__rb(point, snap)` before
+the world script's `UpdatePlanetsView`; the third `SetDOFAndFog` value is a fog bias on the fog near;
+`PodComputer.UpdateVideo__` runs once a rendered frame after the update. Runtime: two frame entries with a
+host point (PLACEHOLDER (0, 0, 1)) and "arrived", `update_video` at the end of a tick, `Math.transform` and
+`ModAngleToWithinPI` (255 -> 257), virtual calls on a Thing dispatch on its own script. Viewer: the Thing
+map follows the planets under the world Thing's root; `--preview-lighting` moves its fog out by the bias.
+Planets level: Earth (-1250, 0, 0) axes 0.961, Moon (2000, 0, 0) axes 2.112, as in the game (P2k). 378
+levels: faulted Things 3 / 3 / 3, unbound natives called 41 / 72 / 72, unbound calls 61,420 / 862,920 /
+868,593 (one more, a cutscene level). `docs/level-scripts.md` part 25.
+
 ## 2026-10-13 - D273 the pod computer is entered
 
 RScript plan stage 6 (the Pod), PR 4. FOUND (EBOOT 01.33, read for this PR): the pad zone is "our Pod, the

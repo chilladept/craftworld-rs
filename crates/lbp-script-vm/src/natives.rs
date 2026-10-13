@@ -665,6 +665,10 @@ pub trait World {
     fn thing_is(&mut self, _thing: u32, _class: &str) -> bool {
         true
     }
+    /// The GUID of the script resource a Thing carries ([`Host::thing_script`]).
+    fn thing_script(&mut self, _thing: u32) -> Option<u32> {
+        None
+    }
     fn write(&mut self, _text: &str) {}
 }
 
@@ -792,6 +796,9 @@ impl<W: World> Host for Bindings<W> {
     }
     fn thing_is(&mut self, thing: u32, class: &str) -> bool {
         self.world.thing_is(thing, class)
+    }
+    fn thing_script(&mut self, thing: u32) -> Option<u32> {
+        self.world.thing_script(thing)
     }
     fn write(&mut self, text: &str) {
         self.world.write(text)
@@ -1040,6 +1047,14 @@ fn smooth(c: &Call<'_>, k: usize) -> Result<[f32; 4], String> {
             }
         },
     ))
+}
+
+/// `Math.ModAngleToWithinPI__f`: an angle in radians less whole turns, so that it lies
+/// from -pi (included) up to pi.
+pub fn mod_angle_to_within_pi(angle: f32) -> f32 {
+    use std::f32::consts::{PI, TAU};
+    let turns = (angle + PI) / TAU;
+    (turns - turns.floor()) * TAU - PI
 }
 
 fn matrix(v: &Value) -> Result<[f32; 16], String> {
@@ -2860,6 +2875,24 @@ const TABLE: &[(&str, &str, NativeFn)] = &[
     ("Profile", "HasPlayedLBP1AndUnlockedMoon__", |w, _| {
         bool_query(w, "Profile.HasPlayedLBP1AndUnlockedMoon__")
     }),
+    // ---- D274: the two Math natives of a planet's per-frame function ----
+    // FOUND (01.33, 0x62ae30 -> 0x5ee288). Declared static `v4 transform(m44, v4)` on
+    // Math: the matrix times the vector, all four components (column 0 times x plus
+    // column 1 times y plus column 2 times z plus column 3 times w). A planet's script
+    // passes its size matrix and a point with w 0, so the place of the matrix stays out.
+    ("Math", "transform__mr", |_, c| {
+        let (m, v) = (matrix(param(c, 0)?)?, vec4(param(c, 1)?)?);
+        Ok(Value::Vec4(std::array::from_fn(|row| {
+            (0..4).map(|col| m[col * 4 + row] * v[col]).sum()
+        })))
+    }),
+    // FOUND (01.33, 0x5fcf60 -> 0x5eebb0). Declared static `f32 ModAngleToWithinPI(f32)`
+    // on Math: with `t = (a + pi) / (2 pi)` the answer is `(t - r(t)) * 2 pi - pi`, the
+    // angle less whole turns, from -pi up to pi. INFERRED: `r` rounds down (the call goes
+    // through a stub that was not followed).
+    ("Math", "ModAngleToWithinPI__f", |_, c| {
+        Ok(Value::Float(mod_angle_to_within_pi(float(param(c, 0)?)?)))
+    }),
     // ---- the game's own test scripts ----
     ("Test", "Check__bQ7StringAi", |w, c| {
         let ok = boolean(param(c, 0)?)?;
@@ -3577,8 +3610,68 @@ mod tests {
         let pressed = dispatch(&mut w, "Video", start, &[]).unwrap();
         assert_eq!(pressed, Ok(Value::Bool(false)));
         assert_eq!(w.0[7].pad.unwrap().now, START_BUTTON);
-        // The table: 249 natives before these six.
-        assert_eq!(bound().count(), 255);
+        // The table: 249 natives before these six; D274 added two.
+        assert_eq!(bound().count(), 257);
+    }
+
+    #[test]
+    fn d274_planet_math_natives() {
+        use std::f32::consts::{FRAC_PI_2, PI, TAU};
+        let f = Value::Float;
+        // A matrix with a size per axis and a place: columns (2,0,0,0), (0,3,0,0),
+        // (0,0,4,0), (10,20,30,1).
+        let m = Value::Mat44([
+            2., 0., 0., 0., 0., 3., 0., 0., 0., 0., 4., 0., 10., 20., 30., 1.,
+        ]);
+        let transform = |v: [f32; 4]| call("Math", "transform__mr", &[m.clone(), Value::Vec4(v)]);
+        // w 0: a direction, the place stays out. w 1: a point.
+        assert_eq!(
+            transform([1., 1., 1., 0.]),
+            Ok(Value::Vec4([2., 3., 4., 0.]))
+        );
+        assert_eq!(
+            transform([1., 1., 1., 1.]),
+            Ok(Value::Vec4([12., 23., 34., 1.]))
+        );
+        assert_eq!(
+            transform([0., -2., 0., 2.]),
+            Ok(Value::Vec4([20., 34., 60., 2.]))
+        );
+        // A turned matrix: a quarter turn about z takes +x to +y.
+        let turn = call("Math", "rotateZ__f", &[f(FRAC_PI_2)]).unwrap();
+        let Ok(Value::Vec4(v)) = call(
+            "Math",
+            "transform__mr",
+            &[turn, Value::Vec4([1., 0., 0., 0.])],
+        ) else {
+            panic!()
+        };
+        assert!(v[0].abs() < 1e-6 && (v[1] - 1.).abs() < 1e-6 && v[2] == 0. && v[3] == 0.);
+        assert!(call("Math", "transform__mr", &[m.clone(), f(1.)]).is_err());
+        assert!(call("Math", "transform__mr", &[Value::Vec4([0.; 4]), m]).is_err());
+
+        let wrap = |a: f32| {
+            let Ok(Value::Float(x)) = call("Math", "ModAngleToWithinPI__f", &[f(a)]) else {
+                panic!()
+            };
+            x
+        };
+        assert_eq!(wrap(0.), 0.);
+        assert!((wrap(1.) - 1.).abs() < 1e-6 && (wrap(-1.) + 1.).abs() < 1e-6);
+        // Just under half a turn stays; just over comes back from the other side.
+        assert!((wrap(PI - 0.01) - (PI - 0.01)).abs() < 1e-5);
+        assert!((wrap(PI + 0.01) - (0.01 - PI)).abs() < 1e-5);
+        assert!((wrap(-PI - 0.01) - (PI - 0.01)).abs() < 1e-5);
+        // Half a turn itself is the lower end.
+        assert!((wrap(PI) + PI).abs() < 1e-5);
+        // Whole turns go.
+        assert!(wrap(3. * TAU).abs() < 1e-4);
+        assert!((wrap(3. * TAU + 0.5) - 0.5).abs() < 1e-4);
+        assert!((wrap(-2. * TAU - 0.5) + 0.5).abs() < 1e-4);
+        assert!(call("Math", "ModAngleToWithinPI__f", &[Value::Int(1)]).is_err());
+        assert_eq!(mod_angle_to_within_pi(0.25), wrap(0.25));
+        // The table: 255 natives before these two.
+        assert_eq!(bound().count(), 257);
     }
 
     #[test]
@@ -3703,8 +3796,8 @@ mod tests {
             ]
         );
         assert_eq!(w.0, 3);
-        // The table: 238 natives before these eleven; D273 added six.
-        assert_eq!(bound().count(), 255);
+        // The table: 238 natives before these eleven; D273 added six, D274 two.
+        assert_eq!(bound().count(), 257);
     }
 
     #[test]

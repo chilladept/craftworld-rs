@@ -203,6 +203,11 @@ pub trait Host {
     fn thing_is(&mut self, _thing: u32, _class: &str) -> bool {
         true
     }
+    /// The GUID of the script resource a Thing carries, for a virtual call on the Thing
+    /// (`CALLVsp`). `None`: not known, and the call goes to the class the caller names.
+    fn thing_script(&mut self, _thing: u32) -> Option<u32> {
+        None
+    }
     fn write(&mut self, _text: &str) {}
 }
 
@@ -1199,6 +1204,20 @@ impl Vm {
                                 _ => None,
                             },
                             Some(Value::Object(None)) => return Err(Fault::NullObject { pc }),
+                            _ => None,
+                        }
+                    } else if op == 0xc1 {
+                        // The virtual call on a Thing goes to the class of the script the
+                        // Thing carries, when that class is, or derives from, the class
+                        // the caller names (MEASURED: the Pod's Earth and Moon stand in
+                        // the running game where the `GetPosition__` of their own
+                        // classes puts them, not where their base class's does). A null
+                        // Thing, or one whose script is not known, is called as named.
+                        match args.values().next() {
+                            Some(Value::Thing(Some(t))) => host
+                                .thing_script(*t)
+                                .and_then(|g| self.by_guid.get(&g).copied())
+                                .filter(|c| self.is_a(*c, &owner)),
                             _ => None,
                         }
                     } else {

@@ -209,7 +209,7 @@ pub fn install(app: &mut App) -> Result<(), String> {
     .insert_resource(Time::<Fixed>::from_hz(f64::from(TICK_HZ)))
     .add_systems(
         FixedUpdate,
-        (tick, relight, follow_things, follow_world).chain(),
+        (tick, relight, follow_fog, follow_things, follow_world).chain(),
     )
     // After the viewer's own camera has placed the follow camera, before a capture.
     .add_systems(
@@ -310,6 +310,39 @@ fn relight(mut play: NonSendMut<Play>, mut v: ResMut<crate::Viewer>) {
     );
     v.lighting.light = light;
     v.lighting.dirty = true;
+}
+
+/// The fog bias a script handed the camera (part 25): the third value of the last
+/// `Cam.SetDOFAndFog` call, level units; 0 before any call and for a value that is not
+/// a number.
+fn fog_bias(world: &LevelWorld) -> f32 {
+    let bias = world.camera.dof_and_fog.map_or(0., |v| v[2]);
+    if bias.is_finite() {
+        bias
+    } else {
+        0.
+    }
+}
+
+/// Hands the scripts' fog bias to the scene's light when it changes (part 25). The
+/// preview fog of `--preview-lighting` then starts and ends that much further out
+/// (`lighting::Fog::biased`); the default lighting fogs in its shader and is not touched.
+/// Like [`relight`], nothing until the scene has been drawn for
+/// [`RELIGHT_AFTER_FRAMES`]. One line per change.
+fn follow_fog(play: NonSend<Play>, mut v: ResMut<crate::Viewer>) {
+    if v.ready_frames < RELIGHT_AFTER_FRAMES {
+        return;
+    }
+    let bias = fog_bias(&play.host.world);
+    if bias == v.lighting.fog_bias {
+        return;
+    }
+    v.lighting.fog_bias = bias;
+    v.lighting.dirty = true;
+    println!(
+        "Fog bias at tick {}: {bias:.1} level units from the scripts (Cam.SetDOFAndFog), added to the start and the end of the preview fog; the first two values (depth of field) are not applied",
+        play.scripts.ticks
+    );
 }
 
 /// Sets the level's draw entities from the script world (part 19): the Things on the
@@ -930,5 +963,67 @@ mod tests {
         // A world Thing where the level file has it leaves the level where it is.
         let still = world_root(display, Mat4::IDENTITY).to_matrix();
         assert!(still.abs_diff_eq(Mat4::IDENTITY, 1e-5), "{still:?}");
+    }
+
+    /// Part 25. A planet under the root of its level: the Thing map gives its model the
+    /// matrix "display x moved x item", the root "display x world Thing moved x
+    /// display^-1", so a point of the model lands where the world Thing's matrix takes
+    /// the place the planet's own script gave it. And the fog bias is the third value
+    /// of the scripts' last `SetDOFAndFog`.
+    #[test]
+    fn a_planet_its_script_placed_is_drawn_under_the_world_thing_and_the_fog_bias() {
+        use lbp_script_vm::natives::dispatch;
+        let display = Mat4::from_scale(Vec3::splat(0.001))
+            * Mat4::from_translation(Vec3::new(-500., -200., 0.));
+        // Made-up numbers. The level file has the planet turned and off to one side;
+        // its mesh's bind pose is 1.5 times its size.
+        let stored =
+            Mat4::from_translation(Vec3::new(-2000., 1000., 40.)) * Mat4::from_rotation_x(1.2);
+        let bind = Mat4::from_scale(Vec3::splat(1.5));
+        let item = stored * bind;
+        // The script puts it at a place of its own, unturned, at 0.9 times the size.
+        let now =
+            Mat4::from_translation(Vec3::new(-1250., 0., 0.)) * Mat4::from_scale(Vec3::splat(0.9));
+        let was = lbp_runtime::ThingDisplay {
+            world: Some(stored.to_cols_array()),
+            ..Default::default()
+        };
+        let is = lbp_runtime::ThingDisplay {
+            world: Some(now.to_cols_array()),
+            ..Default::default()
+        };
+        let by = Mat4::from_cols_array(&is.moved_from(&was).unwrap());
+        // What `thing_view::apply` gives the entity, and what `follow_world` the root.
+        let child = Transform::from_matrix(display * by * item);
+        let world_moved = Mat4::from_translation(Vec3::new(0., 4700., -30000.))
+            * Mat4::from_scale(Vec3::splat(2.));
+        let root = world_root(display, world_moved);
+        let point = Vec3::new(30., -40., 50.);
+        let got = root.transform_point(child.transform_point(point));
+        let want = display
+            .transform_point3(world_moved.transform_point3((now * bind).transform_point3(point)));
+        assert!((got - want).length() < 1e-4, "{got:?} {want:?}");
+        // Its size on the screen is the script's size times the bind pose's, times the
+        // world Thing's: 0.9 x 1.5 x 2 level units a unit, in display units.
+        let size = (root.to_matrix() * child.to_matrix())
+            .transform_vector3(Vec3::X)
+            .length();
+        assert!((size - 0.9 * 1.5 * 2. * 0.001).abs() < 1e-7, "{size}");
+
+        let mut world = LevelWorld::default();
+        assert_eq!(fog_bias(&world), 0.);
+        let f = lbp_script_vm::Value::Float;
+        let set = |world: &mut LevelWorld, bias: f32| {
+            let args = [f(80000.), f(100000.), f(bias)];
+            dispatch(world, "Cam", "SetDOFAndFog__fff", &args)
+                .unwrap()
+                .unwrap();
+        };
+        set(&mut world, 20000.);
+        assert_eq!(fog_bias(&world), 20000.);
+        set(&mut world, 0.);
+        assert_eq!(fog_bias(&world), 0.);
+        set(&mut world, f32::NAN);
+        assert_eq!(fog_bias(&world), 0.);
     }
 }

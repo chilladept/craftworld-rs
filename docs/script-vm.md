@@ -14,6 +14,10 @@ on 01.33 sit in the encrypted `patch.edat` and are not readable yet.
   Nop-class in Toolkit's table and do nothing.
 - Script-to-script calls (`CALL`, virtual `CALLVo` dispatching on the receiver's class and
   its superclasses), script objects and arrays on a VM heap, v4/m44 math, casts.
+  D274: the virtual call on a Thing (`CALLVsp`) dispatches on the class of the script the
+  Thing carries (`Host::thing_script` gives its GUID), when that class is or derives from
+  the class the caller names; a null Thing or an unknown script is called as named
+  (`docs/level-scripts.md` part 25).
 - Everything engine-side goes to a `Host`: native functions by (class name, function
   name), Thing script members (`GET/SET_SP_MEMBER`), `ref_ptr` members, native members
   (`GET_SP_NATIVE_MEMBER`), `CASTsp` and `WRITE`.
@@ -86,7 +90,8 @@ Cloud (Linux, Rust 1.97.0; CI pins 1.99.0): `cargo fmt --all --check` clean;
 - script call, native call through the host, `WRITE`, wrong argument count;
 - object fields, arrays (append, length, find), v4 cross product and component read,
   Thing member get and set through the host;
-- virtual dispatch to a subclass override through an inherited caller;
+- virtual dispatch to a subclass override through an inherited caller, on a script object
+  and (D274) on a Thing by the script it carries;
 - faults: unknown opcode, register range, divide by zero, falling off the end, branch out
   of range, type mismatch, bad field reference, failed assert, call depth.
 

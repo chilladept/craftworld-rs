@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D273
+# Current state (overwrite each milestone) — after D274
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -11,7 +11,60 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D273 the pod computer is entered (2026-10-13)
+## Latest: D274 Earth and Moon by their own scripts, the fog bias, the video update (2026-10-13)
+- "Pod picture" PR 1, after RScript plan stage 6. The planets level's Earth and Moon stayed at their
+  stored places (their per-frame function was not called), `--preview-lighting` washed the played
+  planets level out, and the place of the pod computer's video call was not known. Natives 255 -> 257.
+- FOUND in the EBOOT (scoping for this PR; `docs/level-scripts.md` part 25): the planets object's
+  per-frame function (0x4381d8) calls `Update__rb(v4, bool)` on every planet (0x42115c), then the
+  function that ends in the world script's `UpdatePlanetsView`. The vector (0x421708) is a point of
+  the planet to turn toward the camera; the bool is a byte a true result sets ("arrived"). The script
+  puts the planet at its class's constant place (Earth (-1250, 0, 0), Moon (2000, 0, 0)) with the axis
+  lengths it was created with, turned toward the point. `Math.transform` (0x5ee288): matrix times
+  vector; `Math.ModAngleToWithinPI` (0x5eebb0): the angle less whole turns. The third `SetDOFAndFog`
+  value is a fog bias: the Pod's measured fog start 25810 is the level's fog near 5810 plus 20000.
+  `PodComputer.UpdateVideo__` is the last step of the pod computer's draw function (0x404598), called
+  once a rendered frame after the scene (0x31e820).
+- Runtime (`lbp-runtime/src/lib.rs`, `lbp-script-vm`): frame entries for `Earth` and `OrbitingMoon`
+  (`PLANET_UPDATE`), `LevelScripts::planets` (`PlanetFrame`: point, arrived, calls),
+  `set_planet_point`, the planets before the world script's entry; `LevelScripts::update_video`, once
+  a tick after the global-settings pass (new, not moved: D271 had not added the call);
+  `StepReport::planet_updates`, `planets_arrived`, `video_updates`; the two Math natives. The virtual
+  call on a Thing (`CALLVsp`) now dispatches on the class of the Thing's own script
+  (`Host::thing_script`): it was a plain call, and the planets' `GetPosition__` needs it.
+- Viewer: under `--level-scripts --pod-camera N` without the shell layer the Thing map is on, so the
+  planets' models follow their scripts inside the world Thing's root; `follow_fog` hands the bias to
+  `LightingState::fog_bias` and `--preview-lighting` moves its fog out by it (`Fog::biased`). Without
+  `--level-scripts` nothing changes (a capture is equal byte for byte to D272's).
+- MEASURED, pod_planets alone, 600 ticks (`local-analysis/d274-planets-600.json`): Earth at (-1250, 0,
+  0) with axes 0.9610 and Moon at (2000, 0, 0) with axes 2.1121 from tick 1 to 600; with the meshes'
+  inverse bind scale (1.4052, 0.7312) that is the size read in the running game (P2k: 1.3505, 1.5444).
+  1,200 planet calls, 600 video calls, 0 entries without a function (2 a tick before), 0 faults, 0
+  unbound calls.
+- MEASURED (378 levels, 60 ticks; plain / trigger visit / pulsed; `d274-play-all-*.json`): Things
+  stopped by a fault 3 / 3 / 3; unbound natives called 40 -> 41 / 71 -> 72 / 71 -> 72; unbound calls
+  61,419 -> 61,420 / 862,919 -> 862,920 / 868,592 -> 868,593; native calls 573,134 -> 574,456 /
+  5,365,247 -> 5,366,569 / 5,424,893 -> 5,426,259. Two levels differ: the planets level, and one
+  cutscene level where a virtual call now reaches a subclass (`Gooey.StartFrameNamed`, unbound, once).
+- Eye check (no focus taken; `local-analysis/rscript/stage6/shots/d274-*`): at rest the Earth's
+  centre is near (0.46, 0.48) of the frame and the Moon near 0.56 of the width, the places P2k read
+  from the closed Pod; the room is clear with a light haze under `--preview-lighting` (fog
+  25804.6..78453.6 level units; 5804.6..58453.6 before). Nothing compared against the game side by
+  side.
+- PLACEHOLDER: the point while the host sets none, (0, 0, 1) (no turn; the game's idle vector was not
+  read), so the side of the Earth that faces the camera is not the game's. INFERRED: the dispatch rule
+  of the virtual call on a Thing; a tick is a frame and the video call is its last script call; the
+  rounding of `ModAngleToWithinPI`; the argument registers of `Update__rb`.
+- Left out: the planets' entries and turning; sticker decals of the planets (the scene has none: the
+  viewer projects stickers on shapes only); depth of field; the bias in the default lighting's shader
+  fog; the shell layer, the mesh swap, the shared viewer session (PR 2 to 4 of the Pod picture).
+- Tests: `lbp-script-vm` `d274_planet_math_natives`, `virtual_calls_on_a_thing_dispatch_on_the_script_it_carries`;
+  `lbp-runtime` 61 unit and 52 world tests (three new `d274_*`); two viewer tests. fmt, CI clippy, CI
+  tests, Python tests pass; clippy and `cargo check` on the viewers pass; the viewer's tests pass but
+  `sackboy_play::tests::input_script_steps` (fails on main).
+- Next: Pod picture PR 2, the shell layer under the script's camera.
+
+## Before: D273 the pod computer is entered (2026-10-13)
 - RScript plan stage 6 (the Pod), PR 4. The Pod's world script lets the leader engage the pod computer
   (flags, pad zone, button), asks the host for it, and then runs its change-over. Five natives of that
   path were unbound, the request was only recorded and the two Pod levels could not be played together.

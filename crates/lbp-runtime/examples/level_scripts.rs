@@ -65,6 +65,9 @@
 //! first given first, and share the progression flags, "our Pod", "pod computer in use"
 //! and the media requests; the report is `runs.session`, with the path of events tick by
 //! tick. `play_all.pod` adds the pad-zone, action and player-colour calls.
+//! Part 25: `play_all.pod` adds the planets' per-frame calls, those that answered
+//! "arrived", the levels with such a call and the pod computer's per-frame video calls;
+//! one level's `planets` lists each planet after ticks 1, 226, 452 and the last.
 //! Names and counts only; no bytecode. Output: a NEW JSON file under
 //! ignored `local-analysis/`. Counting unit: Thing with a PScript part (instances) or
 //! distinct script class (function names).
@@ -1222,6 +1225,13 @@ struct PodSums {
     action_prompts: u64,
     player_colour_calls: u64,
     transition_texture_calls: u64,
+    /// Part 25: planet entries that ran, those that answered "arrived", levels with a
+    /// planet entry, and the pod computer's per-frame video calls. Set by the caller
+    /// from the run's step reports (0 for a level of a session).
+    planet_updates: usize,
+    planets_arrived: usize,
+    levels_with_a_planet: usize,
+    video_updates: usize,
 }
 
 impl PodSums {
@@ -1260,6 +1270,7 @@ impl PodSums {
             action_prompts: p.action_prompts.values().sum(),
             player_colour_calls: p.player_colour_calls,
             transition_texture_calls: p.transition_texture_calls,
+            ..Default::default()
         }
     }
 
@@ -1289,6 +1300,10 @@ impl PodSums {
         self.action_prompts += o.action_prompts;
         self.player_colour_calls += o.player_colour_calls;
         self.transition_texture_calls += o.transition_texture_calls;
+        self.planet_updates += o.planet_updates;
+        self.planets_arrived += o.planets_arrived;
+        self.levels_with_a_planet += o.levels_with_a_planet;
+        self.video_updates += o.video_updates;
     }
 
     fn json(&self) -> serde_json::Value {
@@ -1319,6 +1334,10 @@ impl PodSums {
             "is_just_clicked_by_id_prompts": self.action_prompts,
             "get_player_colour_calls_on_a_yellowhead": self.player_colour_calls,
             "set_pod_transition_texture_calls": self.transition_texture_calls,
+            "planet_update_calls": self.planet_updates,
+            "planet_update_calls_answering_arrived": self.planets_arrived,
+            "levels_with_a_planet_update": self.levels_with_a_planet,
+            "pod_computer_update_video_calls": self.video_updates,
         })
     }
 }
@@ -1538,6 +1557,42 @@ fn script_camera_json(tick: u64, world: &LevelWorld) -> serde_json::Value {
     serde_json::json!({"tick": tick, "camera": camera})
 }
 
+/// Part 25: each planet after a tick. The place and the axis lengths are the Thing's
+/// world matrix (level units); Spin and Pitch are the members its script keeps (radians).
+fn planets_json(tick: u64, level: &LevelScripts, world: &LevelWorld) -> serde_json::Value {
+    let planets: Vec<_> = level
+        .planets
+        .iter()
+        .map(|(&thing, frame)| {
+            let t = world.things.get(thing as usize);
+            let m = t.and_then(|t| t.world_matrix);
+            let axis = |m: &[f32; 16], c: usize| {
+                (m[c * 4].powi(2) + m[c * 4 + 1].powi(2) + m[c * 4 + 2].powi(2)).sqrt()
+            };
+            let member = |name: &str| {
+                let members = t.and_then(|t| t.members.as_ref());
+                match members.and_then(|m| m.get(name)) {
+                    Some(lbp_script_vm::Value::Float(f)) => Some(*f),
+                    _ => None,
+                }
+            };
+            serde_json::json!({
+                "thing": thing,
+                "class": t.and_then(|t| t.script_classes.first()),
+                "point": frame.point,
+                "arrived": frame.arrived,
+                "calls": frame.calls,
+                "place": m.map(|m| [m[12], m[13], m[14]]),
+                "axis_lengths": m.map(|m| [axis(&m, 0), axis(&m, 1), axis(&m, 2)]),
+                "spin": member("Spin"),
+                "pitch": member("Pitch"),
+                "spin_offset": member("SpinOffset"),
+            })
+        })
+        .collect();
+    serde_json::json!({"tick": tick, "planets": planets})
+}
+
 /// How far from a trigger's Thing the `--visit-triggers` player goes to leave it.
 const VISIT_AWAY: f32 = 1.0e7;
 
@@ -1582,6 +1637,7 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
     };
     let mut camera_before_in_use = None;
     let mut script_cameras = Vec::new();
+    let mut planets_after = Vec::new();
     let mut first_tick = None;
     let sensors: Vec<usize> = (0..host.world.things.len())
         .filter(|&i| {
@@ -1615,6 +1671,7 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
         let t = level.tick_level(vm, &mut host, BUDGET_PER_CALL);
         if CAMERA_SAMPLE_TICKS.contains(&level.ticks) || tick + 1 == opts.ticks {
             script_cameras.push(script_camera_json(level.ticks, &host.world));
+            planets_after.push(planets_json(level.ticks, &level, &host.world));
         }
         log.note(level.ticks, &t, &host.world);
         settings.note(&host.world);
@@ -1825,8 +1882,16 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
         "position": o.position, "direction": o.direction,
         "target": o.target, "rate": o.rate, "blend": o.blend,
     });
-    let pod = PodSums::of(&host.world);
+    let mut pod = PodSums::of(&host.world);
+    pod.planet_updates = sum.planet_updates;
+    pod.planets_arrived = sum.planets_arrived;
+    pod.levels_with_a_planet = usize::from(!level.planets.is_empty());
+    pod.video_updates = sum.video_updates;
     json["pod"] = pod.json();
+    json["planets"] = serde_json::json!({
+        "unit": "a planet Thing (class Earth or OrbitingMoon) after that tick: the point it is told to turn toward the camera (a placeholder while the host sets none), arrived, calls of its per-frame function, place and axis lengths of its world matrix in level units, the script's Spin, Pitch and SpinOffset in radians. Ticks 1, 226, 452 and the last",
+        "after_tick": planets_after,
+    });
     let pod_thing = host.world.pod_thing(true);
     json["pod"]["at_end"] = serde_json::json!({
         "pod_thing": pod_thing,

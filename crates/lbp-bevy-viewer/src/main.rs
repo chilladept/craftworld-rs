@@ -1183,8 +1183,14 @@ fn load(
                 _ => None,
             };
             let planets_first = v.scene.len();
+            // D272: the Pod's planets level under `--level-scripts`, without the shell
+            // layer and the game camera, hangs under a root that follows its world Thing.
+            let under_world_thing =
+                v.level.scripts && v.level.pod.is_some() && rig.is_none() && !game;
             // D268: the Pod places its planets by its own rules, so it is not followed.
-            let follow = v.level.scripts && v.level.pod.is_none();
+            // D274: but under that root the planets' own scripts place them, and the
+            // Thing map moves each one's model inside the root.
+            let follow = v.level.scripts && (v.level.pod.is_none() || under_world_thing);
             spawn_level(
                 &mut v,
                 &mut commands,
@@ -1219,7 +1225,7 @@ fn load(
                 for (entity, ..) in &v.scene[planets_first..] {
                     commands.entity(root).add_child(*entity);
                 }
-            } else if v.level.scripts && v.level.pod.is_some() && rig.is_none() {
+            } else if under_world_thing {
                 // D272: the Pod's planets level under `--level-scripts`, without the
                 // shell layer: the same root, placed each tick from the world Thing the
                 // level's script moves (`level_play::follow_world`).
@@ -3431,7 +3437,10 @@ fn apply_lighting(
     }
     for camera in &cameras {
         // P2t: LBP mode fogs in the shader (game output space), not with Bevy's fog.
-        match light.as_ref().filter(|l| !l.lbp).and_then(|l| l.fog) {
+        // D274: a played level's scripts move the preview fog out by their fog bias.
+        let bias = v.lighting.fog_bias;
+        let preview = light.as_ref().filter(|l| !l.lbp);
+        match preview.and_then(|l| Some(l.fog?.biased(bias, l.display_scale))) {
             Some(fog) => {
                 commands.entity(camera).insert(bevy::pbr::DistanceFog {
                     color: Color::linear_rgb(fog.color.x, fog.color.y, fog.color.z),
@@ -3452,6 +3461,17 @@ fn apply_lighting(
         Some(l) => lighting::summary(l, unlit, v.scene.len()),
         None => vec!["Lighting: off (unlit)".into()],
     };
+    let bias = v.lighting.fog_bias;
+    let biased = light.as_ref().filter(|l| !l.lbp && bias != 0.);
+    if let Some((l, fog)) = biased.and_then(|l| Some((l, l.fog?))) {
+        let scale = l.display_scale;
+        let fog = fog.biased(bias, scale);
+        v.lighting.lines.push(format!(
+            "  fog moved out by the level scripts' fog bias {bias:.1}: linear {:.1}..{:.1} level units",
+            fog.start / scale,
+            fog.end / scale
+        ));
+    }
     if let Some((from, Some(l))) = &shell {
         v.lighting
             .lines

@@ -1654,6 +1654,11 @@ impl World for LevelWorld {
             .get(thing as usize)
             .is_some_and(|t| t.script_classes.iter().any(|c| c == class))
     }
+    /// The Thing's PScript resource GUID: a virtual call on the Thing goes to that
+    /// script's class.
+    fn thing_script(&mut self, thing: u32) -> Option<u32> {
+        self.things.get(thing as usize)?.script_guid
+    }
     /// FOUND (01.33, 0x7477d8 -> 0x1a6cd8): the slot lookup finds nothing for (0, 0), and
     /// the group of a slot that is not found is (0, 0), as a new SlotID. Here the object
     /// made ahead for that answer. Any other slot needs the game's slot database, which
@@ -2612,16 +2617,34 @@ impl Runner {
         args: &[(u16, Value)],
         budget: &mut u64,
     ) -> Outcome {
+        self.start_for_value(vm, host, inst, function, args, budget)
+            .0
+    }
+
+    /// [`Runner::start_with`], and what the function returned when it ran to its end.
+    pub fn start_for_value(
+        &mut self,
+        vm: &mut Vm,
+        host: &mut dyn Host,
+        inst: Instance,
+        function: &str,
+        args: &[(u16, Value)],
+        budget: &mut u64,
+    ) -> (Outcome, Option<Value>) {
         let Some(class) = inst.class else {
-            return Outcome::NoClass;
+            return (Outcome::NoClass, None);
         };
         if !vm.has_code(class, function) {
-            return Outcome::NoFunction;
+            return (Outcome::NoFunction, None);
         }
         let mut regs = vec![(0, Value::Thing(Some(inst.thing)))];
         regs.extend_from_slice(args);
-        let step = vm.start_registers(host, class, function, &regs, budget);
-        self.settle(vm, inst.thing, step)
+        let mut step = vm.start_registers(host, class, function, &regs, budget);
+        let value = match &mut step {
+            Ok(Step::Done(v)) => Some(std::mem::replace(v, Value::Void)),
+            _ => None,
+        };
+        (self.settle(vm, inst.thing, step), value)
     }
 
     /// Resumes every yielded script once, in the order they yielded.
@@ -2675,6 +2698,10 @@ pub struct FrameContext<'a> {
     pub instances: &'a [Instance],
     /// Ticks run before this one.
     pub tick: u64,
+    /// The Thing the entry is called on.
+    pub thing: u32,
+    /// What the engine keeps for each planet ([`LevelScripts::planets`]).
+    pub planets: &'a BTreeMap<u32, PlanetFrame>,
 }
 
 /// A per-tick function the engine calls with arguments on instances of one class, in
@@ -2682,9 +2709,83 @@ pub struct FrameContext<'a> {
 pub struct FrameEntry {
     /// Exact script class name of the instance.
     pub class: &'static str,
+    /// The function; it may be one a superclass has the code for.
     pub function: &'static str,
     /// Argument registers (byte offsets) and values; `this` is register 0.
     pub args: fn(&FrameContext<'_>) -> Vec<(u16, Value)>,
+    /// The entry of a planet: it runs before the entry of the level's first instance of
+    /// [`PLANETS_WORLD_CLASS`] (in Thing order where the level has none), and its bool
+    /// result is kept as the planet's "arrived" ([`PlanetFrame`]).
+    pub planet: bool,
+}
+
+/// The class of the planets level's world script, whose per-tick entry the engine calls
+/// after the planets' ([`FRAME_ENTRIES`]).
+pub const PLANETS_WORLD_CLASS: &str = "PlanetsWorld";
+
+/// The function the engine calls on each planet once a frame (`bool (v4, bool)`,
+/// inherited from `PlanetThing`).
+pub const PLANET_UPDATE: &str = "Update__rb";
+
+/// The point a planet is told to turn toward the camera while the host has set none.
+///
+/// PLACEHOLDER, not a game value. While nothing is selected the game passes a vector of
+/// the planet object that was not read (its cursor point, INFERRED). (0, 0, 1) is the
+/// point that asks for no turn: the planet's script takes a spin of `-atan2(x, z)` and a
+/// pitch of `atan2(y, ..)` from it, both 0 here. It decides which side of a planet
+/// faces the camera, and neither its place nor its size.
+pub const PLACEHOLDER_PLANET_POINT: [f32; 4] = [0., 0., 1., 0.];
+
+/// What the engine keeps for one planet between its per-frame calls
+/// ([`LevelScripts::planets`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlanetFrame {
+    /// The point on the planet to turn toward the camera, in the planet's own space:
+    /// the first argument of [`PLANET_UPDATE`]. [`PLACEHOLDER_PLANET_POINT`] until
+    /// [`LevelScripts::set_planet_point`] gives one.
+    pub point: [f32; 4],
+    /// The planet has reached its target: the second argument, "snap". A true result of
+    /// the call sets it; a new point clears it.
+    pub arrived: bool,
+    /// Calls made that ran to their end.
+    pub calls: u64,
+}
+
+impl Default for PlanetFrame {
+    fn default() -> Self {
+        Self {
+            point: PLACEHOLDER_PLANET_POINT,
+            arrived: false,
+            calls: 0,
+        }
+    }
+}
+
+/// A planet (classes Earth and OrbitingMoon, both a `PlanetThing`): the engine calls
+/// [`PLANET_UPDATE`] on it once a frame.
+///
+/// FOUND in the 01.33 executable (0x4381d8, 0x42115c): the planets object's per-frame
+/// function goes through its list of planets and calls the script function on each with
+/// a vector and a bool, and after the last one calls the function that ends in the world
+/// script's `UpdatePlanetsView`. The bool is 1 when a flag of the planets object is not
+/// 0, else a byte of the planet that a true result of the call sets ("arrived"). The
+/// vector (0x421708) is a point of the planet: the place of the entry that is selected
+/// on it, else a vector of the planet itself; every path that picks another entry clears
+/// "arrived". FOUND in the script listing: the function turns the planet so that the
+/// point faces the camera, eased while the bool is false and at once while it is true,
+/// puts the planet at the place its class gives with the axis lengths it had when it was
+/// created, and returns whether it has reached the target.
+///
+/// INFERRED: the argument registers (+16 the vector, +32 the bool), from the function's
+/// argument rows; the flag of the planets object is 0. PLACEHOLDER: the vector while the
+/// host sets none ([`PLACEHOLDER_PLANET_POINT`]). Not modelled: the entries of a planet
+/// and their places.
+fn planet_args(cx: &FrameContext<'_>) -> Vec<(u16, Value)> {
+    let frame = cx.planets.get(&cx.thing).copied().unwrap_or_default();
+    vec![
+        (16, Value::Vec4(frame.point)),
+        (32, Value::Bool(frame.arrived)),
+    ]
 }
 
 /// PlanetsWorld (the Pod's planet view): no script calls the export
@@ -2713,11 +2814,30 @@ fn planets_view_args(cx: &FrameContext<'_>) -> Vec<(u16, Value)> {
 }
 
 /// Per-tick entries other than [`UPDATE`], by class (docs/level-scripts.md "Part 6").
-pub const FRAME_ENTRIES: &[FrameEntry] = &[FrameEntry {
-    class: "PlanetsWorld",
-    function: "UpdatePlanetsView__bQ11PlanetThingQ11PlanetThingbb",
-    args: planets_view_args,
-}];
+pub const FRAME_ENTRIES: &[FrameEntry] = &[
+    FrameEntry {
+        class: PLANETS_WORLD_CLASS,
+        function: "UpdatePlanetsView__bQ11PlanetThingQ11PlanetThingbb",
+        args: planets_view_args,
+        planet: false,
+    },
+    FrameEntry {
+        class: "Earth",
+        function: PLANET_UPDATE,
+        args: planet_args,
+        planet: true,
+    },
+    FrameEntry {
+        class: "OrbitingMoon",
+        function: PLANET_UPDATE,
+        args: planet_args,
+        planet: true,
+    },
+];
+
+/// The function of the engine's PodComputer script object that the engine calls once a
+/// frame ([`LevelScripts::update_video`]).
+pub const POD_COMPUTER_UPDATE_VIDEO: &str = "UpdateVideo__";
 
 /// The per-tick entry for a class, if it has one other than [`UPDATE`].
 pub fn frame_entry(vm: &Vm, class: ClassId) -> Option<&'static FrameEntry> {
@@ -2750,6 +2870,13 @@ pub struct StepReport {
     pub reactions: ReactionReport,
     /// What the global-settings pass did ([`LevelScripts::apply_global_settings`]).
     pub global_settings: GlobalSettingsReport,
+    /// Planet entries that ran to their end ([`PLANET_UPDATE`]), and those that answered
+    /// true ("arrived").
+    pub planet_updates: usize,
+    pub planets_arrived: usize,
+    /// Calls of the pod computer's per-frame video function that ran to their end
+    /// ([`LevelScripts::update_video`]).
+    pub video_updates: usize,
 }
 
 /// Counts of one or more switch passes. Unit: a visited output target (one Thing on one
@@ -2820,6 +2947,9 @@ impl StepReport {
         self.events_to_stopped += other.events_to_stopped;
         self.reactions.absorb(other.reactions);
         self.global_settings.absorb(other.global_settings);
+        self.planet_updates += other.planet_updates;
+        self.planets_arrived += other.planets_arrived;
+        self.video_updates += other.video_updates;
     }
 
     fn add(&mut self, thing: u32, o: Outcome) {
@@ -2840,7 +2970,10 @@ impl StepReport {
 /// they yielded), then runs [`UPDATE`] on every instance that was not suspended at the
 /// start of the tick, in Thing order. A Thing whose script faults is not run again.
 /// A class listed in [`FRAME_ENTRIES`] runs that entry with its arguments instead of
-/// [`UPDATE`].
+/// [`UPDATE`]. The planets' entries run just before the entry of the planets level's
+/// world script, as the engine's planets function calls them (FOUND, see
+/// [`FRAME_ENTRIES`]); where that function stands among the other Things' updates was
+/// not read.
 ///
 /// Script threads (`Thread.Start__` -> `Thread.StartImpl__(this)`, docs/script-vm.md):
 /// a thread started during a step runs `ThreadMain__` on the thread object at the end of
@@ -2856,6 +2989,13 @@ pub struct LevelScripts {
     pub stopped: BTreeSet<u32>,
     /// Ticks run so far.
     pub ticks: u64,
+    /// What the engine keeps for each planet between its per-frame calls, by Thing: the
+    /// point to turn toward the camera and "arrived". A planet is listed from its first
+    /// call or from [`LevelScripts::set_planet_point`].
+    pub planets: BTreeMap<u32, PlanetFrame>,
+    /// The pod computer's per-frame video function faulted or yielded: it is not called
+    /// again ([`LevelScripts::update_video`]).
+    pub video_update_stopped: bool,
 }
 
 impl LevelScripts {
@@ -2866,7 +3006,92 @@ impl LevelScripts {
             threads: Vec::new(),
             stopped: BTreeSet::new(),
             ticks: 0,
+            planets: BTreeMap::new(),
+            video_update_stopped: false,
         }
+    }
+
+    /// The host's point for a planet: the point on it to turn toward the camera, in the
+    /// planet's own space (the first argument of [`PLANET_UPDATE`]). A point unlike the
+    /// one before clears "arrived", so the planet eases to it (FOUND: every path of the
+    /// game that picks another entry of a planet clears that byte).
+    pub fn set_planet_point(&mut self, thing: u32, point: [f32; 4]) {
+        let frame = self.planets.entry(thing).or_default();
+        if frame.point != point {
+            frame.point = point;
+            frame.arrived = false;
+        }
+    }
+
+    /// The instances in the order a tick calls their entries: Thing order, but the
+    /// planets come just before the level's first [`PLANETS_WORLD_CLASS`] instance.
+    fn tick_order(&self, vm: &Vm) -> Vec<Instance> {
+        let entry = |i: &Instance| i.class.and_then(|c| frame_entry(vm, c));
+        let world = self
+            .instances
+            .iter()
+            .position(|i| entry(i).is_some_and(|e| e.class == PLANETS_WORLD_CLASS));
+        let Some(world) = world else {
+            return self.instances.clone();
+        };
+        let planet = |i: &Instance| entry(i).is_some_and(|e| e.planet);
+        let mut order = Vec::with_capacity(self.instances.len());
+        for (n, inst) in self.instances.iter().enumerate() {
+            if n == world {
+                order.extend(self.instances.iter().filter(|i| planet(i)));
+            }
+            if !planet(inst) {
+                order.push(*inst);
+            }
+        }
+        order
+    }
+
+    /// The engine's per-frame call of `UpdateVideo__()` on its PodComputer script
+    /// object ([`LevelWorld::pod_computer`]); nothing happens without that object or
+    /// when its class has no such function.
+    ///
+    /// FOUND in the 01.33 executable (0x31e820 at 0x31fa38 -> 0x404598): the function
+    /// that writes a frame's draw commands calls the pod computer's draw function after
+    /// the scene, whenever a pod computer exists and a byte of the render state is set
+    /// (it is set when that object is made; the frames that clear it were not read), and
+    /// the last step of that draw function is this script call. So: once a rendered
+    /// frame, after the frame's update, and not tied to the Things' updates. FOUND in
+    /// the script listing: the function asks `Video.UpdateVideo` about the pod
+    /// computer's video handle and sets the handle back to "none" when the answer is
+    /// false; with no handle it does nothing.
+    ///
+    /// INFERRED: a tick is a frame here, and the call is the last script call of
+    /// [`LevelScripts::tick_level`]. A call that faults or yields is reported once in
+    /// [`StepReport::thread_faults`] and not made again.
+    pub fn update_video(
+        &mut self,
+        vm: &mut Vm,
+        host: &mut Bindings<LevelWorld>,
+        budget: u64,
+    ) -> StepReport {
+        let mut report = StepReport::default();
+        if self.video_update_stopped {
+            return report;
+        }
+        let Some(object) = host.world.pod_computer else {
+            return report;
+        };
+        let Some(class) = vm.class_of(object) else {
+            return report;
+        };
+        if !vm.has_code(class, POD_COMPUTER_UPDATE_VIDEO) {
+            return report;
+        }
+        match run_on_object(vm, host, class, object, POD_COMPUTER_UPDATE_VIDEO, budget) {
+            Ok(()) => report.video_updates += 1,
+            Err(e) => {
+                self.video_update_stopped = true;
+                report.thread_faults.push(format!("PodComputer {e}"));
+            }
+        }
+        self.start_threads(vm, host, budget, &mut report);
+        report
     }
 
     /// Scripts suspended by `System.Yield`.
@@ -3148,7 +3373,9 @@ impl LevelScripts {
 
     /// One game tick of a level: [`Self::tick`], then [`Self::trigger_events`], so a
     /// script an event suspends is resumed on the next tick (order INFERRED), then
-    /// [`Self::switch_reactions`], then [`Self::apply_global_settings`], then the
+    /// [`Self::switch_reactions`], then [`Self::apply_global_settings`], then the pod
+    /// computer's per-frame video call ([`Self::update_video`]: FOUND once a rendered
+    /// frame after the update, its place as the last script call INFERRED), then the
     /// camera's step ([`LevelWorld::step_camera`], place INFERRED).
     ///
     /// FOUND in the 01.33 executable: the world update (0xeacd4) calls the switch pass
@@ -3187,6 +3414,7 @@ impl LevelScripts {
         report.absorb(self.trigger_events(vm, host, budget));
         report.absorb(self.switch_reactions(vm, host, budget));
         report.absorb(self.apply_global_settings(vm, host, budget));
+        report.absorb(self.update_video(vm, host, budget));
         host.world.step_camera();
         host.world.advance_frame();
         host.world.end_pad_frame();
@@ -3216,6 +3444,8 @@ impl LevelScripts {
         let update = self.run_all(vm, host, None, budget, &busy);
         report.done += update.done;
         report.yielded += update.yielded;
+        report.planet_updates += update.planet_updates;
+        report.planets_arrived += update.planets_arrived;
         report.no_function += update.no_function;
         report.no_class += update.no_class;
         report.faults.extend(update.faults);
@@ -3233,7 +3463,11 @@ impl LevelScripts {
         skip: &BTreeSet<u32>,
     ) -> StepReport {
         let mut report = StepReport::default();
-        for inst in self.instances.clone() {
+        let order = match function {
+            Some(_) => self.instances.clone(),
+            None => self.tick_order(vm),
+        };
+        for inst in order {
             if skip.contains(&inst.thing) || self.stopped.contains(&inst.thing) {
                 continue;
             }
@@ -3249,9 +3483,22 @@ impl LevelScripts {
                         vm,
                         instances: &self.instances,
                         tick: self.ticks,
+                        thing: inst.thing,
+                        planets: &self.planets,
                     });
-                    self.runner
-                        .start_with(vm, host, inst, e.function, &args, &mut b)
+                    let (o, value) = self
+                        .runner
+                        .start_for_value(vm, host, inst, e.function, &args, &mut b);
+                    if e.planet && o == Outcome::Done {
+                        let frame = self.planets.entry(inst.thing).or_default();
+                        frame.calls += 1;
+                        report.planet_updates += 1;
+                        if value == Some(Value::Bool(true)) {
+                            frame.arrived = true;
+                            report.planets_arrived += 1;
+                        }
+                    }
+                    o
                 }
                 None => {
                     let f = function.unwrap_or(UPDATE);

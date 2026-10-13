@@ -284,6 +284,29 @@ UI (`UpdateUI__`) and photo natives are not planned.
   The tool starts a level as our Pod when it has a pod Thing (a stand-in; the game
   tests the slot). Left out: the viewer (one level there still), the pod computer's own
   scripts and menus, the other 98 actions. Stage 6 is done as planned.
+- After stage 6, "Pod picture" PR 1 (D274, part 25): Earth and Moon by their own scripts,
+  the fog bias, the video update. FOUND: the engine's planets function calls
+  `Update__rb(point, snap)` on every planet before the world script's entry; the point
+  is a place on the planet to turn toward the camera, the bool a byte a true result
+  sets ("arrived"); the script puts the planet at its class's constant place with the
+  axis lengths it was created with. The third `SetDOFAndFog` value is a fog bias added
+  to the level's fog near. `PodComputer.UpdateVideo__` is called once a rendered frame,
+  after the frame's update. Runtime: two frame entries with a host point and "arrived"
+  (`LevelScripts::planets`, `set_planet_point`), the planets before the world script,
+  `LevelScripts::update_video` as the last script call of a tick, `Math.transform` and
+  `Math.ModAngleToWithinPI` (255 -> 257), and the virtual call on a Thing now goes to
+  the class of the Thing's own script (it was a plain call; the planets need it).
+  Viewer: the Thing map follows the planets under the world Thing's root, and
+  `--preview-lighting` moves its fog out by the bias. The planets level, 600 ticks:
+  Earth at (-1250, 0, 0) with axes 0.961, Moon at (2000, 0, 0) with axes 2.112 from
+  tick 1, as measured in the game (P2k) less the bind scale. Over 378 levels: Things
+  stopped by a fault 3 / 3 / 3; unbound natives called 40 -> 41 / 71 -> 72 / 71 -> 72
+  and unbound calls +1 in each run (one cutscene level, through a virtual call that now
+  reaches a subclass). PLACEHOLDER: the point while the host sets none, (0, 0, 1): no
+  turn. INFERRED: the dispatch rule of the virtual call, the place of the video call in
+  the tick, the rounding of `ModAngleToWithinPI`. Left out: the planets' entries and
+  their turning, depth of field, the shell layer, the mesh swap. Follows: PR 2, the
+  shell layer under the script's camera.
 
 ## Rules
 
