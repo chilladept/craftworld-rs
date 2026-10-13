@@ -202,6 +202,25 @@ UI (`UpdateUI__`) and photo natives are not planned.
   the middle of the screen). Not bound: `SetSpeechBubbleActive` (its part and effect are
   not established). Stage 5 is done with this PR; follows stage 6, the Pod, with
   `SetCameraFromToUp`.
+- Stage 6 begun, PR 1 (D270, part 21): script names, the pod Thing, the avatar. The Pod
+  is two levels (the shell and the planets view); the runtime plays each alone. FOUND:
+  `Thing.FindThing` compares a Thing's script name with the argument byte for byte, case
+  sensitive, first match wins, null with none; `Thing.GetPodThing` gives the first Thing
+  whose render mesh is one of two pod meshes (the platform only when asked for it);
+  `Game.GetAvatarFromPlayerID` is the player's Sackboy; `SetRenderMeshMesh` sets a
+  PRenderMesh's mesh from a mesh resource. `lbp-level` keeps the PScriptName's name
+  (it kept the length). New `lbp-runtime/src/pod.rs`; a mesh change reaches the display
+  list. Natives 225 -> 238, 2 of them recorded only. Over 378 levels: Things stopped by
+  a fault 4 -> 3 in all three runs (fault kinds 2 -> 1, levels with a fault 2 -> 1):
+  the Pod's world script gets its pod Thing and is resumed every tick; the three left
+  are `Thing.GetCOM__` (TriggerAirStone, one level). Unbound natives called 48 -> 44 /
+  81 -> 78 / 81 -> 78, unbound calls 62,000 -> 61,483 / 865,777 -> 865,266 / 872,549 ->
+  872,042. 173 Things in 66 levels have a script name; the one `FindThing` call finds
+  its Thing. INFERRED: the two PWorld lists are the PScriptName and PRenderMesh parts in
+  Thing order; a null string finds nothing. Not bound (effect or answer not
+  established): `SetPodTransitionTexture`, `CurrentLevelIsOurPod`, `GetPlayerColour`,
+  `GetIsInPadZone`, `IsJustClickedByID`. Follows: PR 2 video, voice-over and
+  progression flags (the intro ends), PR 3 the viewer's Pod camera.
 
 ## Rules
 

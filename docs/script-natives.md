@@ -19,7 +19,7 @@ used or is committed.
 - Example `native_coverage SCRIPT-DIR NEW-JSON`: the share of native call sites that have
   a binding, over all scripts and over gameplay scripts.
 
-## Bound natives (225 in the table, plus `System.Yield__` in the VM)
+## Bound natives (238 in the table, plus `System.Yield__` in the VM)
 
 | Group | Natives | Needs from `World` |
 |---|---|---|
@@ -44,6 +44,7 @@ used or is committed.
 | Recorded only, D263 (part 14) | `HUD.RegisterOverlayCallback`, `HUD.PreloadGlyphs`, `Game.TrackSpeechKey`, `Trigger_Speech_Bubble.NotifyNpcsOfMouthStart__i`, `Thing.AddToAnimatingDivergentList__`, `Thing.SetAnimLoop__b`, `Gooey.SetLastNavSelectionMode__b`, `PerFrameUpdate`, `SetStylesheetScalingFactor__f`, `Game.SetGlobalSettingsAudioTo` | `World::engine_call`; four are kept with their arguments (with the ten messaging calls, 14 kept names) |
 | Display, D268 (part 19) | `Thing.HideRenderMesh__Q5Thing`, `ShowRenderMesh__Q5Thing`, `SetRenderMeshEditorColour__Q5Thingr`, `SetShapeEditorColourTint__Q5Thingr`, `PostItNote.IsVisibleInPlayMode__`; changed: `SetShapeEditorColour__Q5Thingr` and `SetRenderMeshEditorColourTint__Q5Thingr` do nothing for a null Thing or a missing part | the render mesh's visibility byte, colours and tints; the changes are listed for a display |
 | Camera and screen, D269 (part 20) | `Cam.SetOverrideCamera__rr`, `SetOverrideCameraActivation__bf`, `GetCameraMatrix__`, `HUD.GetScreenSpacePosition__r`, `GetXRes__`, `GetYRes__` | the level camera's override (position, direction, blend target and rate), the camera a display drew with (camera matrix, view-projection), the screen size |
+| Pod, D270 (part 21) | `Thing.FindThing__Q7StringA`, `GetPodThing__b`, `SetRenderMeshMesh__Q5ThingQ8Resource`, `Game.GetAvatarFromPlayerID__i`, `IsKioskBuild__`, `IsStartMenuOpen__`, `Resource.LoadMeshByFilename__g`, `FileList.AsGUID__i`, `AsInt__g`, `PodComputer.GetPlanetsBackgroundGUID__`, `Pod.IsTakingPhoto__Q5Thing`; recorded only: `PodComputer.SetFadePodDecorations__f`, `RequestHostUsePod__b` | the Things' script names, the mesh each PRenderMesh shows now, which resource handles are meshes, the players' Sackboys, the planets' backdrop |
 | Test (part 2) | `Check`, `CheckFalse`, `Fail`, `CheckEqual` on `i b j f p q r`, `CheckSimilar__fff`, each ending `Q7StringAi` | records each check |
 
 Coverage against the G10 export, computed from its tables (unit: call instruction):

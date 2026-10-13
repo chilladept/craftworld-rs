@@ -31,6 +31,7 @@ mod display;
 mod global_settings;
 mod message_view;
 mod messages;
+mod pod;
 mod sensors;
 mod switches;
 pub mod transform;
@@ -39,6 +40,7 @@ pub use display::*;
 pub use global_settings::*;
 pub use message_view::*;
 pub use messages::*;
+pub use pod::*;
 pub use switches::*;
 
 /// One Thing as the runtime sees it.
@@ -86,8 +88,12 @@ pub struct ThingState {
     /// PMicrochip: the chip's circuit-board Thing. The components on the board are the
     /// board's children.
     pub circuit_board: Option<u32>,
-    /// GUID of the mesh the Thing's PRenderMesh shows, when it has one with a GUID.
+    /// GUID of the mesh the Thing's PRenderMesh shows, when it has one with a GUID: the
+    /// level file's until `Thing.SetRenderMeshMesh` sets another.
     pub mesh_guid: Option<u32>,
+    /// The name of the Thing's PScriptName, when it has one: the bytes
+    /// `Thing.FindThing` compares ([`LevelWorld::find_thing`]).
+    pub script_name: Option<Vec<u8>>,
     /// The PRenderMesh's visibility byte, when the Thing has a PRenderMesh: the level
     /// file's until `Thing.HideRenderMesh` or `ShowRenderMesh` changes it
     /// ([`ThingDisplay::mesh_hidden`]).
@@ -401,6 +407,8 @@ pub struct LevelWorld {
     /// The Things whose visibility, colours or world matrix changed, for a display
     /// ([`LevelWorld::take_display_dirty`]).
     pub display: DisplayState,
+    /// What the Pod's world script asks for and sets ([`PodState`]).
+    pub pod: PodState,
     /// The names of the level's tags and tag sensors; a [`TagKey`] holds an index.
     pub tag_names: Vec<String>,
     /// The world's tag map as the last switch pass left it
@@ -745,6 +753,7 @@ impl LevelWorld {
                         .switch_key
                         .as_ref()
                         .map(|k| key(k.colour_index, &k.name)),
+                    script_name: t.data.script_name.as_ref().map(|n| n.name.clone()),
                     ..Default::default()
                 })
                 .collect(),
@@ -1986,7 +1995,8 @@ impl World for LevelWorld {
     /// [`LevelWorld::scoreboard_requests`]. A null Thing is counted and nothing more, as
     /// the game does nothing for it. The calls of [`KEPT_REQUESTS`] are kept with their
     /// arguments in [`LevelWorld::requests`], and `SetAnimLoop` on its Thing. The
-    /// messaging calls also go to the message list ([`LevelWorld::messages`]).
+    /// messaging calls also go to the message list ([`LevelWorld::messages`]), and the
+    /// pod computer's two calls leave their value in [`LevelWorld::pod`].
     fn engine_call(
         &mut self,
         name: &'static str,
@@ -2010,6 +2020,21 @@ impl World for LevelWorld {
             }
         }
         self.message_call(name, thing, args);
+        match (name, args.first()) {
+            ("SetFadePodDecorations", Some(Value::Float(f))) => {
+                self.pod.fade = Some(*f);
+                self.pod.fade_calls += 1;
+            }
+            ("RequestHostUsePod", Some(Value::Bool(b)))
+                if self.pod.host_use_pod_requests.len() < MAX_HOST_USE_POD_REQUESTS =>
+            {
+                self.pod.host_use_pod_requests.push(HostUsePodRequest {
+                    in_use: *b,
+                    frame: self.pworld.frame,
+                });
+            }
+            _ => {}
+        }
         let Some(thing) = thing else { return Ok(()) };
         let t = self.thing_mut(thing)?;
         match (name, args.first()) {
@@ -2020,9 +2045,45 @@ impl World for LevelWorld {
         Ok(())
     }
     /// The handle is the GUID itself (INFERRED stand-in: nothing is loaded; scripts only
-    /// keep the handle and pass it back to natives).
-    fn load_resource(&mut self, _kind: ResourceKind, guid: u32) -> Result<u32, String> {
+    /// keep the handle and pass it back to natives). A mesh handle is remembered as one
+    /// ([`PodState::mesh_resources`]).
+    fn load_resource(&mut self, kind: ResourceKind, guid: u32) -> Result<u32, String> {
+        if kind == ResourceKind::Mesh {
+            self.pod.mesh_resources.insert(guid);
+        }
         Ok(guid)
+    }
+    /// [`LevelWorld::find_thing`], counted.
+    fn find_thing(&mut self, name: &[u8]) -> Result<Option<u32>, String> {
+        let found = LevelWorld::find_thing(self, name);
+        self.pod.find_thing_calls += 1;
+        self.pod.find_thing_hits += u64::from(found.is_some());
+        Ok(found)
+    }
+    /// [`LevelWorld::pod_thing`], counted.
+    fn pod_thing(&mut self, platform_too: bool) -> Result<Option<u32>, String> {
+        let found = LevelWorld::pod_thing(self, platform_too);
+        self.pod.pod_thing_calls += 1;
+        self.pod.pod_thing_hits += u64::from(found.is_some());
+        Ok(found)
+    }
+    /// FOUND (01.33, 0x755580): nothing for a Thing without a PRenderMesh; else the mesh
+    /// becomes the resource when the resource is a mesh, and none when it is not. Here a
+    /// handle is a mesh when `Resource.LoadMeshByFilename__g` handed it out.
+    fn set_render_mesh_mesh(&mut self, thing: u32, mesh: Option<u32>) -> Result<(), String> {
+        if self.state(thing)?.render_mesh_visibility.is_none() {
+            return Ok(());
+        }
+        let mesh = mesh.filter(|g| self.pod.mesh_resources.contains(g));
+        let before = self.things[thing as usize].mesh_guid;
+        self.change_display(thing, |t| t.mesh_guid = mesh);
+        self.pod.mesh_sets += 1;
+        self.pod.mesh_changes += u64::from(before != mesh);
+        Ok(())
+    }
+    /// [`LevelWorld::planets_background`].
+    fn planets_background(&mut self) -> Result<u32, String> {
+        Ok(LevelWorld::planets_background(self))
     }
     /// FOUND (01.33, 0xf26bc, 0xf1d58): see `Thing.SetWorldPosition__m` in the native
     /// table. INFERRED: a parent whose matrix cannot be inverted counts as no parent.
@@ -2109,6 +2170,10 @@ impl World for LevelWorld {
     ///   modal overlay (start menu, Popit, prompt).
     /// - `Game.GetNumKnownItemsCollectedAtStart__` is 0: a fresh profile, as the empty
     ///   progression flags.
+    ///
+    /// D270, INFERRED: `Game.IsStartMenuOpen__` and `Pod.IsTakingPhoto__Q5Thing` are
+    /// false. Nothing here opens the start menu, and no player has a Popit to take a
+    /// photo with.
     fn state_query(&mut self, native: &str) -> Result<Value, String> {
         Ok(match native {
             "GameMessagingManager.Messaging_ShouldFilterMessageStrings__" => {
@@ -2129,7 +2194,9 @@ impl World for LevelWorld {
             | "Game.GetNumKeyNames__Q25Gooey.EGooeyNetworkAction"
             | "Game.GetNumKnownItemsCollectedAtStart__" => Value::Int(0),
             "Game.GetKeyIndex__Q25Gooey.EGooeyNetworkActionQ6String" => Value::Int(-1),
-            "ModalOverlay.IsPartyLeaderOverlayActive__" => Value::Bool(false),
+            "ModalOverlay.IsPartyLeaderOverlayActive__"
+            | "Game.IsStartMenuOpen__"
+            | "Pod.IsTakingPhoto__Q5Thing" => Value::Bool(false),
             "Game.IsVcrPaused__" | "Game.IsPSNDemoBuild__" => Value::Bool(false),
             "Game.IsTutorialLevel__" => Value::Bool(self.tutorial_level),
             "Game.GetPartyLeadersPlayerNumber__" => {

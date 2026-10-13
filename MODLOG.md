@@ -1,5 +1,30 @@
 # Development log
 
+## 2026-10-13 - D270 script names, the pod Thing, the avatar
+
+RScript plan stage 6 (the Pod), PR 1. The Pod is two levels, the shell (`pod.bin`) and the planets view
+(`pod_planets.bin`); the runtime plays each alone. FOUND (EBOOT 01.33, through the Ghidra bridge):
+`Thing.FindThing__Q7StringA` (0xd3360) walks a PWorld list and compares each entry's byte string with the
+argument by the C string compare (whole string, case sensitive), first match wins, null with none;
+`Thing.GetPodThing__b` (0xd32dc) gives the first entry of a PWorld list whose resource GUID is 0x2f6c, and
+one with 0x23959 only for true (for false the search ends there with null);
+`Game.GetAvatarFromPlayerID__i` shares the core of `GetYellowheadFromPlayerNumber` (0x18ec14);
+`Thing.SetRenderMeshMesh` (0x755580) sets a PRenderMesh's mesh from a resource whose type is a mesh;
+`FileList.AsGUID__i` / `AsInt__g` return their argument; `Game.IsKioskBuild__` is false. `lbp-level` keeps
+the PScriptName's name (`ScriptName { stored, name }`, it kept the length; Toolkit parity 236 / 236). New
+`lbp-runtime/src/pod.rs` (`find_thing`, `pod_thing`, `PodState`); a mesh change reaches the display list
+(`DisplayChange::mesh`). Natives 225 -> 238, two recorded only (`SetFadePodDecorations__f`,
+`RequestHostUsePod__b`). MEASURED, 378 levels, 60 ticks (plain / trigger visit / pulsed): Things stopped by
+a fault 4 -> 3 in all three (fault kinds 2 -> 1): the Pod's world script gets its pod Thing and is resumed
+every tick; left: 3 x `Thing.GetCOM__` (TriggerAirStone). Unbound natives called 48 -> 44 / 81 -> 78 /
+81 -> 78; unbound calls 62,000 -> 61,483 / 865,777 -> 865,266 / 872,549 -> 872,042. 173 Things in 66 levels
+have a script name; `FindThing` 1 call, 1 found; `GetPodThing` 61 / 64 / 66 calls, all found. pod.bin alone,
+600 ticks: no fault, resumed on all 600; pod_planets unchanged (the intro thread waits on the video handle).
+INFERRED: the two lists are the PScriptName and PRenderMesh parts in Thing order; a null string finds
+nothing. Not bound (effect or answer not established): `SetPodTransitionTexture__g`,
+`CurrentLevelIsOurPod__`, `GetPlayerColour`, `GetIsInPadZone`, `IsJustClickedByID`. The viewer is unchanged.
++0 viewable, +0 Complete. `docs/level-scripts.md` part 21.
+
 ## 2026-10-13 - D269 the script camera and the screen
 
 RScript plan stage 5, PR 5, the last of stage 5. FOUND (EBOOT 01.33, through the Ghidra bridge and a decode

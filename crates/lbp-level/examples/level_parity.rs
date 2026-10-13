@@ -100,7 +100,13 @@ fn oracle_parts(t: &ThingRecord) -> Vec<&'static str> {
     t.read
         .iter()
         .filter(|p| p.state == "parsed" || p.state == "shared")
-        .filter(|p| p.part != "SCRIPT_NAME" || t.data.script_name.is_none_or(|(_, n)| n > 0))
+        .filter(|p| {
+            p.part != "SCRIPT_NAME"
+                || t.data
+                    .script_name
+                    .as_ref()
+                    .is_none_or(|n| !n.name.is_empty())
+        })
         .map(|p| p.part)
         .collect()
 }

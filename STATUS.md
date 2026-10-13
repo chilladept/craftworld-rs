@@ -4901,3 +4901,73 @@ colour a script sets, the tint's alpha, the animation position per Thing.
 Next: stage 6, the Pod (`SetCameraFromToUp`). Open: the game's follow camera, the up vector under an
 override, the speech-bubble camera; with `--play-sackboy` some levels start the Sackboy at the
 scoreboard's own checkpoint, so the camera goes to the scoreboard at once.
+
+## D270 script names, the pod Thing, the avatar (2026-10-13)
+- RScript plan stage 6 (`docs/rscript-plan.md`), PR 1. The Pod is two levels (the shell `pod.bin` and
+  the planets view `pod_planets.bin`); the runtime plays each alone. The shell's world script stopped
+  on a fault in its create call: two unbound natives answered null. They are bound now, with the others
+  its update calls, and the level reader keeps the name scripts find a Thing by.
+- FOUND in the 01.33 EBOOT through the Ghidra bridge (addresses: handler -> core):
+  - `Thing.FindThing__Q7StringA` (0x61b67c -> 0x753880 -> 0xd3360): a walk over a list of the PWorld
+    of the script's world; an entry has a Thing and a byte string, compared with the argument by the C
+    library's string compare (whole string, case sensitive); first equal entry wins; null with none.
+  - `Thing.GetPodThing__b` (0x6011d8 -> 0x7553b8 -> 0xd32dc): a walk over a list of the PWorld of the
+    level the game is in; the first entry whose resource GUID is 0x2f6c gives its Thing; one with
+    0x23959 gives its Thing for true and ends the search with null for false.
+  - `Game.GetAvatarFromPlayerID__i` (0x600ed0 -> 0x5e79b8 -> 0x18ec14): the core of
+    `GetYellowheadFromPlayerNumber`.
+  - `Thing.SetRenderMeshMesh__Q5ThingQ8Resource` (0x642834 -> 0x755580): nothing for a null Thing or
+    no PRenderMesh; the mesh becomes the resource when its type is a mesh, else none.
+    `Resource.LoadMeshByFilename__g` (0x617df4 -> 0x50aa08) hands out the handle.
+  - `FileList.AsGUID__i` (0x6016a8) and `AsInt__g` (0x616c44): the value unchanged.
+    `PodComputer.GetPlanetsBackgroundGUID__` (0x3fcbb4): 0x1d054 without the planets level.
+    `Game.IsKioskBuild__` (0x3aa5c): false. `Game.IsStartMenuOpen__` (0x3ef1a4) and
+    `Pod.IsTakingPhoto__Q5Thing` (0x502f40): UI and Popit state, here false.
+  - Recorded only: `PodComputer.SetFadePodDecorations__f` (0x403ca4) and `RequestHostUsePod__b`
+    (0x3fa9cc: stores the request and messages the host; does not set "in use").
+- Reader (`lbp-level`): `PartData::script_name` is `ScriptName { stored, name }` (was a pair of
+  lengths): the bytes up to the first NUL. The bytes read are the same.
+- Runtime (`lbp-runtime`): new `pod.rs` (`find_thing`, `pod_thing`, `script_names`,
+  `planets_background`, `PodState`, `HostUsePodRequest`); `ThingState::script_name`; `mesh_guid`
+  follows `SetRenderMeshMesh`; `DisplayChange::mesh`, `ThingDisplay::mesh`,
+  `DisplaySummary::mesh_swapped`, a fourth `marks` counter. Natives 225 -> 238 (`STATE_QUERIES`
+  24 -> 26, `RECORDED_ONLY` 21 -> 23). `level_scripts`: a `pod` block.
+- MEASURED (378 levels, 13,547 scripted Things, 60 ticks; plain / `--visit-triggers` / with
+  `--pulse-switches`; `local-analysis/d270-play-all-*.json`):
+  - Things stopped by a fault 4 -> 3 in all three; fault kinds 2 -> 1; levels with a fault 2 -> 1.
+    Left: 3 x `Thing.GetCOM__` in `TriggerAirStone.OnCreate__` (one level; no physics body).
+  - Unbound natives called 48 -> 44 / 81 -> 78 / 81 -> 78; unbound calls 62,000 -> 61,483 /
+    865,777 -> 865,266 / 872,549 -> 872,042; native calls 573,134 / 5,365,247 / 5,424,893.
+  - Gone from the unbound list (calls / levels): `FileList.AsInt__g` 289 / 28,
+    `Resource.FindGuidByPath__Q7StringA` 285 / 27 (not bound: the speech bubble looks its dialogue
+    file up by path only while `AsInt` of the stored GUID is 0), `GetAvatarFromPlayerID` 2 / 1,
+    `FindThing` 1 / 1, `GetPodThing` 1 / 1. New: `PodComputer.SetPodTransitionTexture__g` 61 / 64 /
+    66 in 1 level, `Native.GetPlayerColour__Q5Thing` 0 / 3 / 5 in 1 level (the Pod's update runs).
+  - Script names: 173 Things in 66 levels (141 not empty; one name on two Things in 18 levels).
+    `FindThing` 1 call, 1 found. `GetPodThing` 61 / 64 / 66 calls, all found; 1 level has a pod Thing.
+  - Display: colour changes marked 214 -> 215, shape colours unlike the file 102 -> 103 Things (the
+    pod's shape, opaque black without an avatar); mesh changes 0. Messages, global settings, camera,
+    trigger events and switch reactions equal to D269.
+  - pod.bin alone, 60 and 600 ticks: create 0 done / 1 yielded / 0 faults (was 1 fault); the script is
+    resumed on 60 of 60 and 600 of 600 ticks; the checkpoint's `Active` is true; `GetPodThing` is Thing
+    2 on every call; mesh set to the pod mesh each tick, 0 changes; fade 0.0.
+  - pod_planets.bin alone, 600 ticks: unchanged. The intro thread is still running at the end: 451
+    ticks of zoom, then it waits on the video handle (4 unbound natives, 152 calls).
+  - Toolkit parity after the reader change: 236 / 236 levels, 4,180 / 4,180 scene Things.
+- INFERRED: the list `FindThing` walks is the PScriptName parts and the list `GetPodThing` walks is the
+  PRenderMesh parts, in Thing order (pod.bin has one candidate each); a null string finds nothing; a
+  null resource clears a mesh; `IsStartMenuOpen` and `IsTakingPhoto` false.
+- Not bound: `PodComputer.SetPodTransitionTexture__g` (the core asks for a resource by the GUID; the
+  rest was not read), `Game.CurrentLevelIsOurPod__` (what sets its byte was not read; never called in
+  the runs), `Native.GetPlayerColour__Q5Thing`, `Native.GetIsInPadZone__Q5Thing`,
+  `Input.IsJustClickedByID__iiQ6String` (cores not read to the end).
+- Tests: `lbp-level` `script_name_keeps_the_name`; `lbp-script-vm`
+  `d270_pod_natives_check_their_arguments_and_ask_the_world`; `lbp-runtime` three world tests on
+  made-up levels and names (58 unit, 43 world). fmt, the CI clippy line, the CI test set and the
+  Python tests pass; `cargo check` of both viewers and clippy on the Bevy viewer pass; its tests pass
+  but the one that fails on main (`sackboy_play::tests::input_script_steps`).
+- Not tested: the viewer was not started (no viewer change); nothing against the game in RPCS3; the
+  mesh swap on the real Pod (it needs the pod computer in use).
+**+0 newly viewable / +0 newly Complete (reader and runtime feature).**
+Next: stage 6 PR 2 (video, voice-over, progression flags: the intro ends), PR 3 (the viewer's Pod
+camera). `docs/level-scripts.md` part 21.

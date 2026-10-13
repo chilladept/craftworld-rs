@@ -2684,9 +2684,9 @@ fn d263_recorded_calls_keep_their_arguments_for_a_later_stage() {
             "{name}"
         );
     }
-    // With the 11 of stage 4 that are still recorded only, these are all the
-    // recorded-only and messaging natives.
-    assert_eq!(calls.len() + 11, RECORDED_ONLY.len() + MESSAGING.len());
+    // With the 11 of stage 4 that are still recorded only and the 2 of D270 (the Pod),
+    // these are all the recorded-only and messaging natives.
+    assert_eq!(calls.len() + 11 + 2, RECORDED_ONLY.len() + MESSAGING.len());
     // Every call is counted once by name.
     assert_eq!(w.engine_calls.len(), calls.len());
     assert!(w.engine_calls.values().all(|n| *n == 1));
@@ -3541,6 +3541,7 @@ fn d268_hidden_coloured_and_moved_things_are_listed_for_a_display() {
         visibility: true,
         colour: true,
         transform: true,
+        mesh: false,
     };
     assert_eq!(w.take_display_dirty(), [(4, all)]);
 
@@ -3563,7 +3564,8 @@ fn d268_hidden_coloured_and_moved_things_are_listed_for_a_display() {
     };
     assert_eq!(s, want);
     assert!(s.moved >= 2 && s.moved_far >= 2 && s.moved_far <= s.moved);
-    assert!(w.display.marks.iter().all(|n| *n > 0));
+    assert!(w.display.marks[..3].iter().all(|n| *n > 0));
+    assert_eq!(w.display.marks[3], 0);
     assert!(w.thing_display(99).is_none() && w.display_at_load(99).is_none());
 }
 
@@ -3889,4 +3891,347 @@ fn d269_a_script_reads_its_screen_position_each_tick() {
         assert_eq!(host.world.camera.override_camera.blend, want);
     }
     assert_eq!(host.world.camera.override_camera.ticks_in, 5);
+}
+
+/// D270. World Thing 0 and seven Things under it, with made-up names and meshes:
+/// 1 scripted; 2 a mesh, named "gate"; 3 `first` as its mesh, an empty name; 4 `second`
+/// as its mesh, named "Gate"; 5 no mesh, named "gate" again; 6 a name stored with
+/// nothing in it; 7 nothing.
+fn named_level(first: u32, second: u32) -> Vec<ThingRecord> {
+    use lbp_level::parts::ScriptName;
+    let mut t: Vec<ThingRecord> = (0..8)
+        .map(|index| ThingRecord {
+            index,
+            parent: (index > 0).then_some(0),
+            ..Default::default()
+        })
+        .collect();
+    t[0].data.world = Some(WorldPart::default());
+    for (n, guid) in [(2, 0x10), (3, first), (4, second)] {
+        t[n].data.render_mesh = render_mesh(guid);
+        t[n].parts.push("RENDER_MESH");
+    }
+    for (n, name) in [(2, "gate"), (3, ""), (4, "Gate"), (5, "gate"), (6, "")] {
+        t[n].data.script_name = Some(ScriptName {
+            stored: name.len(),
+            name: name.as_bytes().to_vec(),
+        });
+        t[n].parts.push("SCRIPT_NAME");
+    }
+    t
+}
+
+/// D270: `Thing.FindThing` compares the whole name, byte for byte, and the first Thing
+/// in Thing order wins.
+#[test]
+fn d270_things_are_found_by_their_script_name() {
+    let mut w = LevelWorld::from_things(&named_level(0x11, 0x12));
+    assert_eq!(w.things[2].script_name.as_deref(), Some(&b"gate"[..]));
+    assert_eq!(w.things[1].script_name, None);
+    assert_eq!(w.script_names(), (5, 3));
+    let find = |w: &mut LevelWorld, name: Value| {
+        native(w, "Thing", "FindThing__Q7StringA", &[name]).unwrap()
+    };
+    let text = |s: &str| Value::Str(s.into());
+    // Two Things have the name: the first in Thing order.
+    assert_eq!(find(&mut w, text("gate")), Value::Thing(Some(2)));
+    // Another case is another name; a part of a name, or a longer one, is no match.
+    assert_eq!(find(&mut w, text("Gate")), Value::Thing(Some(4)));
+    assert_eq!(find(&mut w, text("GATE")), Value::Thing(None));
+    assert_eq!(find(&mut w, text("gat")), Value::Thing(None));
+    assert_eq!(find(&mut w, text("gate ")), Value::Thing(None));
+    // The empty string is the name of the first Thing with an empty name.
+    assert_eq!(find(&mut w, text("")), Value::Thing(Some(3)));
+    // A null string finds nothing.
+    assert_eq!(find(&mut w, Value::Object(None)), Value::Thing(None));
+    assert_eq!((w.pod.find_thing_calls, w.pod.find_thing_hits), (6, 3));
+    // A level without a name.
+    let mut bare = LevelWorld::from_things(&level());
+    assert_eq!(bare.script_names(), (0, 0));
+    assert_eq!(find(&mut bare, text("gate")), Value::Thing(None));
+    assert_eq!(find(&mut bare, text("")), Value::Thing(None));
+}
+
+/// D270: the pod Thing is the first Thing with one of the two pod meshes, by the mesh
+/// its PRenderMesh shows now; the player's avatar is his Sackboy.
+#[test]
+fn d270_the_pod_thing_follows_the_mesh_and_the_avatar_is_the_sackboy() {
+    use lbp_runtime::{DisplayChange, DisplaySummary};
+    use lbp_script_vm::natives::{DEFAULT_PLANETS_BACKGROUND, POD_MESH, POD_PLATFORM_MESH};
+    let pod = |w: &mut LevelWorld, platform_too: bool| {
+        native(w, "Thing", "GetPodThing__b", &[Value::Bool(platform_too)]).unwrap()
+    };
+    let load = |w: &mut LevelWorld, guid: u32| {
+        let g = [Value::Int(guid as i32)];
+        native(w, "Resource", "LoadMeshByFilename__g", &g).unwrap()
+    };
+    let set = |w: &mut LevelWorld, thing: Option<u32>, mesh: Value| {
+        let args = [Value::Thing(thing), mesh];
+        native(w, "Thing", "SetRenderMeshMesh__Q5ThingQ8Resource", &args)
+    };
+    // The pod mesh alone: found with and without the platform.
+    let mut w = LevelWorld::from_things(&named_level(0x11, POD_MESH));
+    assert_eq!(pod(&mut w, true), Value::Thing(Some(4)));
+    assert_eq!(pod(&mut w, false), Value::Thing(Some(4)));
+    // Neither mesh: null.
+    let mut none = LevelWorld::from_things(&named_level(0x11, 0x12));
+    assert_eq!(pod(&mut none, true), Value::Thing(None));
+    assert_eq!(pod(&mut none, false), Value::Thing(None));
+    assert_eq!((none.pod.pod_thing_calls, none.pod.pod_thing_hits), (2, 0));
+    // The platform before the pod: the platform's Thing for true; for false the search
+    // ends at the platform with null, though a pod mesh comes after it.
+    let mut w2 = LevelWorld::from_things(&named_level(POD_PLATFORM_MESH, POD_MESH));
+    assert_eq!(pod(&mut w2, true), Value::Thing(Some(3)));
+    assert_eq!(pod(&mut w2, false), Value::Thing(None));
+    assert_eq!((w2.pod.pod_thing_calls, w2.pod.pod_thing_hits), (2, 1));
+
+    // A script gives Thing 3 another mesh: the answer follows, and a display is told.
+    assert!(w2.take_display_dirty().is_empty());
+    let other = load(&mut w2, 0x10);
+    assert_eq!(other, Value::Ref(0x10));
+    assert_eq!(set(&mut w2, Some(3), other.clone()), Ok(Value::Void));
+    assert_eq!(w2.things[3].mesh_guid, Some(0x10));
+    assert_eq!(pod(&mut w2, false), Value::Thing(Some(4)));
+    assert_eq!(pod(&mut w2, true), Value::Thing(Some(4)));
+    assert_eq!(w2.take_display_dirty(), [(3, DisplayChange::MESH)]);
+    assert_eq!(w2.thing_display(3).unwrap().mesh, Some(0x10));
+    assert_eq!(w2.display_at_load(3).unwrap().mesh, Some(POD_PLATFORM_MESH));
+    // The same mesh again is no change.
+    assert_eq!(set(&mut w2, Some(3), other), Ok(Value::Void));
+    assert!(w2.take_display_dirty().is_empty());
+    // The pod mesh put on an earlier Thing makes that Thing the pod.
+    let pod_mesh = load(&mut w2, POD_MESH);
+    assert_eq!(set(&mut w2, Some(2), pod_mesh), Ok(Value::Void));
+    assert_eq!(pod(&mut w2, false), Value::Thing(Some(2)));
+    // A resource that is not a mesh (a texture's handle), a zero handle and a null
+    // object clear the mesh; then Thing 2 is no pod.
+    let texture = native(
+        &mut w2,
+        "Resource",
+        "LoadTextureByFilename__g",
+        &[Value::Int(0x77)],
+    )
+    .unwrap();
+    for mesh in [texture, Value::Ref(0), Value::Object(None)] {
+        w2.things[2].mesh_guid = Some(POD_MESH);
+        assert_eq!(set(&mut w2, Some(2), mesh), Ok(Value::Void));
+        assert_eq!(w2.things[2].mesh_guid, None);
+    }
+    assert_eq!(pod(&mut w2, false), Value::Thing(Some(4)));
+    // Nothing for a null Thing or a Thing without a PRenderMesh; a Thing the level
+    // does not have is an error.
+    let platform = load(&mut w2, POD_PLATFORM_MESH);
+    w2.take_display_dirty();
+    let sets = w2.pod.mesh_sets;
+    assert_eq!(set(&mut w2, None, platform.clone()), Ok(Value::Void));
+    assert_eq!(set(&mut w2, Some(5), platform.clone()), Ok(Value::Void));
+    assert_eq!(w2.things[5].mesh_guid, None);
+    assert!(set(&mut w2, Some(99), platform).is_err());
+    assert!(w2.take_display_dirty().is_empty());
+    assert_eq!(w2.pod.mesh_sets, sets);
+    // The summary counts the meshes unlike the file's.
+    let s = w2.display_summary();
+    let want = DisplaySummary {
+        changed: 2,
+        mesh_swapped: 2,
+        ..Default::default()
+    };
+    assert_eq!(s, want);
+    assert_eq!(w2.display.marks[3], 5);
+
+    // The avatar of a player: his Sackboy, once he has one.
+    let avatar = |w: &mut LevelWorld, n: i32| game(w, "GetAvatarFromPlayerID__i", &[Value::Int(n)]);
+    assert_eq!(avatar(&mut w, 0), Value::Thing(None));
+    let sackboy = w.add_player([0.; 3], (-10., 10.));
+    assert_eq!(avatar(&mut w, 0), Value::Thing(Some(sackboy)));
+    assert_eq!(avatar(&mut w, 1), Value::Thing(None));
+    assert_eq!(avatar(&mut w, -1), Value::Thing(None));
+
+    // The pod computer's values that are only kept.
+    let background = native(&mut w, "PodComputer", "GetPlanetsBackgroundGUID__", &[]);
+    assert_eq!(
+        background,
+        Ok(Value::Int(DEFAULT_PLANETS_BACKGROUND as i32))
+    );
+    w.pod.planets_background = Some(0x20493);
+    let background = native(&mut w, "PodComputer", "GetPlanetsBackgroundGUID__", &[]);
+    assert_eq!(background, Ok(Value::Int(0x20493)));
+    let pc = |w: &mut LevelWorld, name: &str, v: Value| native(w, "PodComputer", name, &[v]);
+    assert_eq!(w.pod.fade, None);
+    for f in [0.25, 0.75] {
+        let fade = pc(&mut w, "SetFadePodDecorations__f", Value::Float(f));
+        assert_eq!(fade, Ok(Value::Void));
+    }
+    assert_eq!((w.pod.fade, w.pod.fade_calls), (Some(0.75), 2));
+    w.pworld.frame = 9;
+    for b in [true, false] {
+        let request = pc(&mut w, "RequestHostUsePod__b", Value::Bool(b));
+        assert_eq!(request, Ok(Value::Void));
+    }
+    let asked: Vec<_> = w
+        .pod
+        .host_use_pod_requests
+        .iter()
+        .map(|r| (r.in_use, r.frame))
+        .collect();
+    assert_eq!(asked, [(true, 9), (false, 9)]);
+    // A request changes nothing else: nobody is at the pod computer.
+    let in_use = native(&mut w, "PodComputer", "GetPodComputerInUse__", &[]);
+    assert_eq!(in_use, Ok(Value::Bool(false)));
+    assert_eq!(w.engine_calls["SetFadePodDecorations"], 2);
+    assert_eq!(w.engine_calls["RequestHostUsePod"], 2);
+    // The two state queries.
+    assert_eq!(game(&mut w, "IsStartMenuOpen__", &[]), Value::Bool(false));
+    let photo = [Value::Thing(Some(sackboy))];
+    let taking = native(&mut w, "Pod", "IsTakingPhoto__Q5Thing", &photo);
+    assert_eq!(taking, Ok(Value::Bool(false)));
+}
+
+/// `Shell`, a made-up script shaped like the Pod's change-over. `Update__`: its member
+/// `t` moves toward its member `target` by 0.05 a tick; the pod Thing gets the pod mesh
+/// while `t` is below 1 and the platform mesh from then on; `t` goes to the fade.
+fn shell() -> Script {
+    use lbp_script_vm::natives::{POD_MESH, POD_PLATFORM_MESH};
+    let mut s = lamp();
+    s.class_name = "Shell".into();
+    s.super_class = None;
+    s.strings_a = [
+        "Shell",
+        "Math",
+        "Thing",
+        "FileList",
+        "Resource",
+        "PodComputer",
+        "t",
+        "target",
+        lbp_runtime::UPDATE,
+        "Delt__fff",
+        "GetPodThing__b",
+        "AsGUID__i",
+        "LoadMeshByFilename__g",
+        "SetRenderMeshMesh__Q5ThingQ8Resource",
+        "SetFadePodDecorations__f",
+    ]
+    .map(String::from)
+    .to_vec();
+    s.type_refs = (0..6).map(|name| ty(10, name)).collect();
+    let member = |type_ref, name| MemberRef { type_ref, name };
+    s.field_refs = vec![member(0, 6), member(0, 7)];
+    s.function_refs = vec![
+        member(1, 9),
+        member(2, 10),
+        member(3, 11),
+        member(4, 12),
+        member(2, 13),
+        member(5, 14),
+    ];
+    let constant =
+        |op: u8, r: u16, bits: u32| u64::from(op) | u64::from(r) << 16 | u64::from(bits) << 32;
+    let float = |r: u16, v: f32| constant(0x04, r, v.to_bits());
+    s.bytecode = vec![
+        i(0x95, 4, 4, 0, 0),                   // r4 = thing(r0).t
+        i(0x95, 4, 8, 0, 1),                   // r8 = thing(r0).target
+        float(12, 0.05),                       // r12 = 0.05
+        i(0xa3, 4, 4, 0, 0),                   // ARG @0 = r4
+        i(0xa3, 4, 8, 4, 0),                   // ARG @4 = r8
+        i(0xa3, 4, 12, 8, 0),                  // ARG @8 = r12
+        i(0xa4, 4, 4, 0, 0),                   // r4 = CALL Math.Delt__fff
+        i(0x97, 4, 4, 0, 0),                   // thing(r0).t = r4
+        constant(0x01, 16, 0x8000_0001),       // r16 = true
+        i(0xa3, 1, 16, 0, 0),                  // ARG @0 = r16
+        i(0xa4, 10, 20, 1, 0),                 // r20 = CALL Thing.GetPodThing__b
+        float(24, 1.),                         // r24 = 1.0
+        i(0x43, 4, 28, 4, 24),                 // r28 = r4 < r24 (LTf)
+        constant(0x03, 32, POD_PLATFORM_MESH), // r32 = the platform mesh
+        i(0xa7, 0, 28, 2, 0),                  // BEZ r28 -> +2
+        constant(0x03, 32, POD_MESH),          // r32 = the pod mesh
+        i(0xa3, 3, 32, 0, 0),                  // ARG @0 = r32
+        i(0xa4, 3, 36, 2, 0),                  // r36 = CALL FileList.AsGUID__i
+        i(0xa3, 3, 36, 0, 0),                  // ARG @0 = r36
+        i(0xa4, 9, 40, 3, 0),                  // r40 = CALL Resource.LoadMeshByFilename__g
+        i(0xa3, 10, 20, 0, 0),                 // ARG @0 = r20
+        i(0xa3, 9, 40, 4, 0),                  // ARG @4 = r40
+        i(0xa4, 0, 0xffff, 4, 0),              // CALL Thing.SetRenderMeshMesh
+        i(0xa3, 4, 4, 0, 0),                   // ARG @0 = r4
+        i(0xa4, 0, 0xffff, 5, 0),              // CALL PodComputer.SetFadePodDecorations__f
+        i(0xa5, 0, 0, 0, 0),                   // RETURN
+    ];
+    let mut f = function(0, 8, 0, 26);
+    f.stack_size = 64;
+    s.function_defs = vec![f];
+    s
+}
+
+/// D270: a script moves its change-over value by 0.05 a tick and swaps the pod Thing's
+/// mesh on the tick the value reaches 1, as the Pod's world script does.
+#[test]
+fn d270_a_script_swaps_the_pod_mesh_when_its_transition_ends() {
+    use lbp_runtime::DisplayChange;
+    use lbp_script_vm::natives::{POD_MESH, POD_PLATFORM_MESH};
+    let mut things = named_level(0x11, POD_MESH);
+    things[1].parts.push("SCRIPT");
+    things[1].data.script = Some(ScriptPart {
+        script: Some(desc(GUID)),
+        fields: vec![
+            field("t", ScriptValue::Float(0.)),
+            field("target", ScriptValue::Float(1.)),
+        ],
+    });
+    let mut vm = Vm::default();
+    vm.load(shell(), Some(GUID));
+    let mut host = Bindings::new(LevelWorld::from_things(&things));
+    let mut level = LevelScripts::new(&vm, &host.world);
+    let t = |host: &mut Bindings<LevelWorld>| {
+        let me = Value::Thing(Some(1));
+        match host.world.get_member(MemberKind::Thing, &me, "Shell", "t") {
+            Ok(Value::Float(t)) => t,
+            other => panic!("{other:?}"),
+        }
+    };
+    // 19 ticks: the value climbs, the pod keeps its mesh, nothing is marked.
+    for tick in 1..=19 {
+        let r = level.tick_level(&mut vm, &mut host, 1000);
+        assert!(r.faults.is_empty(), "{:?}", r.faults);
+        assert!((t(&mut host) - 0.05 * tick as f32).abs() < 1e-5);
+        assert_eq!(host.world.things[4].mesh_guid, Some(POD_MESH));
+    }
+    assert!(host.unbound.is_empty(), "{:?}", host.unbound);
+    assert!(host.world.take_display_dirty().is_empty());
+    assert_eq!(
+        (host.world.pod.mesh_sets, host.world.pod.mesh_changes),
+        (19, 0)
+    );
+    // Tick 20: the value lands on 1 and the mesh is the platform's.
+    level.tick_level(&mut vm, &mut host, 1000);
+    assert_eq!(t(&mut host), 1.);
+    assert_eq!(host.world.things[4].mesh_guid, Some(POD_PLATFORM_MESH));
+    assert_eq!(host.world.take_display_dirty(), [(4, DisplayChange::MESH)]);
+    assert_eq!(host.world.pod.fade, Some(1.));
+    // The script asks with true, so it still finds its pod; a caller that asks with
+    // false does not.
+    assert_eq!(host.world.pod_thing(true), Some(4));
+    assert_eq!(host.world.pod_thing(false), None);
+    for _ in 0..5 {
+        level.tick_level(&mut vm, &mut host, 1000);
+    }
+    assert!(host.world.take_display_dirty().is_empty());
+    assert_eq!(
+        (
+            host.world.pod.pod_thing_calls,
+            host.world.pod.pod_thing_hits
+        ),
+        (25, 25)
+    );
+    // Back toward 0: the pod mesh returns on the first tick below 1.
+    let me = Value::Thing(Some(1));
+    host.world
+        .set_member(MemberKind::Thing, &me, "Shell", "target", Value::Float(0.))
+        .unwrap();
+    level.tick_level(&mut vm, &mut host, 1000);
+    assert!((t(&mut host) - 0.95).abs() < 1e-5);
+    assert_eq!(host.world.things[4].mesh_guid, Some(POD_MESH));
+    assert_eq!(host.world.take_display_dirty(), [(4, DisplayChange::MESH)]);
+    // The mesh is the file's again: nothing is unlike the level file.
+    assert!(host.world.display_changed().is_empty());
+    assert_eq!(host.world.pod.mesh_changes, 2);
 }

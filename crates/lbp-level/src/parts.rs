@@ -262,6 +262,22 @@ pub fn supported_parts() -> &'static [&'static str] {
     SUPPORTED
 }
 
+/// A PScriptName part. The level file stores an s32 byte count and that many raw bytes.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct ScriptName {
+    /// Bytes the level file stores for the name.
+    pub stored: usize,
+    /// The name: the stored bytes up to the first NUL (all of them when there is none),
+    /// kept as bytes because the game compares names byte for byte. Reports write it as
+    /// text.
+    #[serde(serialize_with = "bytes_as_text")]
+    pub name: Vec<u8>,
+}
+
+fn bytes_as_text<S: serde::Serializer>(bytes: &[u8], s: S) -> std::result::Result<S::Ok, S::Error> {
+    s.serialize_str(&String::from_utf8_lossy(bytes))
+}
+
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct PartData {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -290,9 +306,9 @@ pub struct PartData {
     pub world: Option<World>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub joint: Option<Joint>,
-    /// PScriptName (raw byte count, name length up to the first NUL).
+    /// PScriptName: the name a script finds the Thing by.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub script_name: Option<(usize, usize)>,
+    pub script_name: Option<ScriptName>,
     /// PLevelSettings: own LevelSettings fields (D121; presets are read through) and the
     /// backdrop mesh tail (D119).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -952,7 +968,10 @@ fn part_body(
             let n = usize::try_from(n).or_else(|_| r.invalid("negative script name length"))?;
             let b = r.bytes(n)?;
             let name_len = b.iter().position(|&c| c == 0).unwrap_or(n);
-            things.list[me].data.script_name = Some((n, name_len));
+            things.list[me].data.script_name = Some(ScriptName {
+                stored: n,
+                name: b[..name_len].to_vec(),
+            });
         }
         "SPRITE_LIGHT" => {
             r.v4()?;

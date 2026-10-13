@@ -49,6 +49,10 @@
 //! the levels with such a Thing, and the changes marked for a display on the way.
 //! `play_all.camera` counts the override camera's calls, the levels and ticks on which it
 //! was in, and the camera matrix and screen position queries.
+//! `play_all.pod` counts the Things with a PScriptName and their levels, the
+//! `Thing.FindThing` and `Thing.GetPodThing` calls and how many found a Thing, the levels
+//! with a pod Thing, and the mesh changes and fade values the Pod's script set; one
+//! level's `pod` also names its named Things.
 //! Names and counts only; no bytecode. Output: a NEW JSON file under
 //! ignored `local-analysis/`. Counting unit: Thing with a PScript part (instances) or
 //! distinct script class (function names).
@@ -891,10 +895,10 @@ impl SettingsSums {
 #[derive(Default, Clone)]
 struct DisplaySums {
     things: lbp_runtime::DisplaySummary,
-    levels: [usize; 12],
-    /// Changes of visibility, colour and world matrix marked for a display (a Thing
-    /// changed on two ticks counts twice).
-    marks: [u64; 3],
+    levels: [usize; 13],
+    /// Changes of visibility, colour, world matrix and mesh marked for a display (a
+    /// Thing changed on two ticks counts twice).
+    marks: [u64; 4],
     /// Things with a PRenderMesh by the visibility byte the level file stores; those the
     /// file stores as not visible in play mode, and their levels; and the Things hidden
     /// after the last tick.
@@ -999,6 +1003,7 @@ impl DisplaySums {
                 "visibility": self.marks[0],
                 "colour": self.marks[1],
                 "transform": self.marks[2],
+                "mesh": self.marks[3],
             },
         })
     }
@@ -1090,6 +1095,96 @@ impl CameraSums {
     }
 }
 
+/// Script names and the Pod natives over a run (part 21). For one level the level counts
+/// are 0 or 1.
+#[derive(Default, Clone)]
+struct PodSums {
+    /// Things with a PScriptName, those with a name that is not empty, and the levels
+    /// with such a Thing.
+    named: usize,
+    named_not_empty: usize,
+    levels_named: usize,
+    /// Levels where two Things have the same name that is not empty.
+    levels_with_a_name_twice: usize,
+    find_calls: u64,
+    find_hits: u64,
+    levels_find: usize,
+    pod_thing_calls: u64,
+    pod_thing_hits: u64,
+    /// Levels with a pod Thing after the last tick.
+    levels_with_a_pod_thing: usize,
+    mesh_sets: u64,
+    mesh_changes: u64,
+    fade_calls: u64,
+    host_use_pod_requests: usize,
+}
+
+impl PodSums {
+    fn of(world: &LevelWorld) -> Self {
+        let (named, named_not_empty) = world.script_names();
+        let mut seen = BTreeSet::new();
+        let twice = world
+            .things
+            .iter()
+            .filter_map(|t| t.script_name.as_ref().filter(|n| !n.is_empty()))
+            .any(|n| !seen.insert(n));
+        let p = &world.pod;
+        PodSums {
+            named,
+            named_not_empty,
+            levels_named: usize::from(named > 0),
+            levels_with_a_name_twice: usize::from(twice),
+            find_calls: p.find_thing_calls,
+            find_hits: p.find_thing_hits,
+            levels_find: usize::from(p.find_thing_calls > 0),
+            pod_thing_calls: p.pod_thing_calls,
+            pod_thing_hits: p.pod_thing_hits,
+            levels_with_a_pod_thing: usize::from(world.pod_thing(true).is_some()),
+            mesh_sets: p.mesh_sets,
+            mesh_changes: p.mesh_changes,
+            fade_calls: p.fade_calls,
+            host_use_pod_requests: p.host_use_pod_requests.len(),
+        }
+    }
+
+    fn add(&mut self, o: &PodSums) {
+        self.named += o.named;
+        self.named_not_empty += o.named_not_empty;
+        self.levels_named += o.levels_named;
+        self.levels_with_a_name_twice += o.levels_with_a_name_twice;
+        self.find_calls += o.find_calls;
+        self.find_hits += o.find_hits;
+        self.levels_find += o.levels_find;
+        self.pod_thing_calls += o.pod_thing_calls;
+        self.pod_thing_hits += o.pod_thing_hits;
+        self.levels_with_a_pod_thing += o.levels_with_a_pod_thing;
+        self.mesh_sets += o.mesh_sets;
+        self.mesh_changes += o.mesh_changes;
+        self.fade_calls += o.fade_calls;
+        self.host_use_pod_requests += o.host_use_pod_requests;
+    }
+
+    fn json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "unit": "Thing with a PScriptName part; native call; level. A hit is a call that returned a Thing",
+            "things_with_a_script_name": self.named,
+            "things_with_a_script_name_not_empty": self.named_not_empty,
+            "levels_with_a_script_name": self.levels_named,
+            "levels_with_a_name_on_two_things": self.levels_with_a_name_twice,
+            "find_thing_calls": self.find_calls,
+            "find_thing_hits": self.find_hits,
+            "levels_with_a_find_thing_call": self.levels_find,
+            "get_pod_thing_calls": self.pod_thing_calls,
+            "get_pod_thing_hits": self.pod_thing_hits,
+            "levels_with_a_pod_thing": self.levels_with_a_pod_thing,
+            "set_render_mesh_mesh_calls_on_a_render_mesh": self.mesh_sets,
+            "render_mesh_mesh_changes": self.mesh_changes,
+            "set_fade_pod_decorations_calls": self.fade_calls,
+            "host_use_pod_requests": self.host_use_pod_requests,
+        })
+    }
+}
+
 /// One level played: the report and what `--all` adds up.
 struct Played {
     json: serde_json::Value,
@@ -1114,6 +1209,7 @@ struct Played {
     settings: SettingsSums,
     display: DisplaySums,
     camera: CameraSums,
+    pod: PodSums,
     /// Global-settings slots that hold a Thing UID at the end.
     global_settings_held: usize,
     /// Switch outputs whose signal at the end differs from the stored one, by switch type.
@@ -1433,6 +1529,34 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
         "position": o.position, "direction": o.direction,
         "target": o.target, "rate": o.rate, "blend": o.blend,
     });
+    let pod = PodSums::of(&host.world);
+    json["pod"] = pod.json();
+    let pod_thing = host.world.pod_thing(true);
+    json["pod"]["at_end"] = serde_json::json!({
+        "pod_thing": pod_thing,
+        "pod_thing_mesh": pod_thing.and_then(|t| host.world.things[t as usize].mesh_guid),
+        "pod_thing_shape_colour": pod_thing
+            .and_then(|t| host.world.things[t as usize].shape_colour),
+        "fade": host.world.pod.fade,
+        "planets_background": host.world.planets_background(),
+        "host_use_pod_requests": host.world.pod.host_use_pod_requests.iter().map(|r| {
+            serde_json::json!({"in_use": r.in_use, "frame": r.frame})
+        }).collect::<Vec<_>>(),
+        "named_things": host.world.things.iter().enumerate().filter_map(|(i, t)| {
+            let name = String::from_utf8_lossy(t.script_name.as_ref()?).into_owned();
+            // The members scripts read or wrote on the Thing's parts.
+            let members: BTreeMap<_, _> = host
+                .world
+                .part_handles
+                .iter()
+                .filter(|p| p.thing as usize == i)
+                .map(|p| (p.part, format!("{:?}", p.members)))
+                .collect();
+            Some(serde_json::json!({
+                "thing": i, "name": name, "parts": t.parts, "part_members": members,
+            }))
+        }).collect::<Vec<_>>(),
+    });
     json["lighting_in_force_at_load"] = serde_json::json!(host.world.settings_at_load.lighting);
     json["lighting_stored_current"] = serde_json::json!(host.world.pworld.lighting_stored);
     Played {
@@ -1459,6 +1583,7 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
         settings,
         display,
         camera,
+        pod,
         global_settings_held: host
             .world
             .pworld
@@ -1503,6 +1628,7 @@ struct PlayTotals {
     settings: SettingsSums,
     display: DisplaySums,
     camera: CameraSums,
+    pod: PodSums,
     global_settings_held: usize,
     faults: BTreeMap<String, (u64, usize)>,
     thread_faults: BTreeMap<String, (u64, usize)>,
@@ -1559,6 +1685,7 @@ impl PlayTotals {
         self.settings.add(&p.settings);
         self.display.add(&p.display);
         self.camera.add(&p.camera);
+        self.pod.add(&p.pod);
         self.global_settings_held += p.global_settings_held;
         if let Some(f) = &p.first_tick {
             self.first_reactions.absorb(f.reactions.clone());
@@ -1674,6 +1801,7 @@ impl PlayTotals {
         doc["global_settings"] = self.settings.json();
         doc["display"] = self.display.json();
         doc["camera"] = self.camera.json();
+        doc["pod"] = self.pod.json();
         doc
     }
 }

@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D269
+# Current state (overwrite each milestone) — after D270
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -11,7 +11,41 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D269 the script camera and the screen (2026-10-13)
+## Latest: D270 script names, the pod Thing, the avatar (2026-10-13)
+- RScript plan stage 6 (the Pod), PR 1. The Pod is two levels, `gamedata/levels/pod/pod.bin` (the shell)
+  and `gamedata/lbp2/pod/levels/pod_planets.bin` (the planets view); the runtime plays each alone. The
+  shell's world script was the one Thing outside TriggerAirStone that stopped on a fault: two unbound
+  natives answered null and it read the PShape of the null Thing.
+- FOUND in the EBOOT: `Thing.FindThing__Q7StringA` (0xd3360) compares a PWorld list's byte strings with
+  the argument by the C string compare (whole string, case sensitive), first match wins, null with none.
+  `Thing.GetPodThing__b` (0xd32dc) gives the first entry of a PWorld list whose resource GUID is 0x2f6c;
+  one with 0x23959 only when the bool is true (with false the search ends there with null).
+  `Game.GetAvatarFromPlayerID__i` shares the core of `GetYellowheadFromPlayerNumber` (0x18ec14).
+  `Thing.SetRenderMeshMesh` (0x755580) sets a PRenderMesh's mesh from a resource whose type is a mesh.
+  `FileList.AsGUID__i` / `AsInt__g` are the identity; `Game.IsKioskBuild__` is the constant false.
+- Reader: `lbp-level` keeps the PScriptName's name (`PartData::script_name`: `ScriptName { stored, name }`,
+  bytes up to the first NUL); it kept the length. Same bytes read; Toolkit parity 236 / 236.
+- Runtime: `lbp-runtime/src/pod.rs` (`LevelWorld::find_thing`, `pod_thing`, `script_names`,
+  `planets_background`, `PodState`); `ThingState::script_name`; `mesh_guid` follows `SetRenderMeshMesh`;
+  a mesh change reaches the display list (`DisplayChange::mesh`, `ThingDisplay::mesh`). Natives
+  225 -> 238 (2 recorded only: the pod decorations' fade and the request to use the pod computer).
+  `level_scripts` has a `pod` block. The viewer is unchanged (it compiles and its tests are as on main).
+- MEASURED (378 levels, 60 ticks; plain / trigger visit / pulsed): Things stopped by a fault 4 -> 3 in all
+  three (fault kinds 2 -> 1, levels with a fault 2 -> 1); left: 3 x `Thing.GetCOM__` (TriggerAirStone, 1
+  level). Unbound natives called 48 -> 44 / 81 -> 78 / 81 -> 78; unbound calls 62,000 -> 61,483 /
+  865,777 -> 865,266 / 872,549 -> 872,042. 173 Things in 66 levels have a script name (141 not empty);
+  `FindThing` 1 call, 1 found; `GetPodThing` 61 / 64 / 66 calls, all found.
+- The Pod levels alone, 600 ticks: pod.bin has no fault, its script is resumed on all 600 ticks, the
+  checkpoint is set active, the pod keeps its mesh (transition 0). pod_planets is unchanged: the intro
+  thread runs its 451 ticks of zoom and then waits on the video handle (PR 2).
+- INFERRED: the two PWorld lists are the PScriptName and the PRenderMesh parts in Thing order; a null
+  string finds nothing; a null resource clears a mesh; no start menu and no photo.
+- Not bound (effect or answer not established): `PodComputer.SetPodTransitionTexture__g` (61 calls in
+  pod.bin), `Game.CurrentLevelIsOurPod__`, `Native.GetPlayerColour__Q5Thing`, `Native.GetIsInPadZone`,
+  `Input.IsJustClickedByID`. Next: PR 2 (video, voice-over, progression flags), PR 3 (the viewer's Pod
+  camera). `docs/level-scripts.md` part 21.
+
+## Before: D269 the script camera and the screen (2026-10-13)
 - RScript plan stage 5, PR 5 (the last of stage 5). FOUND in the EBOOT: the level's camera keeps one
   override: a position and a direction (`Cam.SetOverrideCamera__rr`, 0x3760e4), a blend target and a
   blend rate (`Cam.SetOverrideCameraActivation__bf`, 0x374cec). Each camera update (0x6eb650) the blend

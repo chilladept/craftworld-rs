@@ -1,6 +1,6 @@
 //! D268 (docs/level-scripts.md, part 19): what a display needs to follow the Things that
 //! scripts hide, colour or move. The world keeps a list of the Things whose render-mesh
-//! visibility, colours or world matrix changed since the list was last taken
+//! visibility, colours, world matrix or (D270) mesh changed since the list was last taken
 //! ([`LevelWorld::take_display_dirty`]), each Thing's values as they are now
 //! ([`LevelWorld::thing_display`]) and as they were when the level was read
 //! ([`LevelWorld::display_at_load`]).
@@ -58,33 +58,43 @@ pub struct DisplayChange {
     pub colour: bool,
     /// The world matrix.
     pub transform: bool,
+    /// The mesh the PRenderMesh shows (`Thing.SetRenderMeshMesh`).
+    pub mesh: bool,
 }
 
 impl DisplayChange {
+    pub const NONE: Self = Self {
+        visibility: false,
+        colour: false,
+        transform: false,
+        mesh: false,
+    };
     pub const VISIBILITY: Self = Self {
         visibility: true,
-        colour: false,
-        transform: false,
+        ..Self::NONE
     };
     pub const COLOUR: Self = Self {
-        visibility: false,
         colour: true,
-        transform: false,
+        ..Self::NONE
     };
     pub const TRANSFORM: Self = Self {
-        visibility: false,
-        colour: false,
         transform: true,
+        ..Self::NONE
+    };
+    pub const MESH: Self = Self {
+        mesh: true,
+        ..Self::NONE
     };
 
     pub fn any(&self) -> bool {
-        self.visibility || self.colour || self.transform
+        self.visibility || self.colour || self.transform || self.mesh
     }
 
     pub fn absorb(&mut self, other: Self) {
         self.visibility |= other.visibility;
         self.colour |= other.colour;
         self.transform |= other.transform;
+        self.mesh |= other.mesh;
     }
 }
 
@@ -103,6 +113,9 @@ pub struct ThingDisplay {
     pub shape_tint: Option<[f32; 4]>,
     /// The PPos world matrix.
     pub world: Option<[f32; 16]>,
+    /// GUID of the mesh the PRenderMesh shows: the level file's until a script sets
+    /// another; none without a PRenderMesh, or for a mesh without a GUID.
+    pub mesh: Option<u32>,
 }
 
 impl ThingDisplay {
@@ -130,6 +143,7 @@ impl ThingDisplay {
                 || colour(self.shape_colour) != colour(other.shape_colour)
                 || tint(self.shape_tint) != tint(other.shape_tint),
             transform: bits(self.world) != bits(other.world),
+            mesh: self.mesh != other.mesh,
         }
     }
 
@@ -170,9 +184,9 @@ pub struct DisplayState {
     /// The values each changed Thing had when the level was read, kept at its first
     /// change.
     at_load: BTreeMap<u32, ThingDisplay>,
-    /// Changes marked since the level was read, by kind: a Thing changed twice counts
-    /// twice.
-    pub marks: [u64; 3],
+    /// Changes marked since the level was read, by kind (visibility, colour, world
+    /// matrix, mesh): a Thing changed twice counts twice.
+    pub marks: [u64; 4],
 }
 
 /// Things whose display values are not the level file's, at one moment
@@ -198,6 +212,8 @@ pub struct DisplaySummary {
     pub moved_far: usize,
     pub moved_far_with_mesh: usize,
     pub moved_far_with_shape: usize,
+    /// Render meshes that show another mesh than the file's.
+    pub mesh_swapped: usize,
 }
 
 impl DisplaySummary {
@@ -214,10 +230,11 @@ impl DisplaySummary {
         self.moved_far += o.moved_far;
         self.moved_far_with_mesh += o.moved_far_with_mesh;
         self.moved_far_with_shape += o.moved_far_with_shape;
+        self.mesh_swapped += o.mesh_swapped;
     }
 
     /// The counts by name, in a fixed order (for reports).
-    pub fn rows(&self) -> [(&'static str, usize); 12] {
+    pub fn rows(&self) -> [(&'static str, usize); 13] {
         [
             ("changed", self.changed),
             ("mesh_hidden", self.mesh_hidden),
@@ -231,6 +248,7 @@ impl DisplaySummary {
             ("moved_far", self.moved_far),
             ("moved_far_with_mesh", self.moved_far_with_mesh),
             ("moved_far_with_shape", self.moved_far_with_shape),
+            ("mesh_swapped", self.mesh_swapped),
         ]
     }
 }
@@ -246,6 +264,7 @@ impl LevelWorld {
             shape_colour: t.shape_colour,
             shape_tint: t.shape_tint,
             world: t.world_matrix,
+            mesh: t.mesh_guid,
         })
     }
 
@@ -306,6 +325,7 @@ impl LevelWorld {
             s.shape_colour += usize::from(packed(now.shape_colour) != packed(was.shape_colour));
             s.shape_tint += usize::from(tint(now.shape_tint) != tint(was.shape_tint));
             s.moved += usize::from(change.transform);
+            s.mesh_swapped += usize::from(change.mesh);
             if now.moved_far(was) {
                 s.moved_far += 1;
                 s.moved_far_with_mesh += usize::from(now.mesh_visibility.is_some());
@@ -336,12 +356,13 @@ impl LevelWorld {
         }
         self.display.at_load.entry(thing).or_insert(before);
         self.display.dirty.entry(thing).or_default().absorb(change);
-        for (n, on) in
-            self.display
-                .marks
-                .iter_mut()
-                .zip([change.visibility, change.colour, change.transform])
-        {
+        let kinds = [
+            change.visibility,
+            change.colour,
+            change.transform,
+            change.mesh,
+        ];
+        for (n, on) in self.display.marks.iter_mut().zip(kinds) {
             *n += u64::from(on);
         }
     }
@@ -437,6 +458,11 @@ mod tests {
         d.world = Some(m);
         assert_eq!(d.unlike(&a), DisplayChange::TRANSFORM);
         assert!(!d.moved_far(&a));
+        // Another mesh, and no mesh.
+        let mut e = a;
+        e.mesh = Some(7);
+        assert_eq!(e.unlike(&a), DisplayChange::MESH);
+        assert_eq!(a.unlike(&e), DisplayChange::MESH);
         m[12] = 5.;
         d.world = Some(m);
         assert!(d.moved_far(&a));
@@ -466,7 +492,9 @@ mod tests {
         assert!(!c.any());
         c.absorb(DisplayChange::COLOUR);
         c.absorb(DisplayChange::TRANSFORM);
-        assert!(c.colour && c.transform && !c.visibility && c.any());
+        assert!(c.colour && c.transform && !c.visibility && !c.mesh && c.any());
+        assert!(DisplayChange::MESH.any() && !DisplayChange::NONE.any());
+        assert_eq!(DisplayChange::NONE, DisplayChange::default());
         let mut s = DisplaySummary {
             changed: 1,
             moved: 2,

@@ -415,22 +415,54 @@ fn shape_body(w: &mut W, contacts: &[Contact]) {
     w.u8(0).u8(0).raw(&[0; 3]).raw(&[0; 2]).u8(0);
 }
 
+/// A PScriptName keeps its name: the stored bytes up to the first NUL.
 #[test]
-fn contact_shape_is_shared_with_a_later_thing_and_script_name_length() {
+fn script_name_keeps_the_name() {
+    let named = |bytes: &[u8]| {
+        let mut w = W::new(1);
+        w.u32(1).thing_header(1, 0, 0, 0, 0x3f, bit(0xc));
+        w.u32(9).s32(bytes.len() as i32).raw(bytes);
+        w.u32(0).u32(0).u32(0).u32(0).u32(0).u8(0).u8(0); // RLevel tail
+        let r = run(&w, 0x3e5);
+        assert_eq!(r.stop, None);
+        r.things[0].data.script_name.clone().unwrap()
+    };
+    // No NUL is stored after a name: every byte belongs to it, in any case and value.
+    let n = named(b"Made_Up name\xff");
+    assert_eq!(
+        (n.stored, n.name.as_slice()),
+        (13, &b"Made_Up name\xff"[..])
+    );
+    // An empty name, and one that is only a NUL.
+    let n = named(b"");
+    assert_eq!((n.stored, n.name.is_empty()), (0, true));
+    let n = named(b"\0");
+    assert_eq!((n.stored, n.name.is_empty()), (1, true));
+    // A NUL inside ends the name; the bytes after it are read and dropped.
+    let n = named(b"up\0down");
+    assert_eq!((n.stored, n.name.as_slice()), (7, &b"up"[..]));
+    // Reports write the name as text.
+    let json = serde_json::to_value(&n).unwrap();
+    assert_eq!(json["name"], "up");
+}
+
+#[test]
+fn contact_shape_is_shared_with_a_later_thing_and_script_name() {
     // Thing 1 has SHAPE tag 2 whose contact introduces shape tag 3 inline (a detached
     // shape). In the second recipe the world's groupHead (Thing 4) does the same and the
     // world Thing then names tag 3 as its own SHAPE, sharing that body.
     let mut w = W::new(1);
     w.u32(1)
         .thing_header(1, 0, 0, 0, 0x3f, bit(0xc) | bit(SHAPE));
-    w.u32(9).s32(4).raw(b"ab\0\0"); // SCRIPT_NAME: 4 bytes, name length 2
+    w.u32(9).s32(4).raw(b"ab\0c"); // SCRIPT_NAME: 4 bytes, the name ends at the NUL
     w.u32(2);
     shape_body(&mut w, &[(3, Some(|w: &mut W| shape_body(w, &[])))]);
     w.u32(0).u32(0).u32(0).u32(0).u32(0).u8(0).u8(0); // RLevel tail
     let r = run(&w, 0x3e5);
     assert_eq!(r.stop, None);
     assert_eq!(r.detached_shapes, 1);
-    assert_eq!(r.things[0].data.script_name, Some((4, 2)));
+    let name = r.things[0].data.script_name.as_ref().unwrap();
+    assert_eq!((name.stored, name.name.as_slice()), (4, &b"ab"[..]));
     // Now a second Thing that back-references the contact shape.
     let mut w = W::new(1);
     w.u32(1).u8(0xaa).u32(1).u32(0).u32(4);

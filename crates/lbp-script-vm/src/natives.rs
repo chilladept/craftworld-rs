@@ -121,10 +121,21 @@ pub const MAX_PLAYER_SCORE: f32 = 4_000_000.;
 /// constant 0xeb1 compared with the GUID of a PRenderMesh's mesh).
 pub const LOCK_MESH: u32 = 0xeb1;
 
+/// The two mesh GUIDs `Thing.GetPodThing__b` looks for (FOUND, 01.33, 0xd32dc: the two
+/// constants compared with the GUID of a PRenderMesh's mesh): the Pod, and the platform
+/// the Pod's world script swaps in while the pod computer is in use.
+pub const POD_MESH: u32 = 0x2f6c;
+pub const POD_PLATFORM_MESH: u32 = 0x23959;
+
+/// What `PodComputer.GetPlanetsBackgroundGUID__` answers while the planets level is not
+/// loaded (FOUND, 01.33, 0x3fcbb4: the constant returned without that level).
+pub const DEFAULT_PLANETS_BACKGROUND: u32 = 0x1d054;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResourceKind {
     Texture,
     Plan,
+    Mesh,
 }
 
 fn not_available(what: &str) -> String {
@@ -470,6 +481,28 @@ pub trait World {
     fn screen_size(&mut self) -> Result<[i32; 2], String> {
         Err(not_available("the screen"))
     }
+    /// `Thing.FindThing__Q7StringA`: the first Thing, in the order of the level's Things,
+    /// whose PScriptName is exactly these bytes; `None` when no Thing has that name.
+    fn find_thing(&mut self, _name: &[u8]) -> Result<Option<u32>, String> {
+        Err(not_available("script names"))
+    }
+    /// `Thing.GetPodThing__b`: the first Thing, in the order of the level's Things, whose
+    /// render mesh is [`POD_MESH`]. A Thing whose mesh is [`POD_PLATFORM_MESH`] comes
+    /// first only for `platform_too`; without it the search ends there with `None`.
+    fn pod_thing(&mut self, _platform_too: bool) -> Result<Option<u32>, String> {
+        Err(not_available("the pod"))
+    }
+    /// `Thing.SetRenderMeshMesh__Q5ThingQ8Resource`: the mesh a Thing's PRenderMesh shows
+    /// becomes this resource handle when the handle is a mesh, else none. Nothing for a
+    /// Thing without a PRenderMesh.
+    fn set_render_mesh_mesh(&mut self, _thing: u32, _mesh: Option<u32>) -> Result<(), String> {
+        Err(not_available("render meshes"))
+    }
+    /// `PodComputer.GetPlanetsBackgroundGUID__`: the GUID of the backdrop plan of the
+    /// planets level, [`DEFAULT_PLANETS_BACKGROUND`] while that level is not loaded.
+    fn planets_background(&mut self) -> Result<u32, String> {
+        Err(not_available("the pod computer"))
+    }
     /// `HUD.GetCinemaModeCount__` (s32; scripts only test it against zero).
     fn cinema_mode_count(&mut self) -> Result<i32, String> {
         Err(not_available("the HUD"))
@@ -709,6 +742,16 @@ fn guid(v: &Value) -> Result<u32, String> {
         Value::Int(i) => Ok(*i as u32),
         Value::Raw(u) | Value::Ref(u) => Ok(*u),
         other => Err(format!("expected GUID, got {other:?}")),
+    }
+}
+
+/// A `Resource` parameter: the handle a `Resource.Load*ByFilename` native gave, or null
+/// (a never-assigned resource is a zero handle or a null object).
+fn resource(v: &Value) -> Result<Option<u32>, String> {
+    match v {
+        Value::Ref(u) | Value::Raw(u) => Ok(Some(*u).filter(|u| *u != 0)),
+        Value::Object(None) => Ok(None),
+        other => Err(format!("expected Resource, got {other:?}")),
     }
 }
 
@@ -2395,6 +2438,123 @@ const TABLE: &[(&str, &str, NativeFn)] = &[
     ("HUD", "GetYRes__", |w, _| {
         Ok(Value::Int(w.screen_size()?[1]))
     }),
+    // ---- D270: script names, the pod Thing, the avatar (docs/level-scripts.md part 21) ----
+    // FOUND (01.33, 0x61b67c -> 0x753880 -> 0xd3360). Declared static
+    // `Thing FindThing(StringA)` on Thing. One script calls it: the Pod's world script,
+    // once in its create function, with the name of the Pod's checkpoint; it tests the
+    // answer for null and then sets the checkpoint active. The core walks a list of the
+    // PWorld of the script's world; an entry has a Thing and a byte string, which the C
+    // library's string compare tests against the argument (whole string, case
+    // sensitive); the Thing of the first equal entry is returned, null with no equal
+    // entry or no world. INFERRED: the list is the level's PScriptName parts in the
+    // order of the Things; a null string finds nothing.
+    ("Thing", "FindThing__Q7StringA", |w, c| {
+        Ok(Value::Thing(match opt_text(param(c, 0)?)? {
+            Some(name) => w.find_thing(name.as_bytes())?,
+            None => None,
+        }))
+    }),
+    // FOUND (01.33, 0x6011d8 -> 0x7553b8 -> 0xd32dc). Declared static
+    // `Thing GetPodThing(bool)` on Thing. One script calls it: the Pod's world script,
+    // every tick, with true, and it reads the PShape of the answer without a null test.
+    // The core walks a list of the PWorld of the level the game is in; an entry has a
+    // Thing and a resource, and the resource's GUID is compared with two constants: the
+    // first entry with [`POD_MESH`] gives its Thing; one with [`POD_PLATFORM_MESH`] gives
+    // its Thing when the bool is true and ends the search with null when it is false.
+    // Null with no such entry or no level. INFERRED: the list is the level's PRenderMesh
+    // parts in the order of the Things (`SetRenderMeshMesh` writes the same field).
+    ("Thing", "GetPodThing__b", |w, c| {
+        Ok(Value::Thing(w.pod_thing(boolean(param(c, 0)?)?)?))
+    }),
+    // FOUND (01.33, 0x600ed0 -> 0x5e79b8 -> 0x18ec14). Declared static
+    // `Thing GetAvatarFromPlayerID(s32)` on Game. The Pod's world script asks for the
+    // party leader's avatar each tick and tests it for null. The core is the one
+    // `GetYellowheadFromPlayerNumber` reaches: the Thing of the first entry of a PWorld
+    // list whose number is the argument, null with none. INFERRED there too: the list is
+    // the PYellowHead parts and the number the player number.
+    ("Game", "GetAvatarFromPlayerID__i", |w, c| {
+        Ok(Value::Thing(w.yellowhead(int(param(c, 0)?)?)?))
+    }),
+    // FOUND (01.33, 0x617df4 -> 0x50aa08). Declared static
+    // `Resource LoadMeshByFilename(guid)` on Resource: asks the resource system for the
+    // mesh with that GUID and hands the script a resource handle, as
+    // `LoadTextureByFilename__g` does for a texture. The Pod's world script passes the
+    // handle straight on to `SetRenderMeshMesh`. Nothing is loaded here; the world keeps
+    // that the handle is a mesh.
+    ("Resource", "LoadMeshByFilename__g", |w, c| {
+        Ok(Value::Ref(
+            w.load_resource(ResourceKind::Mesh, guid(param(c, 0)?)?)?,
+        ))
+    }),
+    // FOUND (01.33, 0x642834 -> 0x755580). Declared static
+    // `void SetRenderMeshMesh(Thing, Resource)` on Thing. The Pod's world script sets the
+    // pod Thing's mesh each tick: the Pod, or the platform once its transition is at 1.
+    // Nothing for a null Thing or one without a PRenderMesh; else the PRenderMesh's mesh
+    // becomes the resource when the resource's type is a mesh, and none when it is not.
+    // INFERRED: a null resource clears it too.
+    ("Thing", "SetRenderMeshMesh__Q5ThingQ8Resource", |w, c| {
+        let mesh = resource(param(c, 1)?)?;
+        if let Some(t) = thing(param(c, 0)?)? {
+            w.set_render_mesh_mesh(t, mesh)?;
+        }
+        Ok(Value::Void)
+    }),
+    // FOUND (01.33, 0x6016a8). Declared static `guid AsGUID(s32)` on FileList: the value
+    // unchanged. The Pod's world script turns its two mesh numbers into GUIDs with it.
+    ("FileList", "AsGUID__i", |_, c| {
+        Ok(Value::Int(int(param(c, 0)?)?))
+    }),
+    // FOUND (01.33, 0x616c44). Declared static `s32 AsInt(guid)` on FileList: the value
+    // unchanged. The speech-bubble script and the Pod's world script compare GUIDs as
+    // numbers with it.
+    ("FileList", "AsInt__g", |_, c| {
+        Ok(Value::Int(guid(param(c, 0)?)? as i32))
+    }),
+    // FOUND (01.33, 0x601644 -> 0x503358 -> 0x3fcbb4). Declared static
+    // `guid GetPlanetsBackgroundGUID()` on PodComputer: one field of the planets level's
+    // PWorld, and [`DEFAULT_PLANETS_BACKGROUND`] while that level is not loaded. The
+    // Pod's world script picks the texture of its change-over by it.
+    ("PodComputer", "GetPlanetsBackgroundGUID__", |w, _| {
+        Ok(Value::Int(w.planets_background()? as i32))
+    }),
+    // FOUND (01.33, 0x5f8588 -> 0x3aa5c). Declared static `bool IsKioskBuild()` on Game:
+    // the constant false in this executable. The Pod's intro thread asks it.
+    ("Game", "IsKioskBuild__", |_, _| Ok(Value::Bool(false))),
+    // FOUND (01.33, 0x5f8644 -> 0x3ef1a4). Declared static `bool IsStartMenuOpen()` on
+    // Game: one word of a UI object is not 0. The Pod's world script asks it before it
+    // lets a player use the pod computer. A state query: nothing here opens that menu.
+    ("Game", "IsStartMenuOpen__", |w, _| {
+        bool_query(w, "Game.IsStartMenuOpen__")
+    }),
+    // FOUND (01.33, 0x644f3c -> 0x502f40). Declared static private
+    // `bool IsTakingPhoto(Thing)` on Pod: false for a null Thing or one without a
+    // PYellowHead; else an answer from that player's Popit. The Pod's world script asks
+    // it about the leader's avatar. A state query: nothing here has a Popit.
+    ("Pod", "IsTakingPhoto__Q5Thing", |w, c| {
+        match thing(param(c, 0)?)? {
+            Some(_) => bool_query(w, "Pod.IsTakingPhoto__Q5Thing"),
+            None => Ok(Value::Bool(false)),
+        }
+    }),
+    // ---- D270: recorded only ([`RECORDED_ONLY`]) ----
+    // FOUND (01.33, 0x5fb36c -> 0x403ca4). Declared static
+    // `void SetFadePodDecorations(f32)` on PodComputer. The Pod's world script passes its
+    // transition value each tick. The core takes `GetPodThing(true)` and works over a
+    // list of records on one of its parts with the float. INFERRED: the pod's
+    // decorations fade; the arithmetic was not read. Display state.
+    ("PodComputer", "SetFadePodDecorations__f", |w, c| {
+        float(param(c, 0)?)?;
+        recorded(w, "SetFadePodDecorations", None, c.params)
+    }),
+    // FOUND (01.33, 0x5fbd04 -> 0x3fa9cc). Declared static `void RequestHostUsePod(bool)`
+    // on PodComputer. The Pod's world script calls it with true when the leader presses
+    // the button in the pod computer's zone. Only in the player's own Pod: the core
+    // stores the request (use or stop) and the time and sends a message to the host. It
+    // does not set "in use" itself. Network and game flow.
+    ("PodComputer", "RequestHostUsePod__b", |w, c| {
+        boolean(param(c, 0)?)?;
+        recorded(w, "RequestHostUsePod", None, c.params)
+    }),
     // ---- the game's own test scripts ----
     ("Test", "Check__bQ7StringAi", |w, c| {
         let ok = boolean(param(c, 0)?)?;
@@ -2430,7 +2590,7 @@ const TABLE: &[(&str, &str, NativeFn)] = &[
 ];
 
 /// The natives bound through [`World::state_query`], with their return type.
-pub const STATE_QUERIES: [(&str, &str); 24] = [
+pub const STATE_QUERIES: [(&str, &str); 26] = [
     ("Game.IsNonInteractive__", "bool"),
     ("Game.GetNumPendingLinks__", "s32"),
     ("Game.GetNumAvatars__", "s32"),
@@ -2464,13 +2624,15 @@ pub const STATE_QUERIES: [(&str, &str); 24] = [
     ),
     ("ModalOverlay.IsPartyLeaderOverlayActive__", "bool"),
     ("Game.GetNumKnownItemsCollectedAtStart__", "s32"),
+    ("Game.IsStartMenuOpen__", "bool"),
+    ("Pod.IsTakingPhoto__Q5Thing", "bool"),
 ];
 
 /// Bound natives that return nothing and whose whole effect here is a record in the world
 /// ([`World::engine_call`], or a counter for the audio ones): the engine would draw, play
 /// or send something that nothing models yet. Reports count calls to them apart from the
 /// other bound natives.
-pub const RECORDED_ONLY: [(&str, &str); 21] = [
+pub const RECORDED_ONLY: [(&str, &str); 23] = [
     ("Audio", "PlaySound__Q5ThingQ7StringA"),
     ("Audio", "SetInteractiveMusic__ggffiQ5Thing"),
     ("Audio", "SetInteractiveMusicStereoPairVolume__giff"),
@@ -2492,6 +2654,8 @@ pub const RECORDED_ONLY: [(&str, &str); 21] = [
     ("Gooey", "PerFrameUpdate__Q18Game.EPlayerNumberi"),
     ("Gooey", "SetStylesheetScalingFactor__f"),
     ("Game", "SetGlobalSettingsAudioTo__ifffffffffff"),
+    ("PodComputer", "SetFadePodDecorations__f"),
+    ("PodComputer", "RequestHostUsePod__b"),
 ];
 
 /// The `GameMessagingManager` natives that open or close a message. They return nothing
@@ -2732,8 +2896,163 @@ mod tests {
         assert!(go("HUD", "GetScreenSpacePosition__r", &[Value::Int(1)]).is_err());
         assert!(go("HUD", "GetXRes__", &pair).is_err());
         assert_eq!(w.0, ["set 1 3", "activation true 0.05"]);
-        // The table: 219 natives before these six.
-        assert_eq!(bound().count(), 225);
+    }
+
+    #[test]
+    fn d270_pod_natives_check_their_arguments_and_ask_the_world() {
+        let name = [Value::Str("made_up".into())];
+        // A world without the state says so; a null string and a null Thing need none.
+        assert!(call("Thing", "FindThing__Q7StringA", &name).is_err());
+        assert_eq!(
+            call("Thing", "FindThing__Q7StringA", &[Value::Object(None)]),
+            Ok(Value::Thing(None))
+        );
+        assert!(call("Thing", "GetPodThing__b", &[Value::Bool(true)]).is_err());
+        assert!(call("Game", "GetAvatarFromPlayerID__i", &[Value::Int(0)]).is_err());
+        assert!(call("Resource", "LoadMeshByFilename__g", &[Value::Int(7)]).is_err());
+        let set = "SetRenderMeshMesh__Q5ThingQ8Resource";
+        let null = [Value::Thing(None), Value::Ref(7)];
+        assert_eq!(call("Thing", set, &null), Ok(Value::Void));
+        assert!(call("Thing", set, &[Value::Thing(Some(1)), Value::Ref(7)]).is_err());
+        assert!(call("Thing", set, &[Value::Thing(None), Value::Bool(true)]).is_err());
+        assert!(call("PodComputer", "GetPlanetsBackgroundGUID__", &[]).is_err());
+        assert!(call("Game", "IsStartMenuOpen__", &[]).is_err());
+        let photo = "IsTakingPhoto__Q5Thing";
+        assert_eq!(
+            call("Pod", photo, &[Value::Thing(None)]),
+            Ok(Value::Bool(false))
+        );
+        assert!(call("Pod", photo, &[Value::Thing(Some(1))]).is_err());
+        let fade = [Value::Float(0.5)];
+        assert!(call("PodComputer", "SetFadePodDecorations__f", &fade).is_err());
+        let use_pod = [Value::Bool(true)];
+        assert!(call("PodComputer", "RequestHostUsePod__b", &use_pod).is_err());
+        // No world is asked: the identities and the build constant.
+        assert_eq!(
+            call("FileList", "AsGUID__i", &[Value::Int(12140)]),
+            Ok(Value::Int(12140))
+        );
+        for g in [
+            Value::Int(-5),
+            Value::Raw(0xffff_fffb),
+            Value::Ref(0xffff_fffb),
+        ] {
+            assert_eq!(call("FileList", "AsInt__g", &[g]), Ok(Value::Int(-5)));
+        }
+        assert!(call("FileList", "AsInt__g", &[Value::Float(1.)]).is_err());
+        assert!(call("FileList", "AsGUID__i", &[Value::Float(1.)]).is_err());
+        assert_eq!(call("Game", "IsKioskBuild__", &[]), Ok(Value::Bool(false)));
+
+        /// A world with two named Things, a pod and a platform.
+        #[derive(Default)]
+        struct Pod(Vec<String>);
+        impl World for Pod {
+            fn find_thing(&mut self, name: &[u8]) -> Result<Option<u32>, String> {
+                Ok(match name {
+                    b"made_up" => Some(4),
+                    b"" => Some(9),
+                    _ => None,
+                })
+            }
+            fn pod_thing(&mut self, platform_too: bool) -> Result<Option<u32>, String> {
+                Ok(platform_too.then_some(2))
+            }
+            fn yellowhead(&mut self, number: i32) -> Result<Option<u32>, String> {
+                Ok((number == 0).then_some(11))
+            }
+            fn load_resource(&mut self, kind: ResourceKind, guid: u32) -> Result<u32, String> {
+                self.0.push(format!("load {kind:?} {guid}"));
+                Ok(guid)
+            }
+            fn set_render_mesh_mesh(&mut self, t: u32, mesh: Option<u32>) -> Result<(), String> {
+                self.0.push(format!("mesh {t} {mesh:?}"));
+                Ok(())
+            }
+            fn planets_background(&mut self) -> Result<u32, String> {
+                Ok(DEFAULT_PLANETS_BACKGROUND)
+            }
+            fn state_query(&mut self, native: &str) -> Result<Value, String> {
+                self.0.push(format!("query {native}"));
+                Ok(Value::Bool(false))
+            }
+            fn engine_call(
+                &mut self,
+                name: &'static str,
+                thing: Option<u32>,
+                args: &[Value],
+            ) -> Result<(), String> {
+                self.0.push(format!("{name} {thing:?} {args:?}"));
+                Ok(())
+            }
+        }
+        let mut w = Pod::default();
+        let mut go =
+            |class: &str, m: &str, args: &[Value]| dispatch(&mut w, class, m, args).unwrap();
+        let mut find = |s: &str| go("Thing", "FindThing__Q7StringA", &[Value::Str(s.into())]);
+        assert_eq!(find("made_up"), Ok(Value::Thing(Some(4))));
+        // The bytes are handed on as they are: another case is another name, and an
+        // empty string is a name like any other.
+        assert_eq!(find("Made_Up"), Ok(Value::Thing(None)));
+        assert_eq!(find(""), Ok(Value::Thing(Some(9))));
+        assert!(go("Thing", "FindThing__Q7StringA", &[Value::Int(1)]).is_err());
+        assert_eq!(
+            go("Thing", "GetPodThing__b", &[Value::Bool(true)]),
+            Ok(Value::Thing(Some(2)))
+        );
+        assert_eq!(
+            go("Thing", "GetPodThing__b", &[Value::Bool(false)]),
+            Ok(Value::Thing(None))
+        );
+        assert!(go("Thing", "GetPodThing__b", &[Value::Int(1)]).is_err());
+        let avatar = "GetAvatarFromPlayerID__i";
+        assert_eq!(
+            go("Game", avatar, &[Value::Int(0)]),
+            Ok(Value::Thing(Some(11)))
+        );
+        assert_eq!(go("Game", avatar, &[Value::Int(1)]), Ok(Value::Thing(None)));
+        assert_eq!(
+            go("Resource", "LoadMeshByFilename__g", &[Value::Int(12140)]),
+            Ok(Value::Ref(12140))
+        );
+        // A handle, a zero handle and a null object.
+        for mesh in [Value::Ref(12140), Value::Ref(0), Value::Object(None)] {
+            let args = [Value::Thing(Some(2)), mesh];
+            assert_eq!(go("Thing", set, &args), Ok(Value::Void));
+        }
+        assert_eq!(
+            go("PodComputer", "GetPlanetsBackgroundGUID__", &[]),
+            Ok(Value::Int(0x1d054))
+        );
+        assert_eq!(go("Game", "IsStartMenuOpen__", &[]), Ok(Value::Bool(false)));
+        assert_eq!(
+            go("Pod", photo, &[Value::Thing(Some(11))]),
+            Ok(Value::Bool(false))
+        );
+        assert_eq!(
+            go("PodComputer", "SetFadePodDecorations__f", &fade),
+            Ok(Value::Void)
+        );
+        assert_eq!(
+            go("PodComputer", "RequestHostUsePod__b", &use_pod),
+            Ok(Value::Void)
+        );
+        assert!(go("PodComputer", "SetFadePodDecorations__f", &use_pod).is_err());
+        assert!(go("PodComputer", "RequestHostUsePod__b", &fade).is_err());
+        assert_eq!(
+            w.0,
+            [
+                "load Mesh 12140",
+                "mesh 2 Some(12140)",
+                "mesh 2 None",
+                "mesh 2 None",
+                "query Game.IsStartMenuOpen__",
+                "query Pod.IsTakingPhoto__Q5Thing",
+                "SetFadePodDecorations None [Float(0.5)]",
+                "RequestHostUsePod None [Bool(true)]",
+            ]
+        );
+        // The table: 225 natives before these thirteen.
+        assert_eq!(bound().count(), 238);
     }
 
     #[test]
