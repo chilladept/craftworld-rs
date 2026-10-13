@@ -12,22 +12,23 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
 ## Latest: D263 the natives the stage 4 runs reached (2026-10-13)
-- 47 natives bound (164 -> 211), 16 of them recorded only. FOUND in the EBOOT: a pad per player record
+- 48 natives bound (164 -> 212), 16 of them recorded only. FOUND in the EBOOT: a pad per player record
   with the pressed / just pressed / just released rules (0x388e2c, 0x388358, 0x389400); `LAMS.IsInLams`
   as a search of the loaded translation tables (0x159c1c); the global-settings blends, start + (target -
   start) * t per setting, with the setters, the blend factor and the water getters (0xce608, 0xd9dac,
   0xd623c, 0x5ec6f8); `GetGameFrame`, `GetNumYellowHeadAvatars`, the score data type, the scoring slot
-  test. Speech bubbles, prompts, game events and audio settings are kept with their arguments
+  test; `Slot.GetSlotGroup` (0x7477d8: a SlotID (0, 0) for a slot the database lacks, never null).
+  Speech bubbles, prompts, game events and audio settings are kept with their arguments
   (`LevelWorld::requests`) for stage 5.
+- Bug fix: a script cast (`CASTsp`) tests the Thing's script class chain; every cast passed before.
 - INFERRED: both pad mode masks are 1 and the old buttons are copied at the end of a tick; the English
   base and patch tables are the loaded ones (`level_scripts` only; the viewer loads none); every setting
   starts at rest on its stored value; no off-screen indicator, no Sackbot names, no modal overlay, a
   fresh profile.
-- MEASURED, 378 levels, 60 ticks, every output pulsed: unbound natives called 110 -> 85, unbound calls
-  952,819 -> 763,188, recorded-only calls 17,206 -> 83,687. Things stopped by a fault 4 -> 58 (plain run
-  4 -> 26): `IsTarsierDLCEnabled` is true now and leads 46 level links to the unbound
-  `Slot.GetSlotGroup`, and `Race_End.Enter` reads `Race_Start.ColorIndex` on a Thing without it (8). No
-  input is fed to the pads yet. Next: stage 5. `docs/level-scripts.md` part 14.
+- MEASURED, 378 levels, 60 ticks, every output pulsed: unbound natives called 110 -> 88, unbound calls
+  952,819 -> 766,940, recorded-only calls 17,206 -> 83,820. Things stopped by a fault stay at 4 in all
+  three runs (fault kinds 2, levels with a fault 2). No input is fed to the pads yet. Next: stage 5.
+  `docs/level-scripts.md` part 14.
 
 ## Before: D262 world, position, player and game state (2026-10-13)
 - RScript plan stage 4. `LevelWorld` keeps what the scripts ask the engine about the level. FOUND in the

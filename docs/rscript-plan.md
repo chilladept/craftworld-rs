@@ -115,15 +115,15 @@ UI (`UpdateUI__`) and photo natives are not planned.
   output pulsed), fault kinds 11 -> 2, levels with a fault 221 -> 2. INFERRED: one local
   player numbered 0, `IsVcrPaused` false in play, the level's slot (0). Still open:
   pad input, the game frame native, the Sackbot group, the level's slot.
-- D263 (part 14): the 47 natives the stage 4 runs reached in most levels (164 -> 211, 16
+- D263 (part 14): the 48 natives the stage 4 runs reached in most levels (164 -> 212, 16
   of them recorded only). Pads per player record with the pressed, just pressed and just
   released rules, `IsInLams` against loaded translation tables, the global-settings
-  blends (start, target, t), the game frame, all FOUND in the executable; no input is fed
-  yet. Speech-bubble, prompt and audio-setting requests are kept with their arguments
-  for stage 5. Pulsed run: unbound natives called 110 -> 85, unbound calls 952,819 ->
-  763,188; Things stopped by a fault 4 -> 58, as `IsTarsierDLCEnabled` (true) leads the
-  level links to the unbound `Slot.GetSlotGroup`. Still open: feeding the pads, the slot
-  database, the Sackbot group.
+  blends (start, target, t), the game frame, the slot group of the empty slot, all FOUND
+  in the executable; no input is fed yet. Speech-bubble, prompt and audio-setting requests
+  are kept with their arguments for stage 5. A script cast now tests the Thing's class.
+  Pulsed run: unbound natives called 110 -> 88, unbound calls 952,819 -> 766,940; Things
+  stopped by a fault stay at 4. Still open: feeding the pads, the slot database, the
+  Sackbot group.
 
 ## Rules
 

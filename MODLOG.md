@@ -2,7 +2,7 @@
 
 ## 2026-10-13 - D263 the natives the stage 4 runs reached are bound
 
-Between RScript plan stages 4 and 5. 47 natives bound from the stage 4c research notes, 164 -> 211 in the
+Between RScript plan stages 4 and 5. 48 natives bound from the stage 4c research notes, 164 -> 212 in the
 table, 16 of them recorded only (29 in all). New state: `PlayerRecord::pad` (`PadState`: two mode masks,
 buttons now and old) with `LevelWorld::set_pad_buttons` and `end_pad_frame`, so `Pad.IsJustPressed`,
 `IsPressed` and `IsJustReleased` follow the game's rule (FOUND 0x388358, 0x388e2c, 0x389400) and are false
@@ -17,12 +17,15 @@ Constants: `Poppet.GetTextEntryType` 2 and `IsTarsierDLCEnabled` true (FOUND lit
 indicator, no key names, no modal overlay, no items known at start (INFERRED for one local player).
 Recorded with their arguments in `LevelWorld::requests`: the trigger messages, the level-link and wormhole
 prompts, game events, overlay callbacks, speech keys, the audio settings. PC run, 378 levels, 60 ticks,
-every output pulsed: unbound natives called 110 -> 85, unbound calls 952,819 -> 763,188, recorded-only
-calls 17,206 -> 83,687; Things stopped by a fault 4 -> 58 (plain 4 -> 26), because `IsTarsierDLCEnabled`
-true leads the level links to the unbound `Slot.GetSlotGroup` (46 Things) and `Race_End.Enter` reads
-`Race_Start.ColorIndex` on a Thing without it (8). Not done: feeding the pads and the tables in the viewer,
-the slot database, `GetNumKnownItemsInLevelAtStart`, the audio getters. +0 viewable, +0 Complete.
-`docs/level-scripts.md` part 14.
+every output pulsed: unbound natives called 110 -> 88, unbound calls 952,819 -> 766,940, recorded-only
+calls 17,206 -> 83,820; Things stopped by a fault stay at 4 in all three runs. Two faults of a first run
+are settled: `IsTarsierDLCEnabled` true led the level links to `Slot.GetSlotGroup`, now bound (FOUND
+0x640500 -> 0x7477d8: a new SlotID from the slot's group pair, (0, 0) for a slot the database lacks, never
+null; the world answers the empty slot); and `Race_End.Enter` read `Race_Start.ColorIndex` on a Thing of
+another class because every script cast passed. `LevelWorld::thing_is` now tests the Thing's class chain.
+Not done: feeding the pads and the tables in the viewer, the slot database,
+`GetNumKnownItemsInLevelAtStart`, the audio getters. +0 viewable, +0 Complete. `docs/level-scripts.md`
+part 14.
 
 ## 2026-10-13 - D262 the level scripts get world, position, player and game state
 

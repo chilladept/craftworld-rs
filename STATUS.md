@@ -4406,7 +4406,7 @@ Next: stage 5, show what the scripts do.
 
 ## D263 the natives the stage 4 runs reached (2026-10-13)
 - Between RScript plan stages 4 and 5 (`docs/rscript-plan.md`). The stage 4 runs called 110 natives without
-  a binding; the 47 reached in the most levels are bound now (164 -> 211), from research notes that give
+  a binding; the 48 reached in the most levels are bound now (164 -> 212), from research notes that give
   each one a class: real value from kept state, real value from new state, constant, recorded only.
 - New state (FOUND unless marked):
   - Pad: `PlayerRecord::pad` is a `PadState` (two mode masks, buttons now, buttons of the frame before).
@@ -4431,6 +4431,12 @@ Next: stage 5, show what the scripts do.
 - From state already kept: `Game.GetGameFrame` (0x19f63c), `GetNumYellowHeadAvatars` (0x5ed9f8),
   `Score_Board.GetGameScoreDataType` (0x16aa4c), `IsSlotIDValidForScoring` (0x229bb8),
   `Messaging_ShouldFilterMessageStrings` (0x736260), `Resource.LoadAnimatedTextureByFilename` (0x617c0c).
+- `Slot.GetSlotGroup` (0x640500 -> 0x7477d8 -> 0x1a6cd8, builder 0x50c2cc): a new SlotID from the group
+  pair of the slot's record, or (0, 0) when the slot database lacks the slot; never null. The lookup
+  finds nothing for the slot (0, 0), so the world hands out a SlotID (0, 0) made ahead for the empty
+  slot; any other slot is an error (no slot database).
+- Bug fix: a script cast (`CASTsp`) of a Thing tests its script class and superclasses
+  (`LevelWorld::thing_is`, names kept by `add_class_defaults`). Every cast passed before.
 - Constants: `Poppet.GetTextEntryType` 2 (0x56a838) and `Game.IsTarsierDLCEnabled` true (0x5e68d8) are
   literals in the executable. INFERRED for one local player: `GetPlayerIndicatorActivityType` 0,
   `GetNumKeyNames` 0 and `GetKeyIndex` -1, `IsPartyLeaderOverlayActive` false,
@@ -4448,21 +4454,20 @@ Next: stage 5, show what the scripts do.
   `from`, `target` and blend factor; `SetGlobalSettingsWaterTintTo` stores its argument; the type 2 answer
   of the message filter; the scripts do not change the SlotID objects they are handed.
 - MEASURED runs (378 levels, 13,547 scripted Things, release, 60 ticks; before -> now):
-  - plain: unbound natives called 83 -> 51; unbound calls 88,892 -> 67,001; recorded-only calls
-    3,379 -> 13,504; Things stopped by a fault 4 -> 26; levels with a fault 2 -> 22.
-  - with the trigger visit: 99 -> 82; 941,081 -> 755,187; 13,855 -> 76,172; 4 -> 35; 2 -> 31.
-  - with every output pulsed: 110 -> 85; 952,819 -> 763,188; 17,206 -> 83,687; 4 -> 58; 2 -> 46.
-  - Native calls in the pulsed run: 4,046,434; 3,283,246 bound; 763,188 defaulted.
-  - New faults: a null object in `TriggerLevelLink.IsSourceSlotLocked` (22 Things in 20 levels plain, 46
-    in 36 pulsed), reached because `IsTarsierDLCEnabled` is true and the next native,
-    `Slot.GetSlotGroup__Q6SlotID`, is unbound and returns null; `Race_End.Enter` reads
-    `Race_Start.ColorIndex` on a Thing without that member (8 Things, with the trigger visit; cause not
-    looked into). Faults as before: `Thing.GetCOM__` (3), the
-    Pod's null Thing (1).
-  - With the trigger visit the scoreboards of 100 levels go on: 19 natives are new there
+  - plain: unbound natives called 83 -> 52; unbound calls 88,892 -> 67,045; recorded-only calls
+    3,379 -> 13,526; Things stopped by a fault 4 -> 4; levels with a fault 2 -> 2.
+  - with the trigger visit: 99 -> 85; 941,081 -> 758,850; 13,855 -> 76,257; 4 -> 4; 2 -> 2.
+  - with every output pulsed: 110 -> 88; 952,819 -> 766,940; 17,206 -> 83,820; 4 -> 4; 2 -> 2.
+  - Native calls in the pulsed run: 4,064,366; 3,297,426 bound; 766,940 defaulted.
+  - Faults as before: `Thing.GetCOM__` (3), the Pod's null Thing (1). A first run stopped 26 / 35 / 58
+    Things: a null object in `TriggerLevelLink.IsSourceSlotLocked` (reached because `IsTarsierDLCEnabled`
+    is true; `Slot.GetSlotGroup` was unbound and returned null), and `Race_End.Enter` reading
+    `Race_Start.ColorIndex` on the world's current challenge when that Thing is of another class (the
+    cast to `Race_Start` passed for any Thing). Both are fixed above.
+  - With the trigger visit the scoreboards of 101 levels go on: 19 natives are new there
     (`Score_Board.PostScore`, `SetScoreLocked`, `CreateMagicWall`, `Cam.SetOverrideCamera`,
     `Game.StartAsyncSection` and others).
-  - Requests kept, pulsed run: 1,771 speech bubbles and subtitles, 2,009 game events, 167 level-link and
+  - Requests kept, pulsed run: 1,771 speech bubbles and subtitles, 2,058 game events, 216 level-link and
     103 wormhole prompts, 137 overlay callbacks, 297 audio settings, 1,806 speech keys.
   - Most called without a binding (pulsed): `Native.IsEnemyAI`, `Native.SetWalkInput`, `Thing.IsDead`,
     `Thing.IsInLimbo` 114,228 calls in 26 levels each, `Thing.GetBodyRoot` 65,490 in 27.
@@ -4473,11 +4478,12 @@ Next: stage 5, show what the scripts do.
   than the d-pad and the meaning of the mode masks; which tables the game loads, and tables in the viewer;
   the tint colours, the lighting block, the physics gravity and the renderer values behind the global
   settings; the off-screen indicator for a Sackboy off screen; Sackbot names; the second test of the
-  scoring slot test; a SlotID a script built itself (an error).
-- Tests: 32 world tests in `level_world.rs` (5 new: pads, LAMS tables, global-settings blends, game-state
-  queries with the scoring slot test, recorded calls with their arguments), 12 unit and 13 VM tests in
+  scoring slot test; a SlotID a script built itself and the group of any slot but the empty one (errors).
+- Tests: 33 world tests in `level_world.rs` (6 new: pads, LAMS tables, global-settings blends, game-state
+  queries with the scoring slot test and the slot group, recorded calls with their arguments, the script
+  cast), 12 unit and 13 VM tests in
   `lbp-script-vm`, the level reader test for the new PWorld fields. fmt, the CI clippy line, the CI test
   set, the Python tests and `cargo check` of both viewers pass.
 - Not tested: the viewer window; any value against the game in RPCS3.
 **+0 newly viewable / +0 newly Complete (runtime feature).**
-Next: stage 5, show what the scripts do; `Slot.GetSlotGroup` for the level links.
+Next: stage 5, show what the scripts do.
