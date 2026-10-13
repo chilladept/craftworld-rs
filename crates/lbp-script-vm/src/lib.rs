@@ -44,7 +44,8 @@ pub enum Value {
     Int(i32),
     Float(f32),
     Vec4([f32; 4]),
-    /// Rows: `m[r * 4 + c]` (INFERRED; see `GET_M44_*`).
+    /// In the engine's memory order: element (row `r`, column `c`) at `c * 4 + r`, the
+    /// translation at 12..14 (see [`m44_index`]).
     Mat44([f32; 16]),
     Long(i64),
     Double(f64),
@@ -1511,6 +1512,22 @@ fn int_op(op: u8, a: i32, b: i32) -> Result<Value, ()> {
     })
 }
 
+/// Where the element the scripts call row `r`, column `c` sits in a matrix kept in the
+/// engine's memory order: `c * 4 + r`.
+///
+/// The `M44` instructions name an element by two letters and a row or column by one. What
+/// the scripts do with them settles the layout. FOUND in the script tables (names and use
+/// only): the game's own test script fills a matrix by rows and reads row X back as the
+/// elements XX, XY, XZ, XW, so the first letter is the row. Level scripts take the position
+/// of a world matrix as its column W (over a hundred uses, among them the PPos world matrix
+/// of a Thing), take column Z as the forward axis, and one writes a position through XW,
+/// YW and ZW. The engine keeps the translation of a world matrix in floats 12..14 (level
+/// files; the Pod world matrix read in RPCS3). So column `c` is the four floats from
+/// `c * 4`, and row `r` is every fourth float from `r`.
+fn m44_index(r: usize, c: usize) -> usize {
+    c * 4 + r
+}
+
 fn get_builtin(op: u8, base: &Value) -> Option<Value> {
     use Value::*;
     Some(match (op, base) {
@@ -1519,14 +1536,20 @@ fn get_builtin(op: u8, base: &Value) -> Option<Value> {
             let n = usize::from(op - 0x5e) + 2;
             Float(v[..n].iter().map(|x| x * x).sum::<f32>().sqrt())
         }
-        (0x61..=0x70, Mat44(m)) => Float(m[usize::from(op - 0x61)]),
+        // GET_M44_XX .. WW: row letter first.
+        (0x61..=0x70, Mat44(m)) => {
+            let k = usize::from(op - 0x61);
+            Float(m[m44_index(k / 4, k % 4)])
+        }
+        // GET_M44_rX .. rW.
         (0x71..=0x74, Mat44(m)) => {
             let r = usize::from(op - 0x71);
-            Vec4([m[r * 4], m[r * 4 + 1], m[r * 4 + 2], m[r * 4 + 3]])
+            Vec4(std::array::from_fn(|c| m[m44_index(r, c)]))
         }
+        // GET_M44_cX .. cW.
         (0x75..=0x78, Mat44(m)) => {
             let c = usize::from(op - 0x75);
-            Vec4([m[c], m[4 + c], m[8 + c], m[12 + c]])
+            Vec4(std::array::from_fn(|r| m[m44_index(r, c)]))
         }
         _ => return None,
     })
@@ -1547,18 +1570,21 @@ fn set_builtin(op: u8, base: Value, src: Value) -> Option<Value> {
             Vec4(v)
         }
         (0x7d..=0x8c, Mat44(mut m), Float(f)) => {
-            m[usize::from(op - 0x7d)] = f;
+            let k = usize::from(op - 0x7d);
+            m[m44_index(k / 4, k % 4)] = f;
             Mat44(m)
         }
         (0x8d..=0x90, Mat44(mut m), Vec4(v)) => {
             let r = usize::from(op - 0x8d);
-            m[r * 4..r * 4 + 4].copy_from_slice(&v);
+            for (c, x) in v.iter().enumerate() {
+                m[m44_index(r, c)] = *x;
+            }
             Mat44(m)
         }
         (0x91..=0x94, Mat44(mut m), Vec4(v)) => {
             let c = usize::from(op - 0x91);
             for (r, x) in v.iter().enumerate() {
-                m[r * 4 + c] = *x;
+                m[m44_index(r, c)] = *x;
             }
             Mat44(m)
         }
@@ -1569,6 +1595,43 @@ fn set_builtin(op: u8, base: Value, src: Value) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Rows and columns of a matrix in memory order, as the scripts name them.
+    #[test]
+    fn m44_elements_rows_and_columns_follow_the_engine_layout() {
+        // A world matrix: x axis (1, 2, 3), translation (10, 20, 30).
+        let mut m = [0.; 16];
+        m[..4].copy_from_slice(&[1., 2., 3., 0.]);
+        m[12..].copy_from_slice(&[10., 20., 30., 1.]);
+        let get = |op| get_builtin(op, &Value::Mat44(m)).unwrap();
+        // cW is the translation, cX the x axis; rW the bottom row.
+        assert_eq!(get(0x78), Value::Vec4([10., 20., 30., 1.]));
+        assert_eq!(get(0x75), Value::Vec4([1., 2., 3., 0.]));
+        assert_eq!(get(0x74), Value::Vec4([0., 0., 0., 1.]));
+        assert_eq!(get(0x71), Value::Vec4([1., 0., 0., 10.]));
+        // XW, YW, ZW are the position; YX is the x axis's y.
+        assert_eq!(get(0x61 + 3), Value::Float(10.));
+        assert_eq!(get(0x61 + 7), Value::Float(20.));
+        assert_eq!(get(0x61 + 11), Value::Float(30.));
+        assert_eq!(get(0x61 + 4), Value::Float(2.));
+        // The writes go to the same places.
+        let set = |op, v| match set_builtin(op, Value::Mat44([0.; 16]), v).unwrap() {
+            Value::Mat44(m) => m,
+            other => panic!("{other:?}"),
+        };
+        let v = Value::Vec4([5., 6., 7., 8.]);
+        assert_eq!(set(0x94, v.clone())[12..], [5., 6., 7., 8.]);
+        let row = set(0x8d + 1, v);
+        assert_eq!([row[1], row[5], row[9], row[13]], [5., 6., 7., 8.]);
+        assert_eq!(set(0x7d + 11, Value::Float(9.))[14], 9.);
+        // Row X read back is XX, XY, XZ, XW (what the game's test script checks).
+        let Value::Vec4(row_x) = get(0x71) else {
+            panic!("row");
+        };
+        for (c, x) in row_x.iter().enumerate() {
+            assert_eq!(get(0x61 + c as u8), Value::Float(*x));
+        }
+    }
 
     #[test]
     fn m44_product_is_column_major_a_times_b() {
