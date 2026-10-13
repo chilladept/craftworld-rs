@@ -5,7 +5,9 @@
 //! The engine side is a [`World`]; every method defaults to an explicit "not available"
 //! error so a partial world (tests, the viewer) still runs the pure bindings. [`Bindings`]
 //! adapts a world to the VM's [`Host`] and counts calls to natives that have no binding
-//! yet, in the order the G10 census ranked them.
+//! yet, in the order the G10 census ranked them. Such a call faults the script, or, with
+//! [`Bindings::default_unbound`], returns the default of the call's return type so the
+//! script runs on; either way it is counted as unbound, never as bound.
 use crate::signature;
 use crate::{Host, MemberKind, Value};
 use std::collections::BTreeMap;
@@ -244,6 +246,10 @@ pub struct Bindings<W> {
     pub unbound: BTreeMap<String, u64>,
     /// Every native call that reached the host, bound or not, by `Class.mangled`.
     pub calls: BTreeMap<String, u64>,
+    /// Run past natives without a binding: the call returns nothing, which the VM turns
+    /// into the default of the call's return machine type (false, 0, null, zero vector).
+    /// Off by default, so tests see a missing binding as a fault.
+    pub default_unbound: bool,
 }
 
 impl<W: World> Bindings<W> {
@@ -252,6 +258,15 @@ impl<W: World> Bindings<W> {
             world,
             unbound: BTreeMap::new(),
             calls: BTreeMap::new(),
+            default_unbound: false,
+        }
+    }
+
+    /// [`Bindings::new`] with [`Bindings::default_unbound`] on (the viewer, `--play`).
+    pub fn defaulting(world: W) -> Self {
+        Self {
+            default_unbound: true,
+            ..Self::new(world)
         }
     }
 }
@@ -304,15 +319,17 @@ impl<W: World> Host for Bindings<W> {
         function: &str,
         args: &[Value],
     ) -> Result<Value, String> {
-        *self.calls.entry(format!("{class}.{function}")).or_default() += 1;
+        let name = format!("{class}.{function}");
+        *self.calls.entry(name.clone()).or_default() += 1;
         match dispatch(&mut self.world, class, function, args) {
-            Some(r) => r.map_err(|e| format!("{class}.{function}: {e}")),
+            Some(r) => r.map_err(|e| format!("{name}: {e}")),
             None => {
-                *self
-                    .unbound
-                    .entry(format!("{class}.{function}"))
-                    .or_default() += 1;
-                Err(format!("unbound native {class}.{function}"))
+                *self.unbound.entry(name.clone()).or_default() += 1;
+                if self.default_unbound {
+                    Ok(Value::Void)
+                } else {
+                    Err(format!("unbound native {name}"))
+                }
             }
         }
     }
@@ -377,6 +394,38 @@ fn text(v: &Value) -> Result<&str, String> {
         Value::Str(s) => Ok(s),
         other => Err(format!("expected string, got {other:?}")),
     }
+}
+
+/// A string parameter that may be null (a never-assigned `String` is a null object).
+fn opt_text(v: &Value) -> Result<Option<&str>, String> {
+    match v {
+        Value::Object(None) => Ok(None),
+        v => text(v).map(Some),
+    }
+}
+
+/// First index of `needle` in `hay`, or -1 (`String.Find`, `StringA.Find`).
+fn find_units<T: PartialEq>(hay: &[T], needle: &[T]) -> i32 {
+    if needle.is_empty() {
+        return 0;
+    }
+    hay.windows(needle.len())
+        .position(|w| w == needle)
+        .map_or(-1, |i| i as i32)
+}
+
+/// `SubStr(s, start, count)` on string units: from `start`, at most `count` units, empty
+/// when `start` is at or past the end. Negative arguments are an error (not observed).
+fn sub_units<T>(units: &[T], start: i32, count: i32) -> Result<&[T], String> {
+    let (Ok(start), Ok(count)) = (usize::try_from(start), usize::try_from(count)) else {
+        return Err(format!("SubStr({start}, {count})"));
+    };
+    let rest = units.get(start..).unwrap_or(&[]);
+    Ok(&rest[..count.min(rest.len())])
+}
+
+fn wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().collect()
 }
 
 /// GUID parameter (`g`): carried as an integer or pointer-sized value (INFERRED).
@@ -598,6 +647,123 @@ const TABLE: &[(&str, &str, NativeFn)] = &[
     ("LAMS", "Translate__i", |w, c| {
         Ok(Value::Str(w.translate(int(param(c, 0)?)?)?.into()))
     }),
+    // Stage 1 (docs/level-scripts.md part 9). `String` is a wide string: lengths and
+    // indices count UTF-16 units; `StringA` counts bytes. A null string has length 0, is
+    // "null or empty", is never found in and gives an empty substring.
+    ("String", "Length__Q6String", |_, c| {
+        let n = opt_text(param(c, 0)?)?.map_or(0, |s| s.encode_utf16().count());
+        Ok(Value::Int(n as i32))
+    }),
+    ("String", "IsNullOrEmpty__Q6String", |_, c| {
+        Ok(Value::Bool(
+            opt_text(param(c, 0)?)?.is_none_or(str::is_empty),
+        ))
+    }),
+    ("String", "Find__Q6StringQ6String", |_, c| {
+        let (Some(s), Some(sub)) = (opt_text(param(c, 0)?)?, opt_text(param(c, 1)?)?) else {
+            return Ok(Value::Int(-1));
+        };
+        Ok(Value::Int(find_units(&wide(s), &wide(sub))))
+    }),
+    ("String", "SubStr__Q6Stringii", |_, c| {
+        let s = wide(opt_text(param(c, 0)?)?.unwrap_or(""));
+        let part = sub_units(&s, int(param(c, 1)?)?, int(param(c, 2)?)?)?;
+        Ok(Value::Str(String::from_utf16_lossy(part).into()))
+    }),
+    ("String", "ToUpper__Q6String", |_, c| {
+        // Unit by unit: a letter whose upper case is not one character stays as it is.
+        let upper = |ch: char| {
+            let mut u = ch.to_uppercase();
+            match (u.next(), u.next()) {
+                (Some(one), None) if one.len_utf16() == ch.len_utf16() => one,
+                _ => ch,
+            }
+        };
+        Ok(Value::Str(
+            text(param(c, 0)?)?
+                .chars()
+                .map(upper)
+                .collect::<String>()
+                .into(),
+        ))
+    }),
+    ("String", "StringFromStringA__Q7StringA", |_, c| {
+        Ok(Value::Str(text(param(c, 0)?)?.into()))
+    }),
+    // The StringA forms are INFERRED to follow the String forms on bytes.
+    ("StringA", "Length__Q7StringA", |_, c| {
+        Ok(Value::Int(
+            opt_text(param(c, 0)?)?.map_or(0, str::len) as i32
+        ))
+    }),
+    ("StringA", "IsNullOrEmpty__Q7StringA", |_, c| {
+        Ok(Value::Bool(
+            opt_text(param(c, 0)?)?.is_none_or(str::is_empty),
+        ))
+    }),
+    ("StringA", "Find__Q7StringAQ7StringA", |_, c| {
+        let (Some(s), Some(sub)) = (opt_text(param(c, 0)?)?, opt_text(param(c, 1)?)?) else {
+            return Ok(Value::Int(-1));
+        };
+        Ok(Value::Int(find_units(s.as_bytes(), sub.as_bytes())))
+    }),
+    ("StringA", "SubStr__Q7StringAii", |_, c| {
+        let s = opt_text(param(c, 0)?)?.unwrap_or("").as_bytes();
+        let part = sub_units(s, int(param(c, 1)?)?, int(param(c, 2)?)?)?;
+        Ok(Value::Str(String::from_utf8_lossy(part).into()))
+    }),
+    ("Math", "identity__", |_, _| {
+        Ok(columns(
+            [1., 0., 0., 0.],
+            [0., 1., 0., 0.],
+            [0., 0., 1., 0.],
+            W,
+        ))
+    }),
+    ("Math", "ceil__f", |_, c| {
+        Ok(Value::Float(float(param(c, 0)?)?.ceil()))
+    }),
+    ("Math", "exp__f", |_, c| {
+        Ok(Value::Float(float(param(c, 0)?)?.exp()))
+    }),
+    ("Math", "pow__ff", |_, c| {
+        Ok(Value::Float(
+            float(param(c, 0)?)?.powf(float(param(c, 1)?)?),
+        ))
+    }),
+    ("Math", "sign__f", |_, c| {
+        // 1 from zero up, -1 below; never 0.
+        let x = float(param(c, 0)?)?;
+        Ok(Value::Float(if x < 0. { -1. } else { 1. }))
+    }),
+    ("Math", "lerp__fff", |_, c| {
+        let (t, a, b) = (
+            float(param(c, 0)?)?,
+            float(param(c, 1)?)?,
+            float(param(c, 2)?)?,
+        );
+        Ok(Value::Float((b - a) * t + a))
+    }),
+    ("Math", "Delt__fff", |_, c| {
+        // Moves `from` towards `to` by at most `step`, landing on `to`.
+        let (from, to, step) = (
+            float(param(c, 0)?)?,
+            float(param(c, 1)?)?,
+            float(param(c, 2)?)?,
+        );
+        let d = to - from;
+        let dir = if d < 0. { -1. } else { 1. };
+        Ok(Value::Float(if dir * d < step {
+            to
+        } else {
+            dir * step + from
+        }))
+    }),
+    ("Math", "BiasCosine__f", |_, c| {
+        // 0 at 0, 1 at 1, cosine eased.
+        let x = float(param(c, 0)?)?;
+        Ok(Value::Float((x * std::f32::consts::PI).cos() * -0.5 + 0.5))
+    }),
     // ---- thing tree and transforms ----
     ("Thing", "GetThingUID__", |w, c| {
         Ok(Value::Int(w.thing_uid(this(c)?)?))
@@ -681,6 +847,15 @@ const TABLE: &[(&str, &str, NativeFn)] = &[
         Ok(Value::Void)
     }),
     ("Resource", "LoadTextureByFilename__g", |w, c| {
+        Ok(Value::Ref(w.load_resource(
+            ResourceKind::Texture,
+            guid(param(c, 0)?)?,
+        )?))
+    }),
+    ("Resource", "LoadTextureByFilename__gb", |w, c| {
+        // The `__g` loader with a flag handed to the load (its meaning is not settled; no
+        // texture is loaded here either way).
+        boolean(param(c, 1)?)?;
         Ok(Value::Ref(w.load_resource(
             ResourceKind::Texture,
             guid(param(c, 0)?)?,
@@ -868,8 +1043,9 @@ const TABLE: &[(&str, &str, NativeFn)] = &[
     }),
     ("LAMS", "MakeLamsKeyID__Q6String", |_, c| {
         // Toolkit makeLamsKeyID (CONFIRMED_FROM_COMMUNITY_CODE, docs/u1-translation.md);
-        // the key is the s32 that `Translate__i` and `IsInLams__i` take.
-        let key = lbp_resource::translation::lams_key(text(param(c, 0)?)?);
+        // the key is the s32 that `Translate__i` and `IsInLams__i` take. A null string
+        // hashes as the empty string.
+        let key = lbp_resource::translation::lams_key(opt_text(param(c, 0)?)?.unwrap_or(""));
         Ok(Value::Int(key as i32))
     }),
     (
@@ -1062,6 +1238,115 @@ mod tests {
             got,
             Ok(Value::Int(lbp_resource::translation::lams_key("A") as i32))
         );
+    }
+
+    #[test]
+    fn stage1_strings_and_math() {
+        let (s, i, f) = (|t: &str| Value::Str(t.into()), Value::Int, Value::Float);
+        let null = || Value::Object(None);
+        // Wide strings count UTF-16 units.
+        assert_eq!(
+            call("String", "Length__Q6String", &[s("a\u{1F600}")]),
+            Ok(i(3))
+        );
+        assert_eq!(call("String", "Length__Q6String", &[null()]), Ok(i(0)));
+        assert_eq!(call("StringA", "Length__Q7StringA", &[s("abc")]), Ok(i(3)));
+        for (class, m) in [
+            ("String", "IsNullOrEmpty__Q6String"),
+            ("StringA", "IsNullOrEmpty__Q7StringA"),
+        ] {
+            assert_eq!(call(class, m, &[null()]), Ok(Value::Bool(true)));
+            assert_eq!(call(class, m, &[s("")]), Ok(Value::Bool(true)));
+            assert_eq!(call(class, m, &[s("x")]), Ok(Value::Bool(false)));
+        }
+        for (class, m) in [
+            ("String", "Find__Q6StringQ6String"),
+            ("StringA", "Find__Q7StringAQ7StringA"),
+        ] {
+            assert_eq!(call(class, m, &[s("hello"), s("ll")]), Ok(i(2)));
+            assert_eq!(call(class, m, &[s("hello"), s("z")]), Ok(i(-1)));
+            assert_eq!(call(class, m, &[s("hello"), null()]), Ok(i(-1)));
+            assert_eq!(call(class, m, &[null(), s("z")]), Ok(i(-1)));
+        }
+        for (class, m) in [
+            ("String", "SubStr__Q6Stringii"),
+            ("StringA", "SubStr__Q7StringAii"),
+        ] {
+            assert_eq!(call(class, m, &[s("hello"), i(1), i(3)]), Ok(s("ell")));
+            assert_eq!(call(class, m, &[s("hello"), i(3), i(99)]), Ok(s("lo")));
+            assert_eq!(call(class, m, &[s("hello"), i(5), i(1)]), Ok(s("")));
+            assert_eq!(call(class, m, &[null(), i(0), i(1)]), Ok(s("")));
+            assert!(call(class, m, &[s("hello"), i(-1), i(1)]).is_err());
+        }
+        assert_eq!(
+            call("String", "ToUpper__Q6String", &[s("a\u{e9}1\u{df}")]),
+            Ok(s("A\u{c9}1\u{df}"))
+        );
+        assert_eq!(
+            call("LAMS", "MakeLamsKeyID__Q6String", &[null()]),
+            call("LAMS", "MakeLamsKeyID__Q6String", &[s("")])
+        );
+        assert_eq!(
+            call("String", "StringFromStringA__Q7StringA", &[s("x")]),
+            Ok(s("x"))
+        );
+        let Value::Mat44(m) = call("Math", "identity__", &[]).unwrap() else {
+            panic!()
+        };
+        assert_eq!(
+            (m[0], m[5], m[10], m[15], m[1], m[12]),
+            (1., 1., 1., 1., 0., 0.)
+        );
+        assert_eq!(call("Math", "ceil__f", &[f(1.25)]), Ok(f(2.)));
+        assert_eq!(call("Math", "exp__f", &[f(0.)]), Ok(f(1.)));
+        assert_eq!(call("Math", "pow__ff", &[f(2.), f(10.)]), Ok(f(1024.)));
+        assert_eq!(call("Math", "sign__f", &[f(0.)]), Ok(f(1.)));
+        assert_eq!(call("Math", "sign__f", &[f(-0.5)]), Ok(f(-1.)));
+        assert_eq!(
+            call("Math", "lerp__fff", &[f(0.25), f(4.), f(8.)]),
+            Ok(f(5.))
+        );
+        assert_eq!(
+            call("Math", "Delt__fff", &[f(1.), f(5.), f(1.5)]),
+            Ok(f(2.5))
+        );
+        assert_eq!(
+            call("Math", "Delt__fff", &[f(1.), f(-5.), f(1.5)]),
+            Ok(f(-0.5))
+        );
+        assert_eq!(
+            call("Math", "Delt__fff", &[f(1.), f(2.), f(1.5)]),
+            Ok(f(2.))
+        );
+        assert_eq!(
+            call("Math", "Delt__fff", &[f(1.), f(0.5), f(1.5)]),
+            Ok(f(0.5))
+        );
+        assert_eq!(call("Math", "BiasCosine__f", &[f(0.)]), Ok(f(0.)));
+        assert_eq!(call("Math", "BiasCosine__f", &[f(1.)]), Ok(f(1.)));
+        let Ok(Value::Float(half)) = call("Math", "BiasCosine__f", &[f(0.5)]) else {
+            panic!()
+        };
+        assert!((half - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn unbound_natives_fault_or_default() {
+        let mut strict = Bindings::new(Tree);
+        assert!(strict.call_native("Gooey", "EndFrame__", &[]).is_err());
+        let mut lenient = Bindings::defaulting(Tree);
+        assert_eq!(
+            lenient.call_native("Gooey", "EndFrame__", &[]),
+            Ok(Value::Void)
+        );
+        // Counted as unbound either way; a bound native's error is still an error.
+        assert_eq!(strict.unbound.get("Gooey.EndFrame__"), Some(&1));
+        assert_eq!(lenient.unbound.get("Gooey.EndFrame__"), Some(&1));
+        assert_eq!(lenient.calls.get("Gooey.EndFrame__"), Some(&1));
+        assert!(lenient
+            .call_native("LAMS", "Translate__i", &[Value::Int(3)])
+            .is_err());
+        assert!(!lenient.unbound.contains_key("LAMS.Translate__i"));
     }
 
     #[test]

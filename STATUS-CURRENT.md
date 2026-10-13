@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D257
+# Current state (overwrite each milestone) — after D258
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -11,7 +11,15 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D257 ledge-fall jump layer weight (2026-10-12)
+## Latest: D258 scripts run past unbound natives (2026-10-12)
+- RScript plan stage 1 (`docs/rscript-plan.md`). An unbound native returns its type's default and is counted
+  (`Bindings::default_unbound`; viewer and `level_scripts --play`; off in tests). `level_scripts --all
+  --play=N` reports bound and unbound calls and the faults left over every level. 19 natives bound (116).
+- MEASURED, 378 levels, 60 ticks, 13,547 scripted Things: stopped by a fault 4,940 -> 1,722; 76,269 calls
+  to 64 unbound natives defaulted. Left: switch inputs 1,143, `PWorld.GameMode` 220, local transforms 199,
+  TriggerLevelLink 113. Next: stage 2, trigger events. `docs/level-scripts.md` part 9.
+
+## Before: D257 ledge-fall jump layer weight (2026-10-12)
 - MEASURED on three RPCS3 ledge falls (lower-body vertex fits): the jump layer eases in with the 0x20a5f4
   follower from 0, peak += 0.125 (|vy| - peak), weight clamp(peak/10) times the blend-in; full weight about
   10 ticks after the edge (ours stopped near 0.77). w error 0.064 (D234 ramp 0.276). Landing tail at full

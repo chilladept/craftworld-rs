@@ -83,6 +83,13 @@ Each stage is one PR, with a PC run of `level_scripts --all` before and after.
 Audio natives stay recorded no-ops until there is an audio system. Online, Popit tweak
 UI (`UpdateUI__`) and photo natives are not planned.
 
+## Progress
+
+- Stage 1 done (D258, `docs/level-scripts.md` part 9): over 378 levels at 60 ticks, Things
+  stopped by a fault 4,940 -> 1,722 of 13,547; 76,269 calls to 64 unbound natives are
+  defaulted and counted. Largest stops left: switch inputs 1,143, `PWorld.GameMode` 220,
+  local transforms 199, TriggerLevelLink 113.
+
 ## Rules
 
 - Each native binding states its evidence: declared types from the script tables, use in

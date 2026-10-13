@@ -92,7 +92,8 @@ pub fn install(app: &mut App) -> Result<(), String> {
     let built = world.bind_objects(&mut vm);
     world.add_class_defaults(&vm);
     world.progression_flags = flags;
-    let mut host = Bindings::new(world);
+    // Unbound natives return their type's default and are counted (rscript-plan stage 1).
+    let mut host = Bindings::defaulting(world);
     let mut faults = lbp_runtime::add_engine_objects(&mut vm, &mut host, BUDGET_PER_CALL);
     faults.truncate(MAX_FAULT_LINES);
     let scripts = LevelScripts::new(&vm, &host.world);
@@ -182,7 +183,13 @@ fn window(mut contexts: EguiContexts, play: NonSend<Play>) -> Result {
             let mut unbound: Vec<_> = play.host.unbound.iter().collect();
             unbound.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
             if !unbound.is_empty() {
-                ui.small("Unbound natives (calls):");
+                let calls: u64 = play.host.calls.values().sum();
+                let defaulted: u64 = unbound.iter().map(|u| *u.1).sum();
+                ui.small(format!(
+                    "Native calls: bound {}, defaulted {defaulted} ({} unbound natives):",
+                    calls - defaulted,
+                    unbound.len()
+                ));
                 for (name, n) in unbound.iter().take(6) {
                     ui.small(format!("  {name}: {n}"));
                 }

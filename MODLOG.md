@@ -1,5 +1,17 @@
 # Development log
 
+## 2026-10-12 - D258 scripts run past unbound natives, counted
+
+RScript plan stage 1. `Bindings::default_unbound`: a native without a binding returns the default of its
+return type and is counted as unbound, never as bound; on in the viewer and `level_scripts --play`, off in
+tests (`--strict` in the tool). `level_scripts --all --play=N` plays every level on its own VM and reports
+bound and unbound calls, each unbound native, and the faults left. 19 natives bound (116): String and StringA
+length, find, substring, empty test, upper case, conversion; Math identity, ceil, exp, pow, sign, lerp,
+Delt, BiasCosine (rules FOUND in the EBOOT; StringA forms INFERRED); `LoadTextureByFilename__gb`. PC run,
+378 levels, 60 ticks, 13,547 scripted Things: stopped by a fault 4,940 -> 1,722; bound calls 26,186 ->
+51,030; 76,269 calls to 64 unbound natives defaulted. Largest stops left: switch inputs 1,143,
+`PWorld.GameMode` 220, local transforms 199. +0 viewable, +0 Complete. `docs/level-scripts.md` part 9.
+
 ## 2026-10-12 - D257 ledge-fall jump layer weight
 
 Walking off a ledge, the game's jump layer is at full weight about 10 ticks after the edge; ours stopped at
