@@ -1,8 +1,8 @@
 //! Rt on authored synthetic data (no game bytes): a three-Thing level and a small script
 //! class with a superclass. docs/level-scripts.md.
 use lbp_level::parts::{
-    Pos, ScriptField, ScriptObject, ScriptPart, ScriptValue, Switch, SwitchOutput, SwitchSignal,
-    Trigger, World as WorldPart,
+    Pos, RenderMesh, ScriptField, ScriptObject, ScriptPart, ScriptValue, Switch, SwitchOutput,
+    SwitchSignal, Trigger, World as WorldPart,
 };
 use lbp_level::script::{FieldDef, FunctionDef, MemberRef, Script, Span, TypeRef};
 use lbp_level::serial::Descriptor;
@@ -318,9 +318,10 @@ fn part4_anim_speed_tint_camera_tweak_and_player_numbers() {
     assert_eq!(world.things[1].anim_speed, Some(0.));
     assert_eq!(world.things[2].render_mesh_tint, Some([1., 0.5, 0., 1.]));
     assert!(world.set_anim_speed(99, 1.).is_err());
+    // One record, player number 0; the game answers -1 outside the records.
     assert_eq!(world.player_number(0), Ok(0));
-    assert!(world.player_number(1).is_err());
-    assert!(world.player_number(-1).is_err());
+    assert_eq!(world.player_number(1), Ok(-1));
+    assert_eq!(world.player_number(-1), Ok(-1));
 }
 
 #[test]
@@ -874,10 +875,12 @@ fn part6_camera_world_position_and_engine_state() {
     dispatch(&mut w, t, n, &[Value::Int(0), Value::Int(90)])
         .unwrap()
         .unwrap();
-    assert_eq!(w.score_multiplier_timers.get(&0), Some(&90));
-    assert!(dispatch(&mut w, t, n, &[Value::Int(3), Value::Int(1)])
+    assert_eq!(w.player_records[0].multiplier_timer, 90);
+    // A player without a record: nothing happens.
+    dispatch(&mut w, t, n, &[Value::Int(3), Value::Int(1)])
         .unwrap()
-        .is_err());
+        .unwrap();
+    assert_eq!(w.player_records.len(), 1);
     dispatch(&mut w, "Native", "DebugPrint__i", &[Value::Int(19)])
         .unwrap()
         .unwrap();
@@ -1268,8 +1271,15 @@ fn stage4_pworld_members_are_the_stored_values_and_the_frame_counts_ticks() {
         ..Default::default()
     });
     let mut w = LevelWorld::from_things(&things);
-    assert_eq!(w.pworld.global_settings_thing_uids, [7, 0]);
-    assert_eq!(w.pworld.global_settings_thing_priority, [1, 0]);
+    // The stored arrays, padded to the game's 8 slots.
+    assert_eq!(
+        w.pworld.global_settings_thing_uids,
+        [7, 0, 0, 0, 0, 0, 0, 0]
+    );
+    assert_eq!(
+        w.pworld.global_settings_thing_priority,
+        [1, 0, 0, 0, 0, 0, 0, 0]
+    );
     assert!(w.pworld.is_paused);
     // `World.World`: the PWorld of the world Thing.
     let world = part(&mut w, 0, "World");
@@ -1759,4 +1769,398 @@ fn stage4_inactive_microchip_proxy_sensor_position_and_sequencer() {
         assert_eq!(on(&mut w, me(t)), Ok(Value::Bool(false)), "thing {t}");
     }
     assert_eq!(on(&mut w, Value::Thing(None)), Ok(Value::Bool(false)));
+}
+
+/// Calls a bound native on the world; panics when the native has no binding.
+fn native(w: &mut LevelWorld, class: &str, name: &str, args: &[Value]) -> Result<Value, String> {
+    lbp_script_vm::natives::dispatch(w, class, name, args)
+        .unwrap_or_else(|| panic!("{class}.{name} is not bound"))
+}
+
+/// A `Game` native that takes a player number first.
+fn game(w: &mut LevelWorld, name: &str, args: &[Value]) -> Value {
+    native(w, "Game", name, args).unwrap()
+}
+
+#[test]
+fn stage4_player_records_and_player_queries() {
+    let int = Value::Int;
+    let mut w = LevelWorld::from_things(&level());
+    // A read level: the record of local player 0, and no Sackboy yet.
+    assert_eq!(w.player_records.len(), 1);
+    assert_eq!(game(&mut w, "GetNumPlayers__", &[]), int(1));
+    assert_eq!(game(&mut w, "GetPlayerNumber__i", &[int(0)]), int(0));
+    for index in [-1, 1, 7] {
+        assert_eq!(game(&mut w, "GetPlayerNumber__i", &[int(index)]), int(-1));
+    }
+    assert_eq!(game(&mut w, "EPlayerNumberFromInt__i", &[int(3)]), int(3));
+    let exists = "DoesPlayerExist__Q18Game.EPlayerNumber";
+    let local = "PlayerNumberIsLocalPlayer__Q18Game.EPlayerNumber";
+    let local_id = "IsLocalPlayerID__Q18Game.EPlayerNumber";
+    let head = "GetYellowheadFromPlayerNumber__Q18Game.EPlayerNumber";
+    for (name, with_record) in [
+        (exists, true),
+        ("IsPlayerConnected__i", true),
+        (local, true),
+    ] {
+        assert_eq!(game(&mut w, name, &[int(0)]), Value::Bool(with_record));
+        assert_eq!(game(&mut w, name, &[int(1)]), Value::Bool(false), "{name}");
+        assert_eq!(game(&mut w, name, &[int(-1)]), Value::Bool(false));
+    }
+    // Before his Sackboy is there the player has no yellowhead, so his ID is not local.
+    assert_eq!(game(&mut w, head, &[int(0)]), Value::Thing(None));
+    assert_eq!(game(&mut w, local_id, &[int(0)]), Value::Bool(false));
+    assert_eq!(game(&mut w, "GetPartyLeadersPlayerNumber__", &[]), int(0));
+
+    let sackboy = w.add_player([1., 2., 3.], (2., 4.));
+    assert_eq!(w.player_records.len(), 1, "the record was already there");
+    assert_eq!(w.players[0].number, 0);
+    assert_eq!(game(&mut w, head, &[int(0)]), Value::Thing(Some(sackboy)));
+    assert_eq!(game(&mut w, local_id, &[int(0)]), Value::Bool(true));
+    assert_eq!(game(&mut w, head, &[int(1)]), Value::Thing(None));
+    // A second Sackboy brings his record with him.
+    let second = w.add_player([5., 2., 3.], (2., 4.));
+    assert_eq!(game(&mut w, "GetNumPlayers__", &[]), int(2));
+    assert_eq!(game(&mut w, "GetPlayerNumber__i", &[int(1)]), int(1));
+    assert_eq!(game(&mut w, exists, &[int(1)]), Value::Bool(true));
+    assert_eq!(game(&mut w, head, &[int(1)]), Value::Thing(Some(second)));
+    let part = part(&mut w, second, "YellowHead");
+    assert_eq!(
+        w.get_member(MemberKind::RefPtr, &part, "PYellowHead", "PlayerNumber"),
+        Ok(int(1))
+    );
+
+    // Teams: the record's field, -1 without a record; a set for nobody does nothing.
+    let (set, get) = (
+        "SetPlayerTeamNumber__Q18Game.EPlayerNumberi",
+        "GetPlayerTeamNumber__Q18Game.EPlayerNumber",
+    );
+    assert_eq!(game(&mut w, get, &[int(1)]), int(0));
+    assert_eq!(game(&mut w, set, &[int(1), int(1)]), Value::Void);
+    assert_eq!(game(&mut w, get, &[int(1)]), int(1));
+    assert_eq!(game(&mut w, get, &[int(0)]), int(0));
+    assert_eq!(game(&mut w, set, &[int(3), int(1)]), Value::Void);
+    assert_eq!(game(&mut w, get, &[int(3)]), int(-1));
+    assert_eq!(w.player_records[1].team, 1);
+
+    // A world that was not read from a level has no player at all.
+    let mut empty = LevelWorld::default();
+    assert_eq!(game(&mut empty, "GetNumPlayers__", &[]), int(0));
+    assert_eq!(game(&mut empty, "GetPlayerNumber__i", &[int(0)]), int(-1));
+    assert_eq!(game(&mut empty, exists, &[int(0)]), Value::Bool(false));
+    assert_eq!(
+        game(&mut empty, "GetPartyLeadersPlayerNumber__", &[]),
+        int(-1)
+    );
+}
+
+#[test]
+fn stage4_score_and_multiplier_natives_keep_the_player_record() {
+    let (int, float) = (Value::Int, Value::Float);
+    let mut w = LevelWorld::from_things(&level());
+    let p = |name: &str| format!("{name}__Q18Game.EPlayerNumber");
+    let get = |w: &mut LevelWorld, name: &str, player: i32| game(w, &p(name), &[int(player)]);
+
+    // The counter, and the multiplier it stands for: counter / 5 + 1.
+    let set_counter = p("SetPlayerScoreMultiplierCounter") + "i";
+    assert_eq!(get(&mut w, "GetPlayerScoreMultiplier", 0), int(1));
+    game(&mut w, &set_counter, &[int(0), int(12)]);
+    assert_eq!(get(&mut w, "GetPlayerScoreMultiplierCounter", 0), int(12));
+    assert_eq!(get(&mut w, "GetPlayerScoreMultiplier", 0), int(3));
+    // Increment: min(counter + add, cap), stored and returned.
+    let increment = p("IncrementPlayerScoreMultiplierCounter") + "ii";
+    assert_eq!(
+        game(&mut w, &increment, &[int(0), int(2), int(20)]),
+        int(14)
+    );
+    assert_eq!(
+        game(&mut w, &increment, &[int(0), int(9), int(20)]),
+        int(20)
+    );
+    assert_eq!(w.player_records[0].multiplier_counter, 20);
+
+    // The timer counts down to 0 and stays there.
+    let set_timer = p("SetPlayerScoreMultiplierTimer") + "i";
+    game(&mut w, &set_timer, &[int(0), int(2)]);
+    assert_eq!(get(&mut w, "GetPlayerScoreMultiplierTimer", 0), int(2));
+    for left in [1, 0, 0] {
+        assert_eq!(
+            get(&mut w, "DecrementPlayerScoreMultiplierTimer", 0),
+            int(left)
+        );
+    }
+    assert_eq!(w.player_records[0].multiplier_timer, 0);
+
+    // Visible and source are kept on the record; a null source is allowed.
+    let visible = p("SetPlayerScoreMultiplierVisible") + "b";
+    let source = p("SetPlayerScoreMultiplierSource") + "Q5Thing";
+    game(&mut w, &visible, &[int(0), Value::Bool(true)]);
+    game(&mut w, &source, &[int(0), Value::Thing(Some(1))]);
+    assert!(w.player_records[0].multiplier_visible);
+    assert_eq!(w.player_records[0].multiplier_source, Some(1));
+    game(&mut w, &source, &[int(0), Value::Thing(None)]);
+    assert_eq!(w.player_records[0].multiplier_source, None);
+
+    // The score: negative becomes 0, the cap is 4,000,000.
+    let set_score = p("SetPlayerScore") + "f";
+    assert_eq!(get(&mut w, "GetPlayerScore", 0), float(0.));
+    game(&mut w, &set_score, &[int(0), float(150.5)]);
+    assert_eq!(get(&mut w, "GetPlayerScore", 0), float(150.5));
+    game(&mut w, &set_score, &[int(0), float(-3.)]);
+    assert_eq!(get(&mut w, "GetPlayerScore", 0), float(0.));
+    game(&mut w, &set_score, &[int(0), float(5.0e6)]);
+    assert_eq!(get(&mut w, "GetPlayerScore", 0), float(4.0e6));
+
+    // A player without a record: the getters give 0, the setters do nothing.
+    let before = w.player_records.clone();
+    for name in [
+        "GetPlayerScoreMultiplier",
+        "GetPlayerScoreMultiplierCounter",
+        "GetPlayerScoreMultiplierTimer",
+        "DecrementPlayerScoreMultiplierTimer",
+    ] {
+        assert_eq!(get(&mut w, name, 2), int(0), "{name}");
+    }
+    assert_eq!(game(&mut w, &increment, &[int(2), int(1), int(9)]), int(0));
+    assert_eq!(get(&mut w, "GetPlayerScore", 2), float(0.));
+    game(&mut w, &set_counter, &[int(2), int(5)]);
+    game(&mut w, &set_timer, &[int(2), int(5)]);
+    game(&mut w, &set_score, &[int(2), float(5.)]);
+    game(&mut w, &visible, &[int(2), Value::Bool(true)]);
+    game(&mut w, &source, &[int(2), Value::Thing(Some(1))]);
+    assert_eq!(w.player_records, before);
+    // A wrong argument type is an error, not a silent default.
+    assert!(native(&mut w, "Game", &set_score, &[int(0), int(1)]).is_err());
+}
+
+#[test]
+fn stage4_global_settings_follow_the_priority_rule() {
+    let int = Value::Int;
+    let mut things = level();
+    things[0].data.world = Some(WorldPart {
+        global_settings_thing_uids: vec![0, 0, 40],
+        global_settings_thing_priority: vec![0, 0, 1],
+        ..Default::default()
+    });
+    let mut w = LevelWorld::from_things(&things);
+    let get = |w: &mut LevelWorld, kind: i32| {
+        let name = "GetGlobalSettingUID__Q24Game.EGlobalSettingsType";
+        native(w, "Game", name, &[int(kind)])
+    };
+    let set = |w: &mut LevelWorld, kind: i32, uid: i32, priority: i32| {
+        let name = "SetGlobalSettingUID__Q24Game.EGlobalSettingsTypeii";
+        native(w, "Game", name, &[int(kind), int(uid), int(priority)])
+    };
+    // The stored values are the start, for all 8 slots.
+    assert_eq!(get(&mut w, 2), Ok(int(40)));
+    assert_eq!(get(&mut w, 7), Ok(int(0)));
+    assert!(get(&mut w, 8).is_err());
+    assert!(get(&mut w, -1).is_err());
+    assert!(set(&mut w, 8, 1, 0).is_err());
+
+    // A free slot (priority 0) goes to whoever asks, and again to the next at priority 0.
+    set(&mut w, 0, 11, 0).unwrap();
+    assert_eq!(get(&mut w, 0), Ok(int(11)));
+    set(&mut w, 0, 12, 0).unwrap();
+    assert_eq!(get(&mut w, 0), Ok(int(12)));
+    // Priority 1 takes it and then holds it: nobody gets it after that, at any priority.
+    set(&mut w, 0, 13, 1).unwrap();
+    assert_eq!(get(&mut w, 0), Ok(int(13)));
+    for (uid, priority) in [(14, 0), (15, 1), (16, 2), (0, 1)] {
+        set(&mut w, 0, uid, priority).unwrap();
+        assert_eq!(get(&mut w, 0), Ok(int(13)), "uid {uid} priority {priority}");
+    }
+    // The same for a slot the level file stores as held.
+    set(&mut w, 2, 41, 1).unwrap();
+    assert_eq!(get(&mut w, 2), Ok(int(40)));
+    // A higher priority than 1 is not a lock; a lower request loses against it.
+    set(&mut w, 1, 21, 2).unwrap();
+    set(&mut w, 1, 22, 1).unwrap();
+    assert_eq!(get(&mut w, 1), Ok(int(21)));
+    set(&mut w, 1, 23, 3).unwrap();
+    assert_eq!(get(&mut w, 1), Ok(int(23)));
+    // UID 0 clears the slot and its priority, so anyone can take it again.
+    set(&mut w, 1, 0, 3).unwrap();
+    assert_eq!(get(&mut w, 1), Ok(int(0)));
+    assert_eq!(w.pworld.global_settings_thing_priority[1], 0);
+    set(&mut w, 1, 24, 0).unwrap();
+    assert_eq!(get(&mut w, 1), Ok(int(24)));
+    assert_eq!(
+        w.pworld.global_settings_thing_uids,
+        [13, 24, 40, 0, 0, 0, 0, 0]
+    );
+}
+
+fn render_mesh(guid: u32) -> Option<RenderMesh> {
+    Some(RenderMesh {
+        mesh: Some(desc(guid)),
+        bone_things: vec![],
+        anim: None,
+        anim_pos: 0.,
+        anim_speed: 0.,
+        anim_loop: false,
+        editor_color: 0,
+        cast_shadows: 0,
+        visibility_flags: 0,
+        poppet_render_scale: 1.,
+    })
+}
+
+#[test]
+fn stage4_slot_ids_game_state_and_the_lock_mesh() {
+    use lbp_script_vm::natives::LOCK_MESH;
+    // A class named SlotID with two s32 fields: the objects are made ahead.
+    let mut slot = base();
+    slot.class_name = "SlotID".into();
+    slot.strings_a = ["SlotID", "Type", "SlotNumber", "Mode__"]
+        .map(String::from)
+        .to_vec();
+    slot.type_refs = vec![ty(3, 0), ty(3, 0)];
+    let mut vm = Vm::default();
+    vm.load(slot, Some(BASE));
+
+    // Thing 0 is the world, 1 the level link; under it 3 (another mesh), 4 below 3 (the
+    // lock mesh) and 5 (the lock mesh again, later in the walk). 2 is beside the link.
+    let mut things: Vec<ThingRecord> = level();
+    things.extend((3..6).map(|index| ThingRecord {
+        index,
+        ..Default::default()
+    }));
+    things[3].parent = Some(1);
+    things[4].parent = Some(3);
+    things[5].parent = Some(1);
+    things[2].data.render_mesh = render_mesh(LOCK_MESH);
+    things[3].data.render_mesh = render_mesh(77);
+    things[4].data.render_mesh = render_mesh(LOCK_MESH);
+    things[5].data.render_mesh = render_mesh(LOCK_MESH);
+    let mut host = Bindings::new(LevelWorld::from_things(&things));
+
+    // Without the objects the natives say so instead of handing out null.
+    assert!(native(&mut host.world, "Game", "GetLevelSlotID__", &[]).is_err());
+    assert!(lbp_runtime::add_engine_objects(&mut vm, &mut host, 1000).is_empty());
+    let w = &mut host.world;
+    let level_slot = w.level_slot.expect("level slot");
+    let primary = w.primary_level_slot.expect("primary slot");
+    assert_ne!(level_slot, primary);
+    for _ in 0..2 {
+        assert_eq!(
+            native(w, "Game", "GetLevelSlotID__", &[]),
+            Ok(Value::Object(Some(level_slot)))
+        );
+    }
+    assert_eq!(
+        native(w, "Game", "GetPrimaryLevelSlotID__", &[]),
+        Ok(Value::Object(Some(primary)))
+    );
+    for o in [level_slot, primary] {
+        assert_eq!(vm.field(o, "Type"), Some(&Value::Int(0)));
+        assert_eq!(vm.field(o, "SlotNumber"), Some(&Value::Int(0)));
+    }
+
+    // Game state in play: not paused whatever the level file stores, no tutorial, not
+    // the demo build, music may start.
+    w.pworld.is_paused = true;
+    let flag = |w: &mut LevelWorld, name: &str| native(w, "Game", name, &[]);
+    assert_eq!(flag(w, "IsVcrPaused__"), Ok(Value::Bool(false)));
+    assert_eq!(flag(w, "IsPSNDemoBuild__"), Ok(Value::Bool(false)));
+    assert_eq!(flag(w, "IsTutorialLevel__"), Ok(Value::Bool(false)));
+    w.tutorial_level = true;
+    assert_eq!(flag(w, "IsTutorialLevel__"), Ok(Value::Bool(true)));
+    assert_eq!(
+        native(w, "Audio", "IsSafeToTriggerMusic__i", &[Value::Int(0)]),
+        Ok(Value::Bool(true))
+    );
+
+    // FindLockMesh: the first descendant with the lock mesh, a Thing before its
+    // children; Things outside the subtree do not count.
+    let find = |w: &mut LevelWorld, t: Option<u32>| {
+        native(w, "TriggerLevelLink", "FindLockMesh__", &[Value::Thing(t)])
+    };
+    assert_eq!(find(w, Some(1)), Ok(Value::Thing(Some(4))));
+    assert_eq!(find(w, Some(3)), Ok(Value::Thing(Some(4))));
+    assert_eq!(find(w, Some(4)), Ok(Value::Thing(None)));
+    assert_eq!(find(w, Some(5)), Ok(Value::Thing(None)));
+    assert_eq!(find(w, Some(0)), Ok(Value::Thing(Some(4))));
+    w.things[4].mesh_guid = Some(77);
+    assert_eq!(find(w, Some(1)), Ok(Value::Thing(Some(5))));
+    assert_eq!(find(w, Some(0)), Ok(Value::Thing(Some(5))));
+    w.things[5].mesh_guid = None;
+    assert_eq!(find(w, Some(1)), Ok(Value::Thing(None)));
+    assert_eq!(find(w, Some(0)), Ok(Value::Thing(Some(2))));
+    assert!(find(w, None).is_err());
+}
+
+#[test]
+fn stage4_recorded_calls_are_counted_and_change_nothing_else() {
+    use lbp_script_vm::natives::{bound, RECORDED_ONLY};
+    let mut w = LevelWorld::from_things(&level());
+    let me = Value::Thing(Some(1));
+    let null = Value::Thing(None);
+    let colour = Value::Vec4([0.5, 0.25, 1., 1.]);
+    let calls: [(&str, &str, Vec<Value>); 12] = [
+        ("World", "SetPieChartMultiplier__i", vec![Value::Int(3)]),
+        ("Thing", "UpdateScale__", vec![me.clone()]),
+        ("Thing", "HideRenderMesh__Q5Thing", vec![me.clone()]),
+        ("Thing", "HideRenderMesh__Q5Thing", vec![null.clone()]),
+        (
+            "Thing",
+            "SetRenderMeshEditorTexture__Q5ThingQ8Resource",
+            vec![me.clone(), Value::Ref(900)],
+        ),
+        (
+            "Thing",
+            "SetRenderMeshEditorColour__Q5Thingr",
+            vec![me.clone(), colour.clone()],
+        ),
+        (
+            "Thing",
+            "SetRenderMeshEditorColour__Q5Thingr",
+            vec![null.clone(), colour],
+        ),
+        (
+            "Thing",
+            "RemoveFromAnimatingDivergentList__",
+            vec![me.clone()],
+        ),
+        (
+            "Trigger_Speech_Bubble",
+            "NotifyNpcsOfMouthEnd__",
+            vec![me.clone()],
+        ),
+        ("NoJoinMarker", "SetGameNoJoin__", vec![me.clone()]),
+        ("Game", "GotoScoreboard__b", vec![Value::Bool(true)]),
+        ("Game", "GotoScoreboard__b", vec![Value::Bool(false)]),
+    ];
+    for (class, name, args) in &calls {
+        assert_eq!(native(&mut w, class, name, args), Ok(Value::Void), "{name}");
+        assert!(RECORDED_ONLY.contains(&(*class, *name)), "{name}");
+    }
+    let counted: Vec<_> = w.engine_calls.iter().map(|(k, n)| (*k, *n)).collect();
+    assert_eq!(
+        counted,
+        [
+            ("GotoScoreboard", 2),
+            ("HideRenderMesh", 2),
+            ("NotifyNpcsOfMouthEnd", 1),
+            ("RemoveFromAnimatingDivergentList", 1),
+            ("SetGameNoJoin", 1),
+            ("SetPieChartMultiplier", 1),
+            ("SetRenderMeshEditorColour", 2),
+            ("SetRenderMeshEditorTexture", 1),
+            ("UpdateScale", 1),
+        ]
+    );
+    // The display calls are kept on their Thing; the scoreboard request with its flag.
+    assert!(w.things[1].render_mesh_hidden);
+    assert_eq!(w.things[1].render_mesh_colour, Some([0.5, 0.25, 1., 1.]));
+    assert_eq!(w.things[1].render_mesh_texture, Some(Value::Ref(900)));
+    assert_eq!(w.scoreboard_requests, [true, false]);
+    assert!(!w.things[2].render_mesh_hidden && w.things[2].render_mesh_colour.is_none());
+    // A wrong argument is still an error.
+    let bad = [me, Value::Int(1)];
+    assert!(native(&mut w, "Thing", "SetRenderMeshEditorColour__Q5Thingr", &bad).is_err());
+    // Every recorded-only native is in the table.
+    for entry in RECORDED_ONLY {
+        assert!(bound().any(|b| b == entry), "{entry:?}");
+    }
 }

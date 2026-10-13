@@ -17,7 +17,7 @@
 use lbp_level::parts::{ScriptObject, ScriptPart, ScriptValue, ShapeColor, SwitchSignal};
 use lbp_level::thing::ThingRecord;
 use lbp_script_vm::natives::{
-    Bindings, CameraFromToUp, ResourceKind, SwitchInput, World, SCORE_BOARD_SCRIPT,
+    Bindings, CameraFromToUp, PlayerRecord, ResourceKind, SwitchInput, World, SCORE_BOARD_SCRIPT,
 };
 use lbp_script_vm::{ClassId, Host, MemberKind, ObjectId, Step, Task, Value, Vm};
 use std::collections::{BTreeMap, BTreeSet};
@@ -66,6 +66,15 @@ pub struct ThingState {
     /// PMicrochip: the chip's circuit-board Thing. The components on the board are the
     /// board's children.
     pub circuit_board: Option<u32>,
+    /// GUID of the mesh the Thing's PRenderMesh shows, when it has one with a GUID.
+    pub mesh_guid: Option<u32>,
+    /// A script hid the render mesh (`Thing.HideRenderMesh`); nothing draws by it yet.
+    pub render_mesh_hidden: bool,
+    /// Render-mesh editor colour a script set (`SetRenderMeshEditorColour`).
+    pub render_mesh_colour: Option<[f32; 4]>,
+    /// Render-mesh editor texture a script set (`SetRenderMeshEditorTexture`), as passed
+    /// (a resource handle, or null).
+    pub render_mesh_texture: Option<Value>,
 }
 
 /// A PSwitch at run time: the stored settings and its outputs. The switch pass
@@ -141,6 +150,8 @@ pub struct TriggerState {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PlayerState {
     pub thing: u32,
+    /// His `PYellowHead.PlayerNumber`, the number of his [`PlayerRecord`].
+    pub number: i32,
     /// Nearest and farthest z his body covers (the layers he stands in).
     pub layers: (f32, f32),
 }
@@ -259,8 +270,16 @@ pub struct LevelWorld {
     pub planets: Option<ObjectId>,
     /// Planet objects by `GetCrafteroid__i` index - 1, with their Thing.
     pub crafteroids: Vec<(ObjectId, Option<u32>)>,
-    /// `Game.SetPlayerScoreMultiplierTimer` by player number.
-    pub score_multiplier_timers: BTreeMap<i32, i32>,
+    /// The game state's player records, in join order (`Game.GetNumPlayers__` is their
+    /// count). A level read with [`LevelWorld::from_things`] starts with the record of
+    /// one local player, number 0, who has no Sackboy yet; [`LevelWorld::add_player`]
+    /// gives the next record a Sackboy and makes the record when it is missing.
+    ///
+    /// INFERRED: one local player whose `Game.EPlayerNumber` is 0, there from the start
+    /// (in the game a level is not played without a player, and his record is there
+    /// before his Sackboy is spawned); his team starts at 0 (the start value was not
+    /// read; the world script sets every player's team each tick).
+    pub player_records: Vec<PlayerRecord>,
     /// Players' Sackboys ([`LevelWorld::add_player`]); none until a caller adds one.
     pub players: Vec<PlayerState>,
     /// Switch targets whose port already had an output wired (the first one is kept).
@@ -286,7 +305,23 @@ pub struct LevelWorld {
     pub board_owners: BTreeMap<u32, u32>,
     /// `Audio.PlaySound__Q5ThingQ7StringA` requests by sound name; nothing plays.
     pub sounds_played: BTreeMap<String, u64>,
+    /// Calls the world only records ([`World::engine_call`]), by name.
+    pub engine_calls: BTreeMap<&'static str, u64>,
+    /// `Game.GotoScoreboard__b` requests, with the flag passed. The game ends the level
+    /// on it; nothing here does.
+    pub scoreboard_requests: Vec<bool>,
+    /// The script SlotID objects `Game.GetLevelSlotID__` and `GetPrimaryLevelSlotID__`
+    /// hand out (see [`add_engine_objects`]).
+    pub level_slot: Option<ObjectId>,
+    pub primary_level_slot: Option<ObjectId>,
+    /// `Game.IsTutorialLevel__`. False unless the caller sets it (INFERRED: which levels
+    /// the game sets it for is not established).
+    pub tutorial_level: bool,
 }
+
+/// Slots of the PWorld global-settings arrays (FOUND: the natives index two arrays of
+/// 8 x s32, PWorld+0x5d8 and +0x5f8).
+pub const GLOBAL_SETTINGS: usize = 8;
 
 /// PWorld state scripts read through `World.World` members, with the level file's values
 /// at the start.
@@ -299,12 +334,14 @@ pub struct WorldState {
     pub frame: i32,
     /// PWorld `simFrame`, advanced with `frame`.
     pub sim_frame: i32,
-    /// PWorld `isPaused` as stored (read by nothing here yet).
+    /// PWorld `isPaused` as stored. Nothing reads it: see `Game.IsVcrPaused__` in
+    /// [`LevelWorld::state_query`].
     pub is_paused: bool,
     /// `PWorld.WaterLevel`.
     pub water_level: f32,
-    /// PWorld `GlobalSettingsThingUIDs` and `GlobalSettingsThingPriority` as stored, one
-    /// entry per global-settings type (read by nothing here yet).
+    /// PWorld `GlobalSettingsThingUIDs` and `GlobalSettingsThingPriority`, one entry per
+    /// global-settings type: the stored values at the start (padded with zeros to
+    /// [`GLOBAL_SETTINGS`] entries), then what `Game.SetGlobalSettingUID` makes of them.
     pub global_settings_thing_uids: Vec<i32>,
     pub global_settings_thing_priority: Vec<i32>,
 }
@@ -449,9 +486,15 @@ impl LevelWorld {
                         .microchip
                         .and_then(|m| m.circuit_board)
                         .and_then(handle),
+                    mesh_guid: t
+                        .data
+                        .render_mesh
+                        .as_ref()
+                        .and_then(|m| m.mesh.as_ref()?.guid),
                     ..Default::default()
                 })
                 .collect(),
+            player_records: vec![PlayerRecord::default()],
             ..Default::default()
         };
         // Children in Thing-list order.
@@ -483,6 +526,14 @@ impl LevelWorld {
                 global_settings_thing_uids: p.global_settings_thing_uids.clone(),
                 global_settings_thing_priority: p.global_settings_thing_priority.clone(),
             };
+            for slots in [
+                &mut w.pworld.global_settings_thing_uids,
+                &mut w.pworld.global_settings_thing_priority,
+            ] {
+                if slots.len() < GLOBAL_SETTINGS {
+                    slots.resize(GLOBAL_SETTINGS, 0);
+                }
+            }
         }
         for (i, t) in w.things.iter().enumerate() {
             if let Some(board) = t.circuit_board {
@@ -715,7 +766,9 @@ impl LevelWorld {
     }
 
     /// Adds a player's Sackboy as a new Thing (YELLOWHEAD, CREATURE, BODY, POS; no parent)
-    /// at `position`, covering the z span `layers`. Triggers test players only.
+    /// at `position`, covering the z span `layers`. Triggers test players only. The n-th
+    /// Sackboy belongs to player number n - 1; that player's record
+    /// ([`LevelWorld::player_records`]) is made here when it is not there yet.
     pub fn add_player(&mut self, position: [f32; 3], layers: (f32, f32)) -> u32 {
         let thing = self.things.len() as u32;
         self.things.push(ThingState {
@@ -724,12 +777,22 @@ impl LevelWorld {
         });
         // `PYellowHead.PlayerNumber`, read by scripts a player walks into: the player's
         // index (INFERRED: an s32 `Game.EPlayerNumber`, as `Game.GetPlayerNumber__i`).
-        let number = Value::Int(self.players.len() as i32);
+        let number = self.players.len() as i32;
         let part = self.part_handle(thing, "YELLOWHEAD") as usize - 1;
         self.part_handles[part]
             .members
-            .insert("PlayerNumber".into(), number);
-        self.players.push(PlayerState { thing, layers });
+            .insert("PlayerNumber".into(), Value::Int(number));
+        if !self.player_records.iter().any(|r| r.number == number) {
+            self.player_records.push(PlayerRecord {
+                number,
+                ..Default::default()
+            });
+        }
+        self.players.push(PlayerState {
+            thing,
+            number,
+            layers,
+        });
         self.move_player(thing, position, layers);
         thing
     }
@@ -1217,9 +1280,10 @@ impl World for LevelWorld {
         *self.sounds_played.entry(name.to_owned()).or_default() += 1;
         Ok(())
     }
-    /// One local player (the PC run has no controllers yet).
+    /// FOUND (01.33, 0x5fadd4 -> 0x5e885c): the count of player records
+    /// ([`LevelWorld::player_records`]).
     fn num_players(&mut self) -> Result<i32, String> {
-        Ok(1)
+        Ok(self.player_records.len() as i32)
     }
     /// Play mode (0); levels run as played, not edited.
     fn play_or_edit_mode(&mut self) -> Result<i32, String> {
@@ -1256,15 +1320,119 @@ impl World for LevelWorld {
         self.thing_mut(thing)?.anim_speed = Some(speed);
         Ok(())
     }
-    /// Player `index` is `Game.EPlayerNumber` `index` (INFERRED: no enum values are in the
-    /// script tables); outside `0..num_players()` is an error.
+    /// FOUND (01.33, 0x5e917c): the number of record `index`, -1 outside the records.
     fn player_number(&mut self, index: i32) -> Result<i32, String> {
-        let n = self.num_players()?;
-        if (0..n).contains(&index) {
-            Ok(index)
-        } else {
-            Err(format!("player index {index} outside 0..{n}"))
+        let record = usize::try_from(index)
+            .ok()
+            .and_then(|i| self.player_records.get(i));
+        Ok(record.map_or(-1, |r| r.number))
+    }
+    fn player(&mut self, number: i32) -> Result<Option<&mut PlayerRecord>, String> {
+        Ok(self.player_records.iter_mut().find(|r| r.number == number))
+    }
+    /// FOUND (01.33, 0x18ec14): the game walks the PWorld's list of PYellowHead parts for
+    /// the one with this player number. Here those are the Sackboys
+    /// [`LevelWorld::add_player`] made; a level file's own PYellowHead Things are not
+    /// looked at (INFERRED: a stored level has no player in it).
+    fn yellowhead(&mut self, number: i32) -> Result<Option<u32>, String> {
+        let player = self.players.iter().find(|p| p.number == number);
+        Ok(player.map(|p| p.thing))
+    }
+    /// INFERRED: one machine, so every player with a record is local.
+    fn player_is_local(&mut self, number: i32) -> Result<bool, String> {
+        Ok(self.player_records.iter().any(|r| r.number == number))
+    }
+    /// FOUND (01.33, 0x5eb810): 0 for a level without a PWorld. A `kind` outside the
+    /// slots is an error (the game reads past the array).
+    fn global_setting_uid(&mut self, kind: i32) -> Result<i32, String> {
+        if self.world.is_none() {
+            return Ok(0);
         }
+        let slots = &self.pworld.global_settings_thing_uids;
+        usize::try_from(kind)
+            .ok()
+            .and_then(|k| slots.get(k).copied())
+            .ok_or_else(|| format!("global setting {kind} outside 0..{}", slots.len()))
+    }
+    /// FOUND (01.33, 0xce554): see `Game.SetGlobalSettingUID` in the native table.
+    /// Nothing for a level without a PWorld (0x5eb718 tests for one first).
+    fn set_global_setting_uid(&mut self, kind: i32, uid: i32, priority: i32) -> Result<(), String> {
+        if self.world.is_none() {
+            return Ok(());
+        }
+        let p = &mut self.pworld;
+        let n = p
+            .global_settings_thing_uids
+            .len()
+            .min(p.global_settings_thing_priority.len());
+        let k = usize::try_from(kind)
+            .ok()
+            .filter(|&k| k < n)
+            .ok_or_else(|| format!("global setting {kind} outside 0..{n}"))?;
+        let current = p.global_settings_thing_priority[k];
+        if priority < current || current == 1 {
+            return Ok(());
+        }
+        p.global_settings_thing_uids[k] = uid;
+        p.global_settings_thing_priority[k] = if uid != 0 { priority } else { 0 };
+        Ok(())
+    }
+    /// The SlotID object made ahead ([`add_engine_objects`]).
+    fn level_slot_id(&mut self, primary: bool) -> Result<Value, String> {
+        let slot = if primary {
+            self.primary_level_slot
+        } else {
+            self.level_slot
+        };
+        slot.map(|o| Value::Object(Some(o)))
+            .ok_or_else(|| "no SlotID object (class not loaded)".into())
+    }
+    /// Depth first, a Thing before its children, children in Thing-list order.
+    fn find_mesh_descendant(&mut self, thing: u32, mesh: u32) -> Result<Option<u32>, String> {
+        let mut at = self.state(thing)?.first_child;
+        // Bounded, so a damaged tree cannot loop.
+        for _ in 0..self.things.len() {
+            let Some(t) = at else { break };
+            let state = self.state(t)?;
+            if state.mesh_guid == Some(mesh) {
+                return Ok(Some(t));
+            }
+            at = state.first_child;
+            let mut up = t;
+            while at.is_none() && up != thing {
+                let s = self.state(up)?;
+                at = s.next_sibling;
+                match s.parent {
+                    Some(p) if at.is_none() => up = p,
+                    _ => break,
+                }
+            }
+        }
+        Ok(None)
+    }
+    /// Counted by name in [`LevelWorld::engine_calls`]. The render-mesh calls are also
+    /// kept on their Thing (nothing draws by them yet) and a scoreboard request in
+    /// [`LevelWorld::scoreboard_requests`]. A null Thing is counted and nothing more, as
+    /// the game does nothing for it.
+    fn engine_call(
+        &mut self,
+        name: &'static str,
+        thing: Option<u32>,
+        args: &[Value],
+    ) -> Result<(), String> {
+        *self.engine_calls.entry(name).or_default() += 1;
+        if let ("GotoScoreboard", Some(Value::Bool(b))) = (name, args.first()) {
+            self.scoreboard_requests.push(*b);
+        }
+        let Some(thing) = thing else { return Ok(()) };
+        let t = self.thing_mut(thing)?;
+        match (name, args.first()) {
+            ("HideRenderMesh", _) => t.render_mesh_hidden = true,
+            ("SetRenderMeshEditorColour", Some(Value::Vec4(c))) => t.render_mesh_colour = Some(*c),
+            ("SetRenderMeshEditorTexture", Some(v)) => t.render_mesh_texture = Some(v.clone()),
+            _ => {}
+        }
+        Ok(())
     }
     /// The handle is the GUID itself (INFERRED stand-in: nothing is loaded; scripts only
     /// keep the handle and pass it back to natives).
@@ -1323,8 +1491,24 @@ impl World for LevelWorld {
     /// (there is no Sackboy yet), no video, a 16:9 screen, player 0 leads, no music track
     /// (GUID 0), no user music (stopped, not paused), interactive music audible, no
     /// attraction (demo) loop.
+    ///
+    /// Stage 4, all INFERRED:
+    /// - `Game.IsVcrPaused__` is false. The game returns the PWorld's IsPaused byte, but
+    ///   the level files store it as true in 220 of the 236 levels that have a PWorld
+    ///   (PC census), story levels included, and those levels play: the stored value is
+    ///   an editor state the game must clear when play starts. Where it clears it was not
+    ///   located.
+    /// - `Game.IsTutorialLevel__` is [`LevelWorld::tutorial_level`].
+    /// - `Game.IsPSNDemoBuild__` is false: the full game, not the demo.
+    /// - `Game.GetPartyLeadersPlayerNumber__` is the first player record's number, -1
+    ///   with no record.
     fn state_query(&mut self, native: &str) -> Result<Value, String> {
         Ok(match native {
+            "Game.IsVcrPaused__" | "Game.IsPSNDemoBuild__" => Value::Bool(false),
+            "Game.IsTutorialLevel__" => Value::Bool(self.tutorial_level),
+            "Game.GetPartyLeadersPlayerNumber__" => {
+                Value::Int(self.player_records.first().map_or(-1, |r| r.number))
+            }
             "Game.IsNonInteractive__"
             | "Video.IsVideoPlaying__"
             | "System.Is4to3__"
@@ -1380,14 +1564,6 @@ impl World for LevelWorld {
     /// No cinema mode in the PC run (INFERRED default).
     fn cinema_mode_count(&mut self) -> Result<i32, String> {
         Ok(0)
-    }
-    fn set_score_multiplier_timer(&mut self, player: i32, timer: i32) -> Result<(), String> {
-        let n = self.num_players()?;
-        if !(0..n).contains(&player) {
-            return Err(format!("player {player} outside 0..{n}"));
-        }
-        self.score_multiplier_timers.insert(player, timer);
-        Ok(())
     }
     fn write(&mut self, text: &str) {
         if self.written.len() < 1000 {
@@ -1488,6 +1664,30 @@ pub fn add_engine_objects(
     if let Some(class) = vm.class_by_name("PodComputer") {
         if let Err(e) = make(vm, host, class, true) {
             faults.push(format!("PodComputer {e}"));
+        }
+    }
+    // The SlotID objects of `Game.GetLevelSlotID__` and `GetPrimaryLevelSlotID__`. FOUND:
+    // the game builds a new SlotID (fields Type and SlotNumber) on every call, from the
+    // slot the game state holds. Here one object each is made ahead and handed out every
+    // time (the scripts of the levels only read it). INFERRED: Type 0 and SlotNumber 0,
+    // an empty slot: the level's own slot is in the game's slot list, not in the level
+    // file, and is not known here.
+    if let Some(class) = vm.class_by_name("SlotID") {
+        for primary in [false, true] {
+            match vm.instantiate(class) {
+                Ok(o) => {
+                    if let Some(fields) = vm.fields_mut(o) {
+                        fields.insert("Type".into(), Value::Int(0));
+                        fields.insert("SlotNumber".into(), Value::Int(0));
+                    }
+                    if primary {
+                        host.world.primary_level_slot = Some(o);
+                    } else {
+                        host.world.level_slot = Some(o);
+                    }
+                }
+                Err(f) => faults.push(format!("SlotID {f:?}")),
+            }
         }
     }
     faults.dedup();

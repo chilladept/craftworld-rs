@@ -38,6 +38,34 @@ pub struct CameraFromToUp {
     pub params: [f32; 4],
 }
 
+/// One player's record in the game state. FOUND in the 01.33 executable (finder 0x156b18,
+/// by index 0x156b74): the game-state object holds an array of records and their count;
+/// a record is found by its player number. The fields below are the ones the score and
+/// player natives read and write (record offsets +0x30 score, +0x38 counter, +0x3c timer,
+/// +0x40 source, +0x60 visible, +0xdc number, +0xe0 team).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PlayerRecord {
+    /// `Game.EPlayerNumber` (an s32).
+    pub number: i32,
+    pub team: i32,
+    pub score: f32,
+    /// The score multiplier is `counter / 5 + 1`.
+    pub multiplier_counter: i32,
+    /// Ticks left before the multiplier counter is lost (the scripts count it down).
+    pub multiplier_timer: i32,
+    /// The Thing the multiplier display is drawn at (null = none).
+    pub multiplier_source: Option<u32>,
+    pub multiplier_visible: bool,
+}
+
+/// The highest score `Game.SetPlayerScore` stores. FOUND (01.33, 0x3970e4): the value is
+/// clamped between two constants read from the executable, 0.0 and 4,000,000.0.
+pub const MAX_PLAYER_SCORE: f32 = 4_000_000.;
+
+/// Mesh GUID `TriggerLevelLink.FindLockMesh__` looks for (FOUND, 01.33, 0x1343dc: the
+/// constant 0xeb1 compared with the GUID of a PRenderMesh's mesh).
+pub const LOCK_MESH: u32 = 0xeb1;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResourceKind {
     Texture,
@@ -173,10 +201,60 @@ pub trait World {
     fn set_anim_speed(&mut self, _thing: u32, _speed: f32) -> Result<(), String> {
         Err(not_available("animation speeds"))
     }
-    /// `Game.EPlayerNumber` of the `index`-th player, for `0 <= index < num_players()`
-    /// (scripts loop over that range).
+    /// `Game.EPlayerNumber` of the `index`-th player record; -1 outside
+    /// `0..num_players()` (scripts loop over that range).
     fn player_number(&mut self, _index: i32) -> Result<i32, String> {
         Err(not_available("players"))
+    }
+    /// The record of the player with this number; `None` when no record has it.
+    fn player(&mut self, _number: i32) -> Result<Option<&mut PlayerRecord>, String> {
+        Err(not_available("players"))
+    }
+    /// The Thing of the PYellowHead whose player number this is (the player's Sackboy);
+    /// `None` when the level has no such Thing.
+    fn yellowhead(&mut self, _number: i32) -> Result<Option<u32>, String> {
+        Err(not_available("players"))
+    }
+    /// Does this player number belong to a player on this machine?
+    fn player_is_local(&mut self, _number: i32) -> Result<bool, String> {
+        Err(not_available("players"))
+    }
+    /// The Thing UID that holds global-settings slot `kind` (`PWorld`
+    /// `GlobalSettingsThingUIDs`); 0 = nobody.
+    fn global_setting_uid(&mut self, _kind: i32) -> Result<i32, String> {
+        Err(not_available("global settings"))
+    }
+    /// A Thing asks for global-settings slot `kind` with a priority; the world applies the
+    /// game's rule (see `Game.SetGlobalSettingUID` in the native table).
+    fn set_global_setting_uid(
+        &mut self,
+        _kind: i32,
+        _uid: i32,
+        _priority: i32,
+    ) -> Result<(), String> {
+        Err(not_available("global settings"))
+    }
+    /// The script `SlotID` object of the level being played (`primary` = the slot the
+    /// player entered through, for a level reached by a level link).
+    fn level_slot_id(&mut self, _primary: bool) -> Result<Value, String> {
+        Err(not_available("level slots"))
+    }
+    /// The first descendant of the Thing, depth first, whose PRenderMesh shows the mesh
+    /// with this GUID.
+    fn find_mesh_descendant(&mut self, _thing: u32, _mesh: u32) -> Result<Option<u32>, String> {
+        Err(not_available("render meshes"))
+    }
+    /// A call whose effect is display, HUD, network or game flow that nothing here models
+    /// yet: the world records it (by `name`, with the Thing it is about and the arguments
+    /// as passed) and nothing else happens. The natives bound this way are
+    /// [`RECORDED_ONLY`].
+    fn engine_call(
+        &mut self,
+        _name: &'static str,
+        _thing: Option<u32>,
+        _args: &[Value],
+    ) -> Result<(), String> {
+        Err(not_available("engine calls"))
     }
     /// Stores the world matrix (`Thing.SetWorldPosition__m`), works out the local matrix
     /// from the parent's and moves the Thing's descendants along. Nothing for a Thing
@@ -245,11 +323,6 @@ pub trait World {
     /// `HUD.GetCinemaModeCount__` (s32; scripts only test it against zero).
     fn cinema_mode_count(&mut self) -> Result<i32, String> {
         Err(not_available("the HUD"))
-    }
-    /// `Game.SetPlayerScoreMultiplierTimer` (player, s32 timer; scripts pass 0 or a member
-    /// named `CoopScoreMultiplierTimer`).
-    fn set_score_multiplier_timer(&mut self, _player: i32, _timer: i32) -> Result<(), String> {
-        Err(not_available("scores"))
     }
     /// Outcome of a `Test.Check*` / `Test.Fail` native in the game's own test scripts.
     fn test_check(&mut self, _passed: bool, _message: &str, _line: i32) {}
@@ -522,6 +595,30 @@ fn receiver(c: &Call<'_>) -> Result<Option<u32>, String> {
 const IDENTITY: [f32; 16] = [
     1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.,
 ];
+
+/// The record of the player a score native names (parameter 0, a `Game.EPlayerNumber`).
+fn record<'a>(w: &'a mut dyn World, c: &Call<'_>) -> Result<Option<&'a mut PlayerRecord>, String> {
+    w.player(int(param(c, 0)?)?)
+}
+
+/// A [`World::state_query`] that answers with a bool.
+fn bool_query(w: &mut dyn World, native: &str) -> Result<Value, String> {
+    match w.state_query(native)? {
+        Value::Bool(b) => Ok(Value::Bool(b)),
+        other => Err(format!("{native}: expected bool, got {other:?}")),
+    }
+}
+
+/// A [`RECORDED_ONLY`] native: hands the call to [`World::engine_call`].
+fn recorded(
+    w: &mut dyn World,
+    name: &'static str,
+    thing: Option<u32>,
+    args: &[Value],
+) -> Result<Value, String> {
+    w.engine_call(name, thing, args)?;
+    Ok(Value::Void)
+}
 
 /// For the `Thing.*Switch*__i` natives: the signal wired to the receiver's input port.
 fn wired(w: &mut dyn World, c: &Call<'_>) -> Result<Option<SwitchInput>, String> {
@@ -1089,6 +1186,9 @@ const TABLE: &[(&str, &str, NativeFn)] = &[
     ("PartList", "HasPCameraTweak__Q5Thing", |w, c| {
         Ok(Value::Bool(w.has_part(subject(c)?, "PCameraTweak")?))
     }),
+    // FOUND (01.33, 0x600224 -> 0x5e917c). Declared static
+    // `Game.EPlayerNumber GetPlayerNumber(s32)`: the number of the record at this index,
+    // -1 for an index outside the records.
     ("Game", "GetPlayerNumber__i", |w, c| {
         Ok(Value::Int(w.player_number(int(param(c, 0)?)?)?))
     }),
@@ -1247,16 +1347,353 @@ const TABLE: &[(&str, &str, NativeFn)] = &[
         let key = lbp_resource::translation::lams_key(opt_text(param(c, 0)?)?.unwrap_or(""));
         Ok(Value::Int(key as i32))
     }),
+    // FOUND (01.33, 0x5fe660 -> 0x5e84f0). Declared static
+    // `void SetPlayerScoreMultiplierTimer(Game.EPlayerNumber, s32)`: the record's timer;
+    // nothing for a player without a record.
     (
         "Game",
         "SetPlayerScoreMultiplierTimer__Q18Game.EPlayerNumberi",
         |w, c| {
-            w.set_score_multiplier_timer(int(param(c, 0)?)?, int(param(c, 1)?)?)?;
+            let timer = int(param(c, 1)?)?;
+            if let Some(r) = record(w, c)? {
+                r.multiplier_timer = timer;
+            }
             Ok(Value::Void)
         },
     ),
     ("Gooey", "CreateGooey__i", |w, c| {
         w.create_gooey(int(param(c, 0)?)?)
+    }),
+    // ---- stage 4: players, score, global settings, game state ----
+    // Each entry: handler -> reader in the 01.33 executable, the declared signature from
+    // the script tables, and what is FOUND there or INFERRED. Player records are
+    // [`PlayerRecord`]; "the record" is the one whose number is the first parameter.
+    //
+    // FOUND (0x6001e0 -> 0x5e68bc). Declared static `Game.EPlayerNumber
+    // EPlayerNumberFromInt(s32)`: the callee is empty and the argument comes back.
+    ("Game", "EPlayerNumberFromInt__i", |_, c| {
+        Ok(Value::Int(int(param(c, 0)?)?))
+    }),
+    // FOUND (0x5fe0e8 -> 0x5e8728). Declared static `bool DoesPlayerExist(EPlayerNumber)`:
+    // a record with this number exists.
+    ("Game", "DoesPlayerExist__Q18Game.EPlayerNumber", |w, c| {
+        Ok(Value::Bool(record(w, c)?.is_some()))
+    }),
+    // FOUND (0x5f85c4 -> 0x5e79f4). Declared static `bool IsPlayerConnected(s32)`: the same
+    // test, a record with this number exists.
+    ("Game", "IsPlayerConnected__i", |w, c| {
+        Ok(Value::Bool(record(w, c)?.is_some()))
+    }),
+    // FOUND (0x600d40 -> 0x5e8774 -> 0x18ec14). Declared static
+    // `Thing GetYellowheadFromPlayerNumber(EPlayerNumber)`: the Thing of the level's
+    // PYellowHead whose PlayerNumber is the argument; null when there is none.
+    (
+        "Game",
+        "GetYellowheadFromPlayerNumber__Q18Game.EPlayerNumber",
+        |w, c| Ok(Value::Thing(w.yellowhead(int(param(c, 0)?)?)?)),
+    ),
+    // FOUND shape (0x5fe1f8 -> 0x5e6ac4 -> 0x243b54). Declared static
+    // `bool PlayerNumberIsLocalPlayer(EPlayerNumber)`: a scan of the network session's
+    // entry for this machine for a player with this number. INFERRED for the world: with
+    // one machine, every player who has a record is local.
+    (
+        "Game",
+        "PlayerNumberIsLocalPlayer__Q18Game.EPlayerNumber",
+        |w, c| Ok(Value::Bool(w.player_is_local(int(param(c, 0)?)?)?)),
+    ),
+    // FOUND (0x5fe0a4 -> 0x5ea758). Declared static `bool IsLocalPlayerID(EPlayerNumber)`:
+    // the player's yellowhead Thing exists, has a PYellowHead, and the network layer
+    // calls its player number local.
+    ("Game", "IsLocalPlayerID__Q18Game.EPlayerNumber", |w, c| {
+        let n = int(param(c, 0)?)?;
+        Ok(Value::Bool(
+            w.yellowhead(n)?.is_some() && w.player_is_local(n)?,
+        ))
+    }),
+    // FOUND shape (0x600268 -> 0x240a88). Declared static
+    // `Game.EPlayerNumber GetPartyLeadersPlayerNumber()`: a scan of the session's players
+    // for the leader, -1 with nobody. INFERRED for the world: the first record leads.
+    ("Game", "GetPartyLeadersPlayerNumber__", |w, _| {
+        w.state_query("Game.GetPartyLeadersPlayerNumber__")
+    }),
+    // FOUND (0x5fe520 -> 0x5e81e4). Declared static
+    // `void SetPlayerTeamNumber(EPlayerNumber, s32)`: the record's team; nothing without a
+    // record.
+    (
+        "Game",
+        "SetPlayerTeamNumber__Q18Game.EPlayerNumberi",
+        |w, c| {
+            let team = int(param(c, 1)?)?;
+            if let Some(r) = record(w, c)? {
+                r.team = team;
+            }
+            Ok(Value::Void)
+        },
+    ),
+    // FOUND (0x5fe55c -> 0x5e8234). Declared static `s32 GetPlayerTeamNumber(EPlayerNumber)`:
+    // the record's team, -1 without a record.
+    (
+        "Game",
+        "GetPlayerTeamNumber__Q18Game.EPlayerNumber",
+        |w, c| Ok(Value::Int(record(w, c)?.map_or(-1, |r| r.team))),
+    ),
+    // FOUND (0x5fe6e0 -> 0x5e858c -> 0x3959e0). Declared static
+    // `void SetPlayerScoreMultiplierCounter(EPlayerNumber, s32)`: the record's counter;
+    // nothing without a record. Not modelled: the HUD and audio call that follows.
+    (
+        "Game",
+        "SetPlayerScoreMultiplierCounter__Q18Game.EPlayerNumberi",
+        |w, c| {
+            let counter = int(param(c, 1)?)?;
+            if let Some(r) = record(w, c)? {
+                r.multiplier_counter = counter;
+            }
+            Ok(Value::Void)
+        },
+    ),
+    // FOUND (0x5fe71c -> 0x5e8eb4). Declared static
+    // `s32 GetPlayerScoreMultiplierCounter(EPlayerNumber)`: the counter, 0 without a record.
+    (
+        "Game",
+        "GetPlayerScoreMultiplierCounter__Q18Game.EPlayerNumber",
+        |w, c| {
+            Ok(Value::Int(
+                record(w, c)?.map_or(0, |r| r.multiplier_counter),
+            ))
+        },
+    ),
+    // FOUND (0x5fe7b4 -> 0x5e8178). Declared static
+    // `s32 GetPlayerScoreMultiplier(EPlayerNumber)`: counter / 5 + 1, 0 without a record.
+    (
+        "Game",
+        "GetPlayerScoreMultiplier__Q18Game.EPlayerNumber",
+        |w, c| {
+            Ok(Value::Int(
+                record(w, c)?.map_or(0, |r| r.multiplier_counter / 5 + 1),
+            ))
+        },
+    ),
+    // FOUND (0x5fe760 -> 0x5e8e1c). Declared static
+    // `s32 IncrementPlayerScoreMultiplierCounter(EPlayerNumber, s32 add, s32 cap)`: the
+    // counter becomes min(counter + add, cap) and is returned; 0 without a record.
+    (
+        "Game",
+        "IncrementPlayerScoreMultiplierCounter__Q18Game.EPlayerNumberii",
+        |w, c| {
+            let (add, cap) = (int(param(c, 1)?)?, int(param(c, 2)?)?);
+            Ok(Value::Int(record(w, c)?.map_or(0, |r| {
+                r.multiplier_counter = r.multiplier_counter.wrapping_add(add).min(cap);
+                r.multiplier_counter
+            })))
+        },
+    ),
+    // FOUND (0x5fe69c -> 0x5e8540). Declared static
+    // `s32 GetPlayerScoreMultiplierTimer(EPlayerNumber)`: the timer, 0 without a record.
+    (
+        "Game",
+        "GetPlayerScoreMultiplierTimer__Q18Game.EPlayerNumber",
+        |w, c| Ok(Value::Int(record(w, c)?.map_or(0, |r| r.multiplier_timer))),
+    ),
+    // FOUND (0x5fe5a0 -> 0x5e9118). Declared static
+    // `s32 DecrementPlayerScoreMultiplierTimer(EPlayerNumber)`: a timer above 0 loses 1;
+    // the timer is returned; 0 without a record.
+    (
+        "Game",
+        "DecrementPlayerScoreMultiplierTimer__Q18Game.EPlayerNumber",
+        |w, c| {
+            Ok(Value::Int(record(w, c)?.map_or(0, |r| {
+                if r.multiplier_timer > 0 {
+                    r.multiplier_timer -= 1;
+                }
+                r.multiplier_timer
+            })))
+        },
+    ),
+    // FOUND (0x5fe5e4 -> 0x5e82f0). Declared static
+    // `void SetPlayerScoreMultiplierVisible(EPlayerNumber, bool)`: the record's flag.
+    (
+        "Game",
+        "SetPlayerScoreMultiplierVisible__Q18Game.EPlayerNumberb",
+        |w, c| {
+            let visible = boolean(param(c, 1)?)?;
+            if let Some(r) = record(w, c)? {
+                r.multiplier_visible = visible;
+            }
+            Ok(Value::Void)
+        },
+    ),
+    // FOUND (0x64b7f4 -> 0x5e838c). Declared static
+    // `void SetPlayerScoreMultiplierSource(EPlayerNumber, Thing)`: the record keeps the
+    // Thing (null allowed). Not modelled: for a Thing the game also takes its sensor
+    // position for the HUD.
+    (
+        "Game",
+        "SetPlayerScoreMultiplierSource__Q18Game.EPlayerNumberQ5Thing",
+        |w, c| {
+            let source = thing(param(c, 1)?)?;
+            if let Some(r) = record(w, c)? {
+                r.multiplier_source = source;
+            }
+            Ok(Value::Void)
+        },
+    ),
+    // FOUND (0x5fe830 -> 0x5e86ac). Declared static `f32 GetPlayerScore(EPlayerNumber)`:
+    // the record's score; without a record a constant, read as 0.0.
+    ("Game", "GetPlayerScore__Q18Game.EPlayerNumber", |w, c| {
+        Ok(Value::Float(record(w, c)?.map_or(0., |r| r.score)))
+    }),
+    // FOUND (0x5fe7f8 -> 0x5e85ec -> 0x3970e4). Declared static
+    // `void SetPlayerScore(EPlayerNumber, f32)`: nothing without a record. In play mode a
+    // negative value becomes 0.0, a value above [`MAX_PLAYER_SCORE`] becomes that, and
+    // the result is stored. Not modelled: the score history the game appends to (frame
+    // and score pairs on the record) and the HUD call. In edit mode the game takes a
+    // branch that was not read: an error here.
+    ("Game", "SetPlayerScore__Q18Game.EPlayerNumberf", |w, c| {
+        let score = float(param(c, 1)?)?;
+        if w.play_or_edit_mode()? == 1 {
+            return Err("edit mode is not analysed".into());
+        }
+        if let Some(r) = record(w, c)? {
+            let floored = if score >= 0. { score } else { 0. };
+            r.score = if floored - MAX_PLAYER_SCORE >= 0. {
+                MAX_PLAYER_SCORE
+            } else {
+                floored
+            };
+        }
+        Ok(Value::Void)
+    }),
+    // FOUND (0x600640 -> 0x5eb810 -> 0xce4fc). Declared static
+    // `s32 GetGlobalSettingUID(Game.EGlobalSettingsType)`: slot `type` of the PWorld's
+    // GlobalSettingsThingUIDs (8 slots).
+    (
+        "Game",
+        "GetGlobalSettingUID__Q24Game.EGlobalSettingsType",
+        |w, c| Ok(Value::Int(w.global_setting_uid(int(param(c, 0)?)?)?)),
+    ),
+    // FOUND (0x600600 -> 0x5eb718 -> 0xce554). Declared static
+    // `void SetGlobalSettingUID(Game.EGlobalSettingsType, s32 uid, s32 priority)`. With
+    // cur = GlobalSettingsThingPriority[type]: nothing when priority < cur, nothing when
+    // cur is 1; else the slot's UID becomes `uid`, its priority 0, and for a uid other
+    // than 0 its priority becomes `priority`. Not modelled: a call (0xce520) made just
+    // before the write.
+    (
+        "Game",
+        "SetGlobalSettingUID__Q24Game.EGlobalSettingsTypeii",
+        |w, c| {
+            let (kind, uid, priority) =
+                (int(param(c, 0)?)?, int(param(c, 1)?)?, int(param(c, 2)?)?);
+            w.set_global_setting_uid(kind, uid, priority)?;
+            Ok(Value::Void)
+        },
+    ),
+    // FOUND (0x6023fc -> 0x5e7814 -> 0x16cb18). Declared static `SlotID GetLevelSlotID()`:
+    // a new script SlotID object (Type, SlotNumber) made from the game state's current
+    // slot; never null. Here the world hands out one object made ahead (a native cannot
+    // allocate). INFERRED: its contents (see the world).
+    ("Game", "GetLevelSlotID__", |w, _| w.level_slot_id(false)),
+    // FOUND (0x602390 -> 0x16ca08). Declared static `SlotID GetPrimaryLevelSlotID()`: the
+    // same from the game state's primary slot.
+    ("Game", "GetPrimaryLevelSlotID__", |w, _| {
+        w.level_slot_id(true)
+    }),
+    // FOUND (0x5f86bc -> 0x18cf18). Declared static `bool IsVcrPaused()`: with a level
+    // loaded, the PWorld's IsPaused byte. INFERRED: what that byte holds in play (see the
+    // world).
+    ("Game", "IsVcrPaused__", |w, _| {
+        bool_query(w, "Game.IsVcrPaused__")
+    }),
+    // FOUND (0x5f8a48 -> 0x156e44). Declared static `bool IsTutorialLevel()`: one byte of
+    // the game state. What sets it is not established.
+    ("Game", "IsTutorialLevel__", |w, _| {
+        bool_query(w, "Game.IsTutorialLevel__")
+    }),
+    // FOUND (0x5f8510 -> 0x3abd8 -> 0x3a9a4). Declared static `bool IsPSNDemoBuild()`: a
+    // query of the build.
+    ("Game", "IsPSNDemoBuild__", |w, _| {
+        bool_query(w, "Game.IsPSNDemoBuild__")
+    }),
+    // FOUND (0x5f9054 -> 0x73273c -> 0x2c6a14). Declared static
+    // `bool IsSafeToTriggerMusic(s32)`: true at once in play mode. Edit mode makes more
+    // tests, which were not read: an error here.
+    ("Audio", "IsSafeToTriggerMusic__i", |w, c| {
+        int(param(c, 0)?)?;
+        match w.play_or_edit_mode()? {
+            0 => Ok(Value::Bool(true)),
+            mode => Err(format!("mode {mode} is not analysed")),
+        }
+    }),
+    // FOUND (0x641570 -> 0x1343dc). Declared `Thing FindLockMesh()` on TriggerLevelLink:
+    // walks the Thing's descendants depth first and returns the first whose PRenderMesh
+    // shows mesh [`LOCK_MESH`]; null if none. Not modelled: the walk does not go below a
+    // Thing with a certain part (bit 0 of the Thing's part flags; which part is not
+    // established).
+    ("TriggerLevelLink", "FindLockMesh__", |w, c| {
+        Ok(Value::Thing(w.find_mesh_descendant(this(c)?, LOCK_MESH)?))
+    }),
+    // ---- stage 4: calls that are recorded and do nothing else ([`RECORDED_ONLY`]) ----
+    // FOUND (0x5f5320 -> 0x756b70 -> 0x3f506c). Declared `void SetPieChartMultiplier(s32)`:
+    // one write into a HUD object.
+    ("World", "SetPieChartMultiplier__i", |w, c| {
+        int(param(c, 0)?)?;
+        recorded(w, "SetPieChartMultiplier", None, c.params)
+    }),
+    // FOUND (0x641fe4 -> 0x753a1c -> 0x123874). Declared `void UpdateScale()`: works the
+    // Thing's scale out again against its parent and refreshes switch and shape data.
+    // Nothing here depends on that until shapes are simulated.
+    ("Thing", "UpdateScale__", |w, c| {
+        recorded(w, "UpdateScale", receiver(c)?, c.params)
+    }),
+    // FOUND (0x642cd4 -> 0x754aac). Declared static `void HideRenderMesh(Thing)`: nothing
+    // for a null Thing; else a visibility call on its PRenderMesh. Display state.
+    ("Thing", "HideRenderMesh__Q5Thing", |w, c| {
+        recorded(w, "HideRenderMesh", thing(param(c, 0)?)?, &[])
+    }),
+    // FOUND (0x6428ac -> 0x753e88). Declared static
+    // `void SetRenderMeshEditorTexture(Thing, Resource)`: nothing for a null Thing; else
+    // the texture is stored on its PRenderMesh. Display state.
+    (
+        "Thing",
+        "SetRenderMeshEditorTexture__Q5ThingQ8Resource",
+        |w, c| {
+            let t = thing(param(c, 0)?)?;
+            recorded(w, "SetRenderMeshEditorTexture", t, &c.params[1..])
+        },
+    ),
+    // FOUND (0x642924 -> 0x753ed4 -> 0xecac4). Declared static
+    // `void SetRenderMeshEditorColour(Thing, v4)`: nothing for a null Thing; else the
+    // colour of its PRenderMesh. Display state.
+    ("Thing", "SetRenderMeshEditorColour__Q5Thingr", |w, c| {
+        let t = thing(param(c, 0)?)?;
+        vec4(param(c, 1)?)?;
+        recorded(w, "SetRenderMeshEditorColour", t, &c.params[1..])
+    }),
+    // FOUND (0x642ac4 -> 0x7538dc). Declared `void RemoveFromAnimatingDivergentList()`:
+    // takes the Thing off a PWorld list used for network divergence.
+    ("Thing", "RemoveFromAnimatingDivergentList__", |w, c| {
+        recorded(
+            w,
+            "RemoveFromAnimatingDivergentList",
+            receiver(c)?,
+            c.params,
+        )
+    }),
+    // FOUND (0x641e04 -> 0x6d27bc). Declared `void NotifyNpcsOfMouthEnd()`: the callee is
+    // an empty function. Recorded all the same, so the call is counted.
+    ("Trigger_Speech_Bubble", "NotifyNpcsOfMouthEnd__", |w, c| {
+        recorded(w, "NotifyNpcsOfMouthEnd", None, c.params)
+    }),
+    // FOUND (0x5f4648 -> 0x6d2e64). Declared `void SetGameNoJoin()` on NoJoinMarker: sets
+    // a session byte and tells the network layer. Nothing offline.
+    ("NoJoinMarker", "SetGameNoJoin__", |w, c| {
+        recorded(w, "SetGameNoJoin", None, c.params)
+    }),
+    // FOUND (0x5fc2b0 -> 0x5ea5f4). Declared static `void GotoScoreboard(bool)`: sends the
+    // game message that ends the level. Game flow nothing here acts on: the request is
+    // recorded.
+    ("Game", "GotoScoreboard__b", |w, c| {
+        boolean(param(c, 0)?)?;
+        recorded(w, "GotoScoreboard", None, c.params)
     }),
     // ---- the game's own test scripts ----
     ("Test", "Check__bQ7StringAi", |w, c| {
@@ -1293,7 +1730,7 @@ const TABLE: &[(&str, &str, NativeFn)] = &[
 ];
 
 /// The natives bound through [`World::state_query`], with their return type.
-pub const STATE_QUERIES: [(&str, &str); 11] = [
+pub const STATE_QUERIES: [(&str, &str); 15] = [
     ("Game.IsNonInteractive__", "bool"),
     ("Game.GetNumPendingLinks__", "s32"),
     ("Game.GetNumAvatars__", "s32"),
@@ -1305,6 +1742,30 @@ pub const STATE_QUERIES: [(&str, &str); 11] = [
     ("Audio.UserMusicIsPaused__", "bool"),
     ("Audio.IsInteractiveMusicAudible__", "bool"),
     ("Input.IsInAttractionLoop__i", "bool"),
+    ("Game.GetPartyLeadersPlayerNumber__", "s32"),
+    ("Game.IsVcrPaused__", "bool"),
+    ("Game.IsTutorialLevel__", "bool"),
+    ("Game.IsPSNDemoBuild__", "bool"),
+];
+
+/// Bound natives that return nothing and whose whole effect here is a record in the world
+/// ([`World::engine_call`], or a counter for the audio ones): the engine would draw, play
+/// or send something that nothing models yet. Reports count calls to them apart from the
+/// other bound natives.
+pub const RECORDED_ONLY: [(&str, &str); 13] = [
+    ("Audio", "PlaySound__Q5ThingQ7StringA"),
+    ("Audio", "SetInteractiveMusic__ggffiQ5Thing"),
+    ("Audio", "SetInteractiveMusicStereoPairVolume__giff"),
+    ("Audio", "StopInteractiveMusic__"),
+    ("World", "SetPieChartMultiplier__i"),
+    ("Thing", "UpdateScale__"),
+    ("Thing", "HideRenderMesh__Q5Thing"),
+    ("Thing", "SetRenderMeshEditorTexture__Q5ThingQ8Resource"),
+    ("Thing", "SetRenderMeshEditorColour__Q5Thingr"),
+    ("Thing", "RemoveFromAnimatingDivergentList__"),
+    ("Trigger_Speech_Bubble", "NotifyNpcsOfMouthEnd__"),
+    ("NoJoinMarker", "SetGameNoJoin__"),
+    ("Game", "GotoScoreboard__b"),
 ];
 
 /// Natives the VM itself handles; they never reach a host.
@@ -1352,6 +1813,37 @@ mod tests {
             );
             assert!(seen.insert((c, m)), "duplicate {c}.{m}");
         }
+    }
+
+    #[test]
+    fn stage4_lists_name_bound_natives_and_a_world_without_players_says_so() {
+        for (name, _) in STATE_QUERIES {
+            let (class, mangled) = name.split_once('.').unwrap();
+            assert!(lookup(class, mangled).is_some(), "{name}");
+        }
+        for (class, mangled) in RECORDED_ONLY {
+            assert!(lookup(class, mangled).is_some(), "{mangled}");
+        }
+        // The identity needs no world.
+        assert_eq!(
+            call("Game", "EPlayerNumberFromInt__i", &[Value::Int(-1)]),
+            Ok(Value::Int(-1))
+        );
+        // A world without players, global settings or a record of engine calls: an
+        // error, never a made-up answer.
+        let player = [Value::Int(0)];
+        for name in [
+            "DoesPlayerExist__Q18Game.EPlayerNumber",
+            "GetYellowheadFromPlayerNumber__Q18Game.EPlayerNumber",
+            "GetPlayerScore__Q18Game.EPlayerNumber",
+            "GetGlobalSettingUID__Q24Game.EGlobalSettingsType",
+        ] {
+            assert!(call("Game", name, &player).is_err(), "{name}");
+        }
+        assert!(call("Game", "IsVcrPaused__", &[]).is_err());
+        assert!(call("Game", "GetLevelSlotID__", &[]).is_err());
+        assert!(call("Thing", "UpdateScale__", &[Value::Thing(Some(1))]).is_err());
+        assert!(call("Thing", "HideRenderMesh__Q5Thing", &[Value::Thing(None)]).is_err());
     }
 
     #[test]
