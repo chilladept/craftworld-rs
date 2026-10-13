@@ -4324,3 +4324,82 @@ Next: stage 3b, evaluate the logic network and call the switch reactions.
 - Not tested: the viewer window; any switch against the game in RPCS3.
 **+0 newly viewable / +0 newly Complete (runtime feature).**
 Next: stage 4, player and game state.
+
+## D262 world, position, player and game state (2026-10-13)
+- RScript plan stage 4 (`docs/rscript-plan.md`), in two halves on one branch. The scripts now get answers
+  about the level itself; before, the first such question stopped the Thing.
+- World and position half:
+  - Bug fix: `part_name` dropped the leading P of every name, so `thing.Pos` was never found (also
+    `PhysicsTweak`, `PoppetPowerup`, `PocketItem`, `PowerUp`); `MetaData`, `MicroChip`, `WormHole` and
+    `TagSynchroniser` did not match the reader's names.
+  - `lbp-level` keeps PWorld `frame`, `simFrame`, `frameLevelStarted`, `gameMode`, `isPaused`, `waterLevel`
+    and the two global-setting arrays (FOUND: the serializer 0xb3f3c0..0xb3fd20 names them).
+  - Members: `PWorld.GameMode`, `Frame`, `WaterLevel`; `PPos.WorldPosition` get and set; `PTrigger`
+    `RadiusMultiplier`, `AllZLayers`, `HysteresisMultiplier` (tied to the trigger test).
+  - Transforms (FOUND 0xf2e80, 0xf26bc, 0xf1d58, 0x755874, 0x755a98): local matrices derived at load;
+    `SetLocalPosition__m` and `SetWorldPosition__m` recompute the Thing and every descendant;
+    `GetWorldPosition__` returns the matrix (it returned a vector); `IsInactive__` reads the deactivated
+    flag.
+  - Natives newly bound (123 -> 127): `Thing.GetLocalPosition__`, `Thing.GetMicroChipProxyFromThing__Q5Thing`,
+    `Thing.GetWorldPositionForSensor__` (the branch for a Thing that is not on a sequencer),
+    `Game.IsOnSequencer__Q5Thing`.
+  - VM fix: m44 elements are at column * 4 + row. FOUND in the script tables (use only): `GET_M44_cW` is
+    used 115 times as a position; the game's test script still passes 512 of 513 checks.
+  - `Audio.PlaySound` requests are counted by sound name.
+- Player and game state half (FOUND unless marked):
+  - Player records (find 0x156b18): score, multiplier counter, timer, source Thing, visible flag, number,
+    team. Natives: `EPlayerNumberFromInt` (identity, 0x5e68bc), `DoesPlayerExist` (0x5e8728),
+    `IsPlayerConnected` (0x5e79f4), `GetYellowheadFromPlayerNumber` (0x18ec14), `IsLocalPlayerID`
+    (0x5ea758), `PlayerNumberIsLocalPlayer` (0x243b54, shape), `GetPartyLeadersPlayerNumber` (0x240a88,
+    shape), `Set/GetPlayerTeamNumber` (0x5e81e4, 0x5e8234), the multiplier counter set / get / increment
+    (0x5e858c, 0x5e8eb4, 0x5e8e1c), `GetPlayerScoreMultiplier` (0x5e8178: counter / 5 + 1), the timer get /
+    decrement (0x5e8540, 0x5e9118), visible and source (0x5e82f0, 0x5e838c), `GetPlayerScore` (0x5e86ac),
+    `SetPlayerScore` (0x3970e4: clamped to 0.0 .. 4,000,000.0, both constants read).
+  - Fixed: `GetPlayerNumber__i` gives -1 outside the records and `SetPlayerScoreMultiplierTimer` does
+    nothing for a number without a record (both were errors).
+  - `Get/SetGlobalSettingUID` (0xce4fc, 0xce554): a request below the slot's priority is dropped, a slot at
+    priority 1 is never taken, else the slot takes the UID and the priority (0 for UID 0).
+  - `GetLevelSlotID__` / `GetPrimaryLevelSlotID__` (0x16cb18, 0x16ca08): a SlotID object made ahead.
+  - `IsVcrPaused__` (0x18cf18), `IsTutorialLevel__` (0x156e44), `IsPSNDemoBuild__` (0x3a9a4),
+    `Audio.IsSafeToTriggerMusic__i` (0x2c6a14: true in play), `TriggerLevelLink.FindLockMesh__` (0x1343dc).
+  - Recorded only (9): `World.SetPieChartMultiplier`, `Thing.UpdateScale`, `HideRenderMesh`,
+    `SetRenderMeshEditorTexture`, `SetRenderMeshEditorColour`, `RemoveFromAnimatingDivergentList`,
+    `Trigger_Speech_Bubble.NotifyNpcsOfMouthEnd`, `NoJoinMarker.SetGameNoJoin`, `Game.GotoScoreboard`.
+  - 37 natives in this half; 164 in the table.
+- INFERRED: `Frame` + 1 at the end of a tick; a `PPos.WorldPosition` write is a raw write of the world
+  matrix; the identity for a position getter on a null Thing or one without a PPos; the microchip proxy is
+  the outermost chip; one local player, number 0, team 0, whose record is there before his Sackboy; a
+  player with a record is local; the first record leads the party; `IsVcrPaused` is false in play;
+  `IsTutorialLevel` and `IsPSNDemoBuild` are false; the level's slot is Type 0, SlotNumber 0; one shared
+  SlotID object instead of a new one per call.
+- MEASURED census (236 levels with a PWorld): game mode 0 in 190, 1 in 14, 2 in 32; IsPaused true in 220;
+  the global-setting arrays hold 8 entries, all 0. 1,107 of 6,951 scripted Things on a board sit on an
+  inner chip that has no PPos; the outermost chip always has one.
+- MEASURED runs (378 levels, 13,547 scripted Things, release, 60 ticks; before stage 4 -> after the first
+  half -> now):
+  - plain: Things stopped by a fault 597 -> 117 -> 4; fault kinds 11 -> 3 -> 2; reaction calls
+    240 -> 240 -> 262; distinct unbound natives called 85 -> 98 -> 83.
+  - with the trigger visit: 598 -> 117 -> 4; 11 -> 3 -> 2; 259 -> 260 -> 283; 99 -> 112 -> 99.
+  - with every output pulsed: 1,794 -> 117 -> 4; 11 -> 3 -> 2; 4,397 -> 5,611 -> 5,704; 102 -> 116 -> 110.
+  - Levels with a fault 221 -> 105 -> 2. Native calls in the pulsed run: 3,650,429; 2,697,610 bound, of
+    which 17,206 recorded only; 952,819 defaulted.
+  - Global-setting slots held at the end: 77 plain, 121 with the visit, 188 pulsed. Scoreboard requests:
+    3, 4 and 39 (in 3, 4 and 23 levels).
+  - Faults left: `Thing.GetCOM__` (3 Things, 1 level), a null Thing in the Pod's `SetShapeEditorColour`
+    (1 Thing).
+  - New unbound natives reached: `Pad.IsJustPressed` (131,404 calls, 220 levels, pulsed run),
+    `OffScreenIndicator.GetPlayerIndicatorActivityType` (65,702 / 220), `Game.GetGameFrame` (763 / 121),
+    `ModalOverlay.IsPartyLeaderOverlayActive` (33,120 / 103), the level-link prompt, the
+    `SetGlobalSettings...To` group.
+- Not modelled: where the game steps `Frame`; the Thing flag that forces world = local; the refresh of
+  bodies and shapes after a transform write; the sequencer branch of the sensor position; the score
+  history and the HUD calls of the score natives; edit mode of `SetPlayerScore` and
+  `IsSafeToTriggerMusic`; the level's own slot; which levels are tutorials; the part test in the
+  `FindLockMesh` walk; `Thing.IsDead` / `IsInLimbo` (left unbound: a creature's state is not kept); the
+  Sackbot and enemy group, Gooey, HUD, messaging, the slot database.
+- Tests: world tests on synthetic levels for each item (27 in `level_world.rs`, 10 of them stage 4), 11 unit
+  and 13 VM tests in `lbp-script-vm`. fmt, the CI clippy line, the CI test set and `cargo check` of both
+  viewers pass.
+- Not tested: the viewer window; any value against the game in RPCS3.
+**+0 newly viewable / +0 newly Complete (runtime feature).**
+Next: stage 5, show what the scripts do.

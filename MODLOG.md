@@ -1,5 +1,27 @@
 # Development log
 
+## 2026-10-13 - D262 the level scripts get world, position, player and game state
+
+RScript plan stage 4. `LevelWorld` now answers what the scripts ask the engine about the level. First half:
+`part_name` kept dropping the P of `Pos` (fixed, with four mismatched part names); `lbp-level` keeps the PWorld
+frame, game mode, pause flag, water level and the two global-setting arrays; `PWorld.GameMode` / `Frame` /
+`WaterLevel`, `PPos.WorldPosition` and three PTrigger members are real state; local matrices are derived at
+load and `SetLocalPosition__m` / `SetWorldPosition__m` move the descendants (FOUND 0xf2e80, 0xf26bc);
+`GetWorldPosition__` returns the matrix; the VM indexes an m44 as column * 4 + row (FOUND in the script
+tables: column W is the position in 115 uses); `GetLocalPosition__`, `GetMicroChipProxyFromThing`,
+`GetWorldPositionForSensor__` and `Game.IsOnSequencer` are bound. Second half: player records (score,
+multiplier counter, timer, source, visible, number, team; FOUND 0x156b18) with the player queries and the score
+group, `SetPlayerScore` clamped to 0.0 .. 4,000,000.0 (FOUND 0x3970e4); `Get/SetGlobalSettingUID` with the
+priority rule (FOUND 0xce554); SlotID objects for `GetLevelSlotID__` / `GetPrimaryLevelSlotID__`;
+`IsVcrPaused`, `IsTutorialLevel`, `IsPSNDemoBuild`, `IsSafeToTriggerMusic`, `FindLockMesh`; nine calls that are
+recorded and do nothing else (`natives::RECORDED_ONLY`). 123 -> 164 natives in the table. INFERRED: one local
+player numbered 0, `IsVcrPaused` false in play (IsPaused is stored true in 220 of 236 levels), the frame steps
+at the end of a tick, the proxy is the outermost chip, the level's slot is 0 / 0. PC run, 378 levels, 60
+ticks: Things stopped by a fault 597 -> 4 (598 -> 4 with the trigger visit, 1,794 -> 4 with every output
+pulsed); fault kinds 11 -> 2; levels with a fault 221 -> 2; reaction calls 240 -> 262 (4,397 -> 5,704 pulsed).
+Left: `Thing.GetCOM__` (3 Things) and one null Thing in the Pod. Not done: pad input, `Game.GetGameFrame`, the
+Sackbot group, HUD, messaging, the level's slot. +0 viewable, +0 Complete. `docs/level-scripts.md` part 13.
+
 ## 2026-10-13 - D261 the switch network runs and switch reactions reach the scripts
 
 RScript plan stage 3b. `lbp-runtime/src/switches.rs`: `LevelWorld::update_switches` orders the switches by

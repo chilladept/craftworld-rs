@@ -107,6 +107,14 @@ UI (`UpdateUI__`) and photo natives are not planned.
   game's edge rule on the 16 script GUIDs the game lists. 378 levels, 60 ticks: 24,612
   outputs change, 204 + 36 reaction calls run (3,052 + 1,345 with every output pulsed),
   stopped Things 582 -> 597, 19 more unbound natives reached. Still open: sensors.
+- Stage 4 done (D262, part 13): the level world keeps the PWorld values (game mode,
+  frame, water level, the global-setting arrays), local and world matrices that move the
+  descendants, player records (score, multiplier, team) and the global-setting priority
+  rule, all FOUND in the executable; 41 natives bound (123 -> 164), 9 of them recorded
+  only. 378 levels, 60 ticks: Things stopped by a fault 597 -> 4 (1,794 -> 4 with every
+  output pulsed), fault kinds 11 -> 2, levels with a fault 221 -> 2. INFERRED: one local
+  player numbered 0, `IsVcrPaused` false in play, the level's slot (0). Still open:
+  pad input, the game frame native, the Sackbot group, the level's slot.
 
 ## Rules
 

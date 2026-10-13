@@ -19,7 +19,7 @@ used or is committed.
 - Example `native_coverage SCRIPT-DIR NEW-JSON`: the share of native call sites that have
   a binding, over all scripts and over gameplay scripts.
 
-## Bound natives (123 in the table, plus `System.Yield__` in the VM)
+## Bound natives (164 in the table, plus `System.Yield__` in the VM)
 
 | Group | Natives | Needs from `World` |
 |---|---|---|
@@ -34,6 +34,10 @@ used or is committed.
 | Other | `Audio.PlaySound__Q5ThingQ7StringA`, `Resource.LoadTextureByFilename__g`, `Resource.LoadPlanByFilename__g`, `Game.GetNumPlayers__`, `Game.GetPlayOrEditMode__`, `Audio.GetDialogueList__`, `Thing.Get/SetShapeEditorColour__Q5Thing(r)` (docs/level-scripts.md part 2), `Thing.SetRenderMeshEditorColourTint__Q5Thingr`, `Native.SetAnimSpeed__Q5Thingf`, `Game.GetPlayerNumber__i` (part 4), `System.Yield__` (in the VM) | audio, resources, players, mode, shape colour |
 | Pod camera and part 6 (docs/level-scripts.md part 6) | `Math.lerp__frr`, `SmoothStep__fff`, `Smooth__fffff`, `Smooth2D__pppff`, `Smooth3D__rrrff`; `Cam.SetCameraFromToUp__rrrffff`, `SetDOFAndFog__fff`, `ClearMotionBlur__`; `HUD.GetCinemaModeCount__`; `PodComputer.GetPodComputer__`, `GetPodComputerInUse__`, `GetCrashZoom__`, `GetPlanets__`; `Planets.GetCrafteroid__i`; `Planet.GetThing__`; `Profile.IsLBP2GameProgressionFlagSet__i`; `Thing.SetWorldPosition__m`; `Native.DebugPrint__i`, `SetAnimPos__Q5Thingf`; `LAMS.MakeLamsKeyID__Q6String` (Toolkit makeLamsKeyID); `Game.SetPlayerScoreMultiplierTimer__Q18Game.EPlayerNumberi`; `Gooey.CreateGooey__i`; interactive music commands (`Audio.SetInteractiveMusic__ggffiQ5Thing`, `SetInteractiveMusicStereoPairVolume__giff`, `StopInteractiveMusic__`); 11 state queries (`natives::STATE_QUERIES`) | camera, engine objects, profile flags, state defaults |
 | Strings and math, stage 1 (docs/level-scripts.md part 9) | `String.Length/IsNullOrEmpty/Find/SubStr/ToUpper/StringFromStringA`, `StringA.Length/IsNullOrEmpty/Find/SubStr`, `Math.identity__`, `ceil__f`, `exp__f`, `pow__ff`, `sign__f`, `lerp__fff`, `Delt__fff`, `BiasCosine__f`, `Resource.LoadTextureByFilename__gb` | resources (texture) |
+| World and position, stage 4 (docs/level-scripts.md part 13) | `Thing.GetLocalPosition__`, `GetMicroChipProxyFromThing__Q5Thing`, `GetWorldPositionForSensor__`, `Game.IsOnSequencer__Q5Thing`; changed: `GetWorldPosition__` returns the matrix, `SetLocalPosition__m` and `SetWorldPosition__m` move the descendants, `IsInactive__` reads the deactivated flag | local and world matrices, the microchip of a Thing |
+| Players and score, stage 4 (part 13) | `Game.EPlayerNumberFromInt__i`, `DoesPlayerExist`, `IsPlayerConnected__i`, `GetYellowheadFromPlayerNumber`, `PlayerNumberIsLocalPlayer`, `IsLocalPlayerID`, `GetPartyLeadersPlayerNumber__`, `Set/GetPlayerTeamNumber`, `Set/GetPlayerScoreMultiplierCounter`, `GetPlayerScoreMultiplier`, `IncrementPlayerScoreMultiplierCounter`, `GetPlayerScoreMultiplierTimer`, `DecrementPlayerScoreMultiplierTimer`, `SetPlayerScoreMultiplierVisible`, `SetPlayerScoreMultiplierSource`, `Get/SetPlayerScore`; changed: `GetPlayerNumber__i` gives -1 outside the records, `SetPlayerScoreMultiplierTimer` does nothing without a record | player records (`natives::PlayerRecord`), the players' Sackboys |
+| Game state, stage 4 (part 13) | `Game.Get/SetGlobalSettingUID`, `GetLevelSlotID__`, `GetPrimaryLevelSlotID__`, `IsVcrPaused__`, `IsTutorialLevel__`, `IsPSNDemoBuild__`, `Audio.IsSafeToTriggerMusic__i`, `TriggerLevelLink.FindLockMesh__` | the global-setting arrays, SlotID objects made ahead, mesh GUIDs |
+| Recorded only, stage 4 (part 13; `natives::RECORDED_ONLY`) | `World.SetPieChartMultiplier__i`, `Thing.UpdateScale__`, `HideRenderMesh__Q5Thing`, `SetRenderMeshEditorTexture__Q5ThingQ8Resource`, `SetRenderMeshEditorColour__Q5Thingr`, `RemoveFromAnimatingDivergentList__`, `Trigger_Speech_Bubble.NotifyNpcsOfMouthEnd__`, `NoJoinMarker.SetGameNoJoin__`, `Game.GotoScoreboard__b` | `World::engine_call`: the call is counted and kept, nothing else happens |
 | Test (part 2) | `Check`, `CheckFalse`, `Fail`, `CheckEqual` on `i b j f p q r`, `CheckSimilar__fff`, each ending `Q7StringAi` | records each check |
 
 Coverage against the G10 export, computed from its tables (unit: call instruction):
@@ -74,6 +78,13 @@ Part 3:
 - This PR carries the same VM change as #34: `start_registers`, zeroed v4/m44 on a fresh
   register, and a typed default for a Void native result. It is identical text, so
   merging #34 later stays clean.
+
+How a stage 4 binding states its evidence: a comment above the table entry gives the
+handler and reader addresses in the 01.33 executable, the declared signature from the
+script tables, what was FOUND there and what is INFERRED, and what is not modelled. A
+native that only returns a default is never in the table; a native that is in the table
+but whose effect is only a record is listed in `RECORDED_ONLY` and counted apart
+(`native_calls_recorded_only` in the `level_scripts` report).
 
 ## Evidence
 

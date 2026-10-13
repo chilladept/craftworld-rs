@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D261
+# Current state (overwrite each milestone) — after D262
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -11,7 +11,23 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D261 switch network and reactions (2026-10-13)
+## Latest: D262 world, position, player and game state (2026-10-13)
+- RScript plan stage 4. `LevelWorld` keeps what the scripts ask the engine about the level. FOUND in the
+  EBOOT: PWorld `GameMode`, `Frame`, `WaterLevel` and the two global-setting arrays (serializer 0xb3f3c0);
+  PPos local and world matrices, where a write moves the descendants (0xf2e80, 0xf26bc); the microchip proxy
+  (0x754498); player records with score, multiplier counter, timer, source, visible flag, number and team
+  (0x156b18); the global-setting priority rule (0xce554); SlotID objects (0x16cb18). 41 natives bound
+  (123 -> 164), 9 of them recorded only. Fixes: part names that start with P (`Pos`), the VM's m44 element
+  order (column * 4 + row), `GetWorldPosition__` returns the matrix.
+- INFERRED: one local player numbered 0, there from the start; `IsVcrPaused` false in play (the files store
+  IsPaused true in 220 of 236 levels); the frame steps at the end of a tick; the proxy is the outermost chip;
+  the level's own slot is 0 / 0.
+- MEASURED, 378 levels, 60 ticks: Things stopped by a fault 597 -> 4 (plain), 598 -> 4 (trigger visit),
+  1,794 -> 4 (every output pulsed); fault kinds 11 -> 2; levels with a fault 221 -> 2; reaction calls
+  240 -> 262 (4,397 -> 5,704 pulsed). Left: `Thing.GetCOM__` (3 Things) and one null Thing in the Pod.
+  Next: stage 5, show what the scripts do. `docs/level-scripts.md` part 13.
+
+## Before: D261 switch network and reactions (2026-10-13)
 - RScript plan stage 3b. `lbp-runtime/src/switches.rs`: each tick `LevelWorld::update_switches` computes
   every switch output in wiring order and applies it to its targets (FOUND in the EBOOT: 0x1244a4, 0x11ddf0,
   0x11bd58, 0x3ed2c, 0x409dc). Computed: microchip, circuit board, NOT, AND, OR, XOR, battery, direction,
