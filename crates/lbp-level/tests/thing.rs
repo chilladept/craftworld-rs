@@ -107,7 +107,7 @@ fn level(flags: u8) -> W {
     w.u8(0).u8(0).raw(&[0; 3]).raw(&[0xff; 2]).u8(0);
     w.u32(0); // CREATOR_ANIM
               // PWorld after the array.
-    w.f32(0.).f32(0.).s32(5).s32(5).u32(0).u32(31);
+    w.f32(0.).f32(0.).s32(5).s32(6).u32(2).u32(31);
     world_tail_0x3f8(&mut w);
     rlevel_tail_0x3f8(&mut w);
     w
@@ -117,7 +117,7 @@ fn level(flags: u8) -> W {
 /// naming Thing A by back-reference, everything else empty or zero.
 fn world_tail_0x3f8(w: &mut W) {
     w.u32(1).u32(20).s32(3).raw(b"sel").u32(1).u32(4); // selections
-    w.u32(0).u32(0).f32(0.).s32(0).u8(0); // backdrop, backdropNew, timer, nightDay, paused
+    w.u32(0).u32(0).f32(0.).s32(0).u8(1); // backdrop, backdropNew, timer, nightDay, paused
     for _ in 0..5 {
         w.f32(1.);
     }
@@ -135,15 +135,15 @@ fn world_tail_0x3f8(w: &mut W) {
         w.f32(0.);
     }
     w.u8(0).s32(0); // hasLevelLightingBeenSetup, globalSettingsThingUID
-    for _ in 0..(4 + 9) {
-        w.f32(0.); // camera settings, water level/wave, gravity
+    for i in 0..(4 + 9) {
+        w.f32(if i == 4 { 12.5 } else { 0. }); // camera settings, water level/wave, gravity
     }
-    w.u32(0).u32(0).u32(0); // floatarray, two intarrays
+    w.u32(0).u32(2).u32(40).u32(0).u32(2).u32(1).u32(0); // floatarray, two intarrays
     w.f32(0.).f32(0.).f32(0.).f32(0.).f32(0.).f32(0.); // tint, tint colour v4, target
     for _ in 0..6 {
         w.f32(0.); // murkiness, bits
     }
-    w.u8(0).u8(0).f32(0.).u32(0).s32(0); // drain sounds, wave pos, gameMode, sackbot
+    w.u8(0).u8(0).f32(0.).u32(5).s32(0); // drain sounds, wave pos, gameMode, sackbot
     w.u32(0).u32(0).s32(0).s32(0).f32(0.).u8(0); // CutsceneCameraManager
     w.s32(0);
     for _ in 0..10 {
@@ -204,10 +204,17 @@ fn walks_world_things_and_reads_render_parts() {
         assert!(matches!(s.color, ShapeColor::Packed(0xffffffff)));
         assert_eq!((s.thickness, s.bevel_size, s.flags), (0.25, 0.1, 3));
         assert_eq!(s.com.unwrap()[12], 0.5);
+        let pw = world.data.world.as_ref().unwrap();
+        assert_eq!(pw.thing_uid_counter, Some(31));
+        // Stage 4: the frame counters, pause flag, water level, game mode and the two
+        // global-setting arrays are kept.
+        assert_eq!((pw.frame, pw.sim_frame, pw.frame_level_started), (5, 6, 2));
         assert_eq!(
-            world.data.world.as_ref().unwrap().thing_uid_counter,
-            Some(31)
+            (pw.is_paused, pw.water_level, pw.game_mode),
+            (true, 12.5, 5)
         );
+        assert_eq!(pw.global_settings_thing_uids, [40, 0]);
+        assert_eq!(pw.global_settings_thing_priority, [1, 0]);
         assert_eq!(r.detached_shapes, 0);
         assert_eq!(r.max_depth, 4);
     }

@@ -744,6 +744,22 @@ pub struct World {
     pub gs_target: [f32; 5],
     pub gs_from: [f32; 5],
     pub gs_blend: f32,
+    /// Stage 4 (docs/rscript-plan.md): PWorld `frame` and `simFrame` s32, the frame
+    /// counters as stored, and `frameLevelStarted` i32 (head >= 0x377, else 0).
+    pub frame: i32,
+    pub sim_frame: i32,
+    pub frame_level_started: i32,
+    /// PWorld `isPaused` bool.
+    pub is_paused: bool,
+    /// PWorld `waterLevel` f32 (the first of the water level triple).
+    pub water_level: f32,
+    /// PWorld `gameMode` i32 (Toolkit GameMode: 0 normal, 1 competitive, 2 cut scene,
+    /// 3 single player, 4 social, 5 teams).
+    pub game_mode: i32,
+    /// PWorld `globalSettingsThingUIDs` and `globalSettingsThingPriority` int arrays, one
+    /// entry per global-settings type.
+    pub global_settings_thing_uids: Vec<i32>,
+    pub global_settings_thing_priority: Vec<i32>,
 }
 
 /// `reference(P*)` for a present part of Thing `me`.
@@ -1304,19 +1320,25 @@ fn part_body(
             let list = thing_array(r, things)?;
             things.world_array_done = Some(list.len());
             r.skip_f32(2)?;
-            r.s32()?;
-            r.s32()?;
-            if v >= 0x377 {
-                r.i32()?;
-            }
+            let frame = r.s32()?;
+            let sim_frame = r.s32()?;
+            let frame_level_started = if v >= 0x377 { r.i32()? } else { 0 };
             let uid = r.i32()?;
             things.list[me].data.world = Some(World {
                 things: list,
                 thing_uid_counter: Some(uid),
+                frame,
+                sim_frame,
+                frame_level_started,
                 ..Default::default()
             });
             let tail = world_tail(r, things)?;
             if let Some(w) = things.list[me].data.world.as_mut() {
+                w.is_paused = tail.is_paused;
+                w.water_level = tail.water_level;
+                w.game_mode = tail.game_mode;
+                w.global_settings_thing_uids = tail.global_settings_thing_uids;
+                w.global_settings_thing_priority = tail.global_settings_thing_priority;
                 w.backdrop = tail.backdrop;
                 w.backdrop_new = tail.backdrop_new;
                 w.backdrop_plan = tail.backdrop_plan;
@@ -1490,7 +1512,7 @@ fn world_tail(r: &mut Reader, things: &mut Things) -> Result<World> {
     if v >= 0x3a3 {
         r.s32()?;
     }
-    r.bool()?;
+    out.is_paused = r.bool()?;
     for x in &mut out.lighting {
         *x = r.f32()?;
     }
@@ -1532,11 +1554,13 @@ fn world_tail(r: &mut Reader, things: &mut Things) -> Result<World> {
     if v >= 0x370 {
         r.skip_f32(4)?;
     }
-    r.skip_f32(9)?;
+    out.water_level = r.f32()?;
+    r.skip_f32(8)?;
     let n = r.count(4)?;
     r.bytes(n * 4)?;
-    r.int_array()?;
-    r.int_array()?;
+    let signed = |v: Vec<u32>| v.into_iter().map(|x| x as i32).collect();
+    out.global_settings_thing_uids = signed(r.int_array()?);
+    out.global_settings_thing_priority = signed(r.int_array()?);
     r.f32()?;
     r.v4()?;
     r.f32()?;
@@ -1546,7 +1570,7 @@ fn world_tail(r: &mut Reader, things: &mut Things) -> Result<World> {
         r.bool()?;
     }
     r.f32()?;
-    r.i32()?;
+    out.game_mode = r.i32()?;
     r.s32()?;
     // CutsceneCameraManager
     r.i32()?;
