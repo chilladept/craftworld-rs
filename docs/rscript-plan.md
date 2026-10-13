@@ -182,6 +182,26 @@ UI (`UpdateUI__`) and photo natives are not planned.
   102, and no drawn Thing moves. Things stopped by a fault stay at 4. INFERRED: that a
   mesh without bit 0 is not drawn, the tint as a multiply. Follows: PR 5 camera and
   screen natives.
+- Stage 5, PR 5 (D269, part 20): the script camera and the screen. FOUND: the level's
+  camera keeps one override (position, direction, blend, target, rate);
+  `SetOverrideCamera` stores the pair, `SetOverrideCameraActivation` the target and the
+  rate; each camera update the blend steps linearly, is eased with half a cosine, and
+  the eye is mixed linearly and the direction on the arc from the follow camera; the
+  lens is then 60 degrees, near 10, far 40000; only a script ends it. `GetCameraMatrix`
+  is camera to world; `GetScreenSpacePosition` gives pixels from the top left of a
+  1280 x 720 screen, with no test for a point behind the camera. New
+  `lbp-runtime/src/camera.rs` (`OverrideCamera`, `CameraView`, `step`, `ease`,
+  `blend_pose`, `screen_position`, `LevelWorld::step_camera` and `camera_pose`). Natives
+  219 -> 225. The viewer hands its follow camera in each frame, draws with the mixed
+  camera while the override is in, and writes the camera it drew with for the scripts.
+  Over 378 levels: unbound natives called 51 -> 48 / 87 -> 81 / 87 -> 81, unbound calls
+  73,325 -> 62,000 / 1,002,445 -> 865,777 / 1,010,529 -> 872,549; the override comes in
+  on 101 levels with the trigger visit (0 plain); screen positions are asked in 28 / 61
+  / 70 levels; Things stopped by a fault stay at 4. INFERRED: world +Y as up, the step's
+  place at the end of the tick, the answers when nothing draws (the default follow pose,
+  the middle of the screen). Not bound: `SetSpeechBubbleActive` (its part and effect are
+  not established). Stage 5 is done with this PR; follows stage 6, the Pod, with
+  `SetCameraFromToUp`.
 
 ## Rules
 

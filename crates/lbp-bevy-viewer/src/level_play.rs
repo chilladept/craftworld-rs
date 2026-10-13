@@ -7,13 +7,16 @@
 //! change, the open messages are drawn (part 17, `speech_overlay.rs`): speech bubbles at
 //! their Things and the subtitle; and the level is lit again when a script changes the
 //! global lighting or darkness (part 18); and the Things' own models follow what the
-//! scripts hide, tint and move (part 19, `thing_view.rs`). The rest is the clock and the
-//! counts.
+//! scripts hide, tint and move (part 19, `thing_view.rs`); and the camera goes to a
+//! script's override camera and back (part 20), while the scripts are told which camera
+//! the picture was drawn with. The rest is the clock and the counts.
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts, EguiPrimaryContextPass};
 use lbp_catalog::{attachment::AttachedSource, LoadControl};
 use lbp_preview::level_scene;
-use lbp_runtime::{LevelScripts, LevelWorld, LightFollower, StepReport, TICK_HZ};
+use lbp_runtime::{
+    CameraView, LevelScripts, LevelWorld, LightFollower, StepReport, OVERRIDE_FOV_DEG, TICK_HZ,
+};
 use lbp_script_vm::natives::Bindings;
 use lbp_script_vm::Vm;
 use lbp_sim::avian2d::prelude::Position;
@@ -47,6 +50,13 @@ struct Play {
     /// (`thing_view::LevelThings::scene`), and what was done to them since the start.
     things_scene: Option<u64>,
     followed: crate::thing_view::Followed,
+    /// The camera's own field of view (radians), kept while a script's override camera
+    /// has the lens, to put back when the override is out.
+    follow_fov: Option<f32>,
+    /// Frames drawn with the override camera, and the override's state at the last
+    /// printed line: (in, blend at 1, target on).
+    override_frames: u64,
+    override_printed: (bool, bool, bool),
 }
 
 fn value(all: &[String], flag: &str) -> Option<String> {
@@ -149,9 +159,17 @@ pub fn install(app: &mut App) -> Result<(), String> {
         light: None,
         things_scene: None,
         followed: Default::default(),
+        follow_fov: None,
+        override_frames: 0,
+        override_printed: (false, false, false),
     })
     .insert_resource(Time::<Fixed>::from_hz(f64::from(TICK_HZ)))
     .add_systems(FixedUpdate, (tick, relight, follow_things).chain())
+    // After the viewer's own camera has placed the follow camera, before a capture.
+    .add_systems(
+        Update,
+        script_camera.after(crate::camera).before(crate::capture),
+    )
     .add_systems(EguiPrimaryContextPass, (speech, window));
     Ok(())
 }
@@ -315,6 +333,112 @@ fn follow_things(
     }
 }
 
+/// The camera a display hands to the scripts for a `Camera3d` at `global` (display
+/// units) with the lens `clip_from_view`, when `display` takes level units to display
+/// units: the camera matrix in level units with axes of length 1, and the matrix from a
+/// level point to clip space. `None` when a matrix has no inverse.
+fn camera_view(display: Mat4, global: Mat4, clip_from_view: Mat4) -> Option<CameraView> {
+    let (to_level, view) = (display.inverse(), global.inverse());
+    if !to_level.is_finite() || !view.is_finite() {
+        return None;
+    }
+    let mut camera = to_level * global;
+    for axis in [&mut camera.x_axis, &mut camera.y_axis, &mut camera.z_axis] {
+        *axis = axis.truncate().normalize_or_zero().extend(0.);
+    }
+    Some(CameraView {
+        camera: camera.to_cols_array(),
+        view_proj: (clip_from_view * view * display).to_cols_array(),
+    })
+}
+
+/// The script camera (part 20), each frame after the viewer's own camera system has
+/// placed the camera: that placement is the follow camera. While a script's override is
+/// in, the camera is put at the pose the runtime mixes from the follow camera and the
+/// override (`LevelWorld::camera_pose`) and takes the override's field of view; when the
+/// override is out again the camera's own field of view comes back. The viewer's `Orbit`
+/// is not touched, so orbit, pan and zoom go on underneath and the view returns to them.
+/// Then the camera the picture is drawn with is written for the scripts
+/// (`CameraState::view`): `Cam.GetCameraMatrix__` and `HUD.GetScreenSpacePosition__r`
+/// answer from it on the next ticks.
+///
+/// INFERRED: world +Y is up under the override. Not applied: the override lens's near
+/// and far planes (the viewer keeps its own, in display units). One line is printed
+/// when the override comes in, is fully in, or goes out: the check without a screenshot.
+fn script_camera(
+    mut play: NonSendMut<Play>,
+    display: Option<Res<crate::sackboy_play::LevelDisplay>>,
+    mut cameras: Query<(&mut Transform, &mut Projection), With<Camera3d>>,
+) {
+    let (Some(display), Ok((mut transform, mut projection))) = (display, cameras.single_mut())
+    else {
+        return;
+    };
+    let p = &mut *play;
+    let to_level = display.0.inverse();
+    if !to_level.is_finite() {
+        return;
+    }
+    // The display matrix is a uniform scale and a translation: directions are kept.
+    let follow_eye = to_level.transform_point3(transform.translation);
+    let follow_dir = transform.forward().as_vec3();
+    let world = &mut p.host.world;
+    let pose = world.camera_pose(follow_eye.to_array(), follow_dir.to_array());
+    let own_fov = match projection.as_ref() {
+        Projection::Perspective(lens) => Some(lens.fov),
+        _ => None,
+    };
+    let wanted_fov = match pose {
+        Some(pose) => {
+            let eye = display.0.transform_point3(Vec3::from(pose.eye));
+            *transform =
+                Transform::from_translation(eye).looking_to(Vec3::from(pose.direction), Vec3::Y);
+            p.override_frames += 1;
+            if p.follow_fov.is_none() {
+                p.follow_fov = own_fov;
+            }
+            Some(OVERRIDE_FOV_DEG.to_radians())
+        }
+        None => p.follow_fov.take(),
+    };
+    if let (Some(fov), Some(own)) = (wanted_fov, own_fov) {
+        if fov != own {
+            if let Projection::Perspective(lens) = projection.as_mut() {
+                lens.fov = fov;
+            }
+        }
+    }
+    world.camera.view = camera_view(
+        display.0,
+        transform.to_matrix(),
+        projection.get_clip_from_view(),
+    );
+    let o = &world.camera.override_camera;
+    let now = (o.is_in(), o.blend >= 1., o.target > 0.);
+    if now != p.override_printed {
+        p.override_printed = now;
+        let at = transform.translation;
+        println!(
+            "Camera at tick {}: override {} (blend {:.2}, weight {:.2}, target {}); set calls {}, activations {}; frames drawn with it {}; camera at display {:.3?}, level {:.1?}",
+            p.scripts.ticks,
+            match now {
+                (false, ..) => "out",
+                (true, true, _) => "fully in",
+                (true, false, true) => "coming in",
+                (true, false, false) => "going out",
+            },
+            o.blend,
+            o.weight(),
+            if now.2 { "on" } else { "off" },
+            o.set_calls,
+            o.activation_calls,
+            p.override_frames,
+            at.to_array(),
+            to_level.transform_point3(at).to_array(),
+        );
+    }
+}
+
 /// Thing numbers named per kind in the line [`follow_things`] prints.
 const MAX_THINGS_NAMED: usize = 8;
 
@@ -448,6 +572,17 @@ fn window(mut contexts: EguiContexts, play: NonSend<Play>) -> Result {
                 }
             }
             let cam = &play.host.world.camera;
+            let o = &cam.override_camera;
+            ui.label(format!(
+                "Camera: override blend {:.2} (target {}), set {} times, {} frames drawn with it; screen queries {} ({} without a view, {} off screen)",
+                o.blend,
+                if o.target > 0. { "on" } else { "off" },
+                o.set_calls,
+                play.override_frames,
+                cam.screen_queries,
+                cam.screen_queries_without_view,
+                cam.screen_queries_off_screen
+            ));
             if let Some(c) = &cam.from_to_up {
                 ui.small(format!(
                     "Camera ({} calls): from {:?} to {:?} up {:?}",
@@ -462,4 +597,59 @@ fn window(mut contexts: EguiContexts, play: NonSend<Play>) -> Result {
             }
         });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::camera::CameraProjection;
+
+    /// The view handed to the scripts: a level point in front of the camera lands in the
+    /// middle of the runtime's screen, the camera matrix is in level units with axes of
+    /// length 1, and a display matrix without an inverse gives no view.
+    #[test]
+    fn the_view_for_the_scripts_is_in_level_units() {
+        // Level units to display units: a scale of 1/1000 after a shift.
+        let display = Mat4::from_scale(Vec3::splat(0.001))
+            * Mat4::from_translation(Vec3::new(-500., -200., 0.));
+        // A camera in display units, 2 in front of the level point (1500, 700, 0).
+        let target = display.transform_point3(Vec3::new(1500., 700., 0.));
+        let global = Transform::from_translation(target + Vec3::Z * 2.)
+            .looking_at(target, Vec3::Y)
+            .to_matrix();
+        let lens = PerspectiveProjection {
+            fov: OVERRIDE_FOV_DEG.to_radians(),
+            aspect_ratio: 16. / 9.,
+            ..Default::default()
+        };
+        let view = camera_view(display, global, lens.get_clip_from_view()).unwrap();
+        // Column W: the eye in level units, 2000 in front of the point. Column Z points
+        // backward (+z here), at length 1.
+        let c = view.camera;
+        assert!((c[12] - 1500.).abs() < 0.01 && (c[13] - 700.).abs() < 0.01);
+        assert!((c[14] - 2000.).abs() < 0.01);
+        assert!((c[10] - 1.).abs() < 1e-5 && (c[0] - 1.).abs() < 1e-5);
+        let at = |x: f32, y: f32, z: f32| {
+            lbp_runtime::screen_position(&view.view_proj, [x, y, z, 1.], lbp_runtime::SCREEN)
+        };
+        let mid = at(1500., 700., 0.);
+        assert!(
+            (mid[0] - 640.).abs() < 0.01 && (mid[1] - 360.).abs() < 0.01,
+            "{mid:?}"
+        );
+        // Level +y is up on the screen (the smaller y), level +x to the right; the edge
+        // of the picture is 2000 tan 30 above the middle.
+        let h = 2000. * 30f32.to_radians().tan();
+        let top = at(1500., 700. + h, 0.);
+        assert!(
+            top[1].abs() < 0.05 && (top[0] - 640.).abs() < 0.01,
+            "{top:?}"
+        );
+        let right = at(1500. + h * 16. / 9., 700., 0.);
+        assert!((right[0] - 1280.).abs() < 0.05, "{right:?}");
+        assert_eq!(
+            camera_view(Mat4::ZERO, global, lens.get_clip_from_view()),
+            None
+        );
+    }
 }

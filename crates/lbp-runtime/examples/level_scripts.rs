@@ -47,6 +47,8 @@
 //! when the level was read. `play_all.display` counts the Things whose render-mesh
 //! visibility, colours or world matrix are unlike the level file's after the last tick,
 //! the levels with such a Thing, and the changes marked for a display on the way.
+//! `play_all.camera` counts the override camera's calls, the levels and ticks on which it
+//! was in, and the camera matrix and screen position queries.
 //! Names and counts only; no bytecode. Output: a NEW JSON file under
 //! ignored `local-analysis/`. Counting unit: Thing with a PScript part (instances) or
 //! distinct script class (function names).
@@ -1002,6 +1004,92 @@ impl DisplaySums {
     }
 }
 
+/// The override camera and the screen natives over a run (part 20). For one level the
+/// level counts are 0 or 1.
+#[derive(Default, Clone)]
+struct CameraSums {
+    /// `Cam.SetOverrideCamera__rr` and `SetOverrideCameraActivation__bf` calls, and the
+    /// activation calls that turned the override on.
+    set_calls: u64,
+    activation_calls: u64,
+    activations_on: u64,
+    levels_activated: usize,
+    /// Ticks after which the override's blend was above the threshold, the levels with
+    /// such a tick, and the levels where it was still above it after the last tick.
+    ticks_in: u64,
+    levels_in: usize,
+    levels_in_at_end: usize,
+    /// Levels whose blend reached 1.0.
+    levels_full: usize,
+    matrix_queries: u64,
+    levels_matrix: usize,
+    /// `HUD.GetScreenSpacePosition__r` calls: all, answered without a view, answered
+    /// with a point more than the script's margin outside the screen.
+    screen_queries: u64,
+    levels_screen: usize,
+    without_view: u64,
+    off_screen: u64,
+}
+
+impl CameraSums {
+    fn of(world: &LevelWorld) -> Self {
+        let (c, o) = (&world.camera, &world.camera.override_camera);
+        CameraSums {
+            set_calls: o.set_calls,
+            activation_calls: o.activation_calls,
+            activations_on: o.activations_on,
+            levels_activated: usize::from(o.activations_on > 0),
+            ticks_in: o.ticks_in,
+            levels_in: usize::from(o.ticks_in > 0),
+            levels_in_at_end: usize::from(o.is_in()),
+            levels_full: usize::from(o.blend_max >= 1.),
+            matrix_queries: c.matrix_queries,
+            levels_matrix: usize::from(c.matrix_queries > 0),
+            screen_queries: c.screen_queries,
+            levels_screen: usize::from(c.screen_queries > 0),
+            without_view: c.screen_queries_without_view,
+            off_screen: c.screen_queries_off_screen,
+        }
+    }
+
+    fn add(&mut self, o: &CameraSums) {
+        self.set_calls += o.set_calls;
+        self.activation_calls += o.activation_calls;
+        self.activations_on += o.activations_on;
+        self.levels_activated += o.levels_activated;
+        self.ticks_in += o.ticks_in;
+        self.levels_in += o.levels_in;
+        self.levels_in_at_end += o.levels_in_at_end;
+        self.levels_full += o.levels_full;
+        self.matrix_queries += o.matrix_queries;
+        self.levels_matrix += o.levels_matrix;
+        self.screen_queries += o.screen_queries;
+        self.levels_screen += o.levels_screen;
+        self.without_view += o.without_view;
+        self.off_screen += o.off_screen;
+    }
+
+    fn json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "unit": "native call; tick (one tick_level); level. The override is in while its blend is above 0.0001. No view is written in this run, so a screen query is answered with the middle of the screen",
+            "override_set_calls": self.set_calls,
+            "override_activation_calls": self.activation_calls,
+            "override_activations_on": self.activations_on,
+            "levels_with_an_override_activation": self.levels_activated,
+            "ticks_with_the_override_in": self.ticks_in,
+            "levels_with_the_override_in": self.levels_in,
+            "levels_with_the_override_in_at_end": self.levels_in_at_end,
+            "levels_with_the_override_fully_in": self.levels_full,
+            "camera_matrix_queries": self.matrix_queries,
+            "levels_with_a_camera_matrix_query": self.levels_matrix,
+            "screen_position_queries": self.screen_queries,
+            "levels_with_a_screen_position_query": self.levels_screen,
+            "screen_position_queries_without_a_view": self.without_view,
+            "screen_position_queries_off_screen": self.off_screen,
+        })
+    }
+}
+
 /// One level played: the report and what `--all` adds up.
 struct Played {
     json: serde_json::Value,
@@ -1025,6 +1113,7 @@ struct Played {
     messages: MessageSums,
     settings: SettingsSums,
     display: DisplaySums,
+    camera: CameraSums,
     /// Global-settings slots that hold a Thing UID at the end.
     global_settings_held: usize,
     /// Switch outputs whose signal at the end differs from the stored one, by switch type.
@@ -1337,6 +1426,13 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
     json["global_settings"] = settings.json();
     let display = DisplaySums::of(&host.world);
     json["display"] = display.json();
+    let camera = CameraSums::of(&host.world);
+    json["camera"]["override"] = camera.json();
+    let o = &host.world.camera.override_camera;
+    json["camera"]["override"]["at_end"] = serde_json::json!({
+        "position": o.position, "direction": o.direction,
+        "target": o.target, "rate": o.rate, "blend": o.blend,
+    });
     json["lighting_in_force_at_load"] = serde_json::json!(host.world.settings_at_load.lighting);
     json["lighting_stored_current"] = serde_json::json!(host.world.pworld.lighting_stored);
     Played {
@@ -1362,6 +1458,7 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
         messages,
         settings,
         display,
+        camera,
         global_settings_held: host
             .world
             .pworld
@@ -1405,6 +1502,7 @@ struct PlayTotals {
     levels_with_messages: usize,
     settings: SettingsSums,
     display: DisplaySums,
+    camera: CameraSums,
     global_settings_held: usize,
     faults: BTreeMap<String, (u64, usize)>,
     thread_faults: BTreeMap<String, (u64, usize)>,
@@ -1460,6 +1558,7 @@ impl PlayTotals {
         self.levels_with_messages += usize::from(p.messages.entered() > 0);
         self.settings.add(&p.settings);
         self.display.add(&p.display);
+        self.camera.add(&p.camera);
         self.global_settings_held += p.global_settings_held;
         if let Some(f) = &p.first_tick {
             self.first_reactions.absorb(f.reactions.clone());
@@ -1574,6 +1673,7 @@ impl PlayTotals {
         doc["messages"]["levels_with_a_message"] = serde_json::json!(self.levels_with_messages);
         doc["global_settings"] = self.settings.json();
         doc["display"] = self.display.json();
+        doc["camera"] = self.camera.json();
         doc
     }
 }

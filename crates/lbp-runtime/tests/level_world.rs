@@ -3566,3 +3566,327 @@ fn d268_hidden_coloured_and_moved_things_are_listed_for_a_display() {
     assert!(w.display.marks.iter().all(|n| *n > 0));
     assert!(w.thing_display(99).is_none() && w.display_at_load(99).is_none());
 }
+
+/// `Watcher`, a made-up script: `Update__` asks for the screen position of its own
+/// Thing and keeps x, y and the screen's width in its members `sx`, `sy` and `xres`.
+fn watcher() -> Script {
+    let mut s = lamp();
+    s.class_name = "Watcher".into();
+    s.super_class = None;
+    s.strings_a = [
+        "Watcher",
+        "Thing",
+        "sx",
+        "GetWorldPosition__",
+        lbp_runtime::UPDATE,
+        "GetScreenSpacePosition__r",
+        "HUD",
+        "sy",
+        "GetXRes__",
+        "xres",
+    ]
+    .map(String::from)
+    .to_vec();
+    s.type_refs = vec![ty(10, 0), ty(10, 1), ty(10, 6)];
+    let member = |type_ref, name| MemberRef { type_ref, name };
+    s.field_refs = vec![member(0, 2), member(0, 7), member(0, 9)];
+    s.function_refs = vec![member(1, 3), member(2, 5), member(2, 8)];
+    s.bytecode = vec![
+        i(0xa3, 10, 0, 0, 0),  // ARG @0 = this
+        i(0xa4, 6, 4, 0, 0),   // r4 = CALL Thing.GetWorldPosition__ (m44)
+        i(0x78, 0, 8, 4, 0),   // r8 = GET_M44_cW r4
+        i(0xa3, 5, 8, 0, 0),   // ARG @0 = r8
+        i(0xa4, 5, 16, 1, 0),  // r16 = CALL HUD.GetScreenSpacePosition__r
+        i(0x5a, 0, 12, 16, 0), // r12 = GET_V4_X r16
+        i(0x97, 4, 12, 0, 0),  // thing(r0).sx = r12
+        i(0x5b, 0, 12, 16, 0), // r12 = GET_V4_Y r16
+        i(0x97, 4, 12, 0, 1),  // thing(r0).sy = r12
+        i(0xa4, 3, 20, 2, 0),  // r20 = CALL HUD.GetXRes__
+        i(0x97, 3, 20, 0, 2),  // thing(r0).xres = r20
+        i(0xa5, 0, 0, 0, 0),   // RETURN
+    ];
+    let mut f = function(0, 4, 0, 12);
+    f.stack_size = 64;
+    s.function_defs = vec![f];
+    s
+}
+
+/// D269: the override camera's two stores and its blend, the camera matrix a script
+/// reads, and the screen position of a level point.
+#[test]
+fn d269_the_override_camera_blends_in_and_the_screen_natives_use_the_view() {
+    use lbp_runtime::{
+        view_projection, CameraPose, CameraView, OVERRIDE_FAR, OVERRIDE_FOV_DEG, OVERRIDE_NEAR,
+        SCREEN,
+    };
+    let mut w = LevelWorld::from_things(&level());
+    let matrix = |w: &mut LevelWorld| match native(w, "Cam", "GetCameraMatrix__", &[]) {
+        Ok(Value::Mat44(m)) => m,
+        other => panic!("{other:?}"),
+    };
+    let v = |x: f32, y: f32, z: f32, w: f32| Value::Vec4([x, y, z, w]);
+    let void = |r: Result<Value, String>| assert_eq!(r, Ok(Value::Void));
+    let activate = |w: &mut LevelWorld, on: bool, rate: f32| {
+        let args = [Value::Bool(on), Value::Float(rate)];
+        void(native(w, "Cam", "SetOverrideCameraActivation__bf", &args));
+    };
+
+    // The screen is 1280 x 720.
+    assert_eq!(
+        native(&mut w, "HUD", "GetXRes__", &[]),
+        Ok(Value::Int(1280))
+    );
+    assert_eq!(native(&mut w, "HUD", "GetYRes__", &[]), Ok(Value::Int(720)));
+    assert_eq!(SCREEN, [1280, 720]);
+
+    // No view and no player: the identity. With a player: the default follow camera.
+    assert_eq!(matrix(&mut w), identity());
+    assert_eq!(w.default_follow_pose(), None);
+    w.add_player([10., 20., 30.], (0., 60.));
+    let follow = CameraPose {
+        eye: [306., 188., 1248.],
+        direction: [0., 0., -1.],
+    };
+    assert_eq!(w.default_follow_pose(), Some(follow));
+    assert_eq!(matrix(&mut w), translation(306., 188., 1248.));
+    assert_eq!(w.camera.matrix_queries, 2);
+
+    // The override's pair is kept as passed, the last one wins, and nothing blends
+    // before the activation.
+    let set = |w: &mut LevelWorld, at: Value, dir: Value| {
+        void(native(w, "Cam", "SetOverrideCamera__rr", &[at, dir]));
+    };
+    set(&mut w, v(0., 0., 0., 1.), v(0., 1., 0., 0.));
+    set(&mut w, v(1306., 688., 248., 1.), v(2., 0., 0., 0.));
+    let o = w.camera.override_camera;
+    assert_eq!(o.position, [1306., 688., 248., 1.]);
+    assert_eq!(o.direction, [2., 0., 0., 0.]);
+    assert_eq!((o.set_calls, o.blend, o.target), (2, 0., 0.));
+    for _ in 0..5 {
+        w.step_camera();
+    }
+    assert_eq!(w.camera.override_camera.blend, 0.);
+    assert_eq!(w.camera_pose(follow.eye, follow.direction), None);
+
+    // The activation sets the target and the rate, not the blend; the blend then takes
+    // 20 ticks at the scoreboard's rate.
+    activate(&mut w, true, 0.05);
+    let o = w.camera.override_camera;
+    assert_eq!((o.target, o.rate, o.blend), (1., 0.05, 0.));
+    assert_eq!((o.activation_calls, o.activations_on), (1, 1));
+    w.step_camera();
+    assert!(w.camera.override_camera.is_in());
+    let first = w.camera_pose(follow.eye, follow.direction).unwrap();
+    assert!(first.eye[0] > 306. && first.eye[0] < 320., "{first:?}");
+    for _ in 1..10 {
+        w.step_camera();
+    }
+    // Half way: the midpoint and the half angle (the ease of 0.5 is 0.5).
+    let o = w.camera.override_camera;
+    assert!((o.blend - 0.5).abs() < 1e-5 && (o.weight() - 0.5).abs() < 1e-5);
+    let half = w.camera_pose(follow.eye, follow.direction).unwrap();
+    let near = |a: [f32; 3], b: [f32; 3]| (0..3).all(|i| (a[i] - b[i]).abs() < 0.01);
+    assert!(near(half.eye, [806., 438., 748.]), "{half:?}");
+    let r = std::f32::consts::FRAC_1_SQRT_2;
+    assert!(near(half.direction, [r, 0., -r]), "{half:?}");
+    // Without a view the camera matrix a script reads is that camera's.
+    let m = matrix(&mut w);
+    assert!(near([m[12], m[13], m[14]], half.eye));
+    assert!(near([-m[8], -m[9], -m[10]], half.direction));
+    for _ in 10..20 {
+        w.step_camera();
+    }
+    assert_eq!(w.camera.override_camera.blend, 1.);
+    let full = w.camera_pose(follow.eye, follow.direction).unwrap();
+    assert_eq!(full.eye, [1306., 688., 248.]);
+    assert!(near(full.direction, [1., 0., 0.]));
+    // It stays in until a script turns it off; then 20 ticks back.
+    for _ in 0..100 {
+        w.step_camera();
+    }
+    assert_eq!(w.camera.override_camera.blend, 1.);
+    activate(&mut w, false, 0.05);
+    assert_eq!(w.camera.override_camera.blend, 1.);
+    for _ in 0..19 {
+        w.step_camera();
+    }
+    assert!(w.camera.override_camera.is_in());
+    w.step_camera();
+    let o = w.camera.override_camera;
+    assert_eq!((o.blend, o.target, o.blend_max), (0., 0., 1.));
+    assert_eq!((o.activation_calls, o.activations_on), (2, 1));
+    assert_eq!(o.ticks_in, 20 + 100 + 19);
+    assert_eq!(w.camera_pose(follow.eye, follow.direction), None);
+    // A follow direction that is no direction gives no pose.
+    activate(&mut w, true, 1.);
+    w.step_camera();
+    assert_eq!(w.camera_pose(follow.eye, [0.; 3]), None);
+    activate(&mut w, false, 1.);
+    w.step_camera();
+
+    // The screen position. Without a view: the middle of the screen, counted.
+    let screen = |w: &mut LevelWorld, at: Value| match native(
+        w,
+        "HUD",
+        "GetScreenSpacePosition__r",
+        &[at],
+    ) {
+        Ok(Value::Vec4(p)) => p,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(screen(&mut w, v(1e6, 0., 0., 1.)), [640., 360., 0., 0.]);
+    let c = &w.camera;
+    assert_eq!(
+        (
+            c.screen_queries,
+            c.screen_queries_without_view,
+            c.screen_queries_off_screen
+        ),
+        (1, 1, 0)
+    );
+    // With the view a display wrote: its matrix is the camera matrix, and points are
+    // projected by its view-projection.
+    let camera = CameraPose {
+        eye: [0., 0., 1000.],
+        direction: [0., 0., -1.],
+    }
+    .matrix();
+    let view_proj = view_projection(
+        &camera,
+        OVERRIDE_FOV_DEG,
+        16. / 9.,
+        OVERRIDE_NEAR,
+        OVERRIDE_FAR,
+    )
+    .unwrap();
+    w.camera.view = Some(CameraView { camera, view_proj });
+    assert_eq!(matrix(&mut w), camera);
+    let mid = screen(&mut w, v(0., 0., 0., 1.));
+    assert!((mid[0] - 640.).abs() < 0.01 && (mid[1] - 360.).abs() < 0.01);
+    assert_eq!(mid[3], 0.);
+    // Up on the screen is the smaller y; the point's own w is ignored.
+    let up = screen(&mut w, v(0., 100., 0., 0.));
+    assert!(up[1] < 360. - 50. && (up[0] - 640.).abs() < 0.01);
+    // Far to the right: more than the margin outside, counted as off screen.
+    let right = screen(&mut w, v(5000., 0., 0., 1.));
+    assert!(right[0] > 1280. + 100.);
+    let c = &w.camera;
+    assert_eq!(
+        (
+            c.screen_queries,
+            c.screen_queries_without_view,
+            c.screen_queries_off_screen
+        ),
+        (4, 1, 1)
+    );
+
+    // A level without a PWorld has no level camera: the calls are counted and change
+    // nothing.
+    let mut bare = LevelWorld::from_things(&[ThingRecord::default()]);
+    set(&mut bare, v(1., 2., 3., 1.), v(1., 0., 0., 0.));
+    activate(&mut bare, true, 0.5);
+    bare.step_camera();
+    bare.step_camera();
+    let o = bare.camera.override_camera;
+    assert_eq!((o.set_calls, o.activation_calls), (1, 1));
+    assert_eq!((o.position, o.target, o.blend), ([0.; 4], 0., 0.));
+}
+
+/// D269: a script reads the screen position of its Thing each tick, as the speech bubble
+/// does for its off-screen timer, and the tick steps the camera's blend.
+#[test]
+fn d269_a_script_reads_its_screen_position_each_tick() {
+    use lbp_runtime::{view_projection, CameraPose, CameraView, OVERRIDE_FOV_DEG};
+    let mut things = level();
+    things[1].data.script = Some(ScriptPart {
+        script: Some(desc(GUID)),
+        fields: vec![
+            field("sx", ScriptValue::Float(-1.)),
+            field("sy", ScriptValue::Float(-1.)),
+            field("xres", ScriptValue::Int(0)),
+        ],
+    });
+    let mut vm = Vm::default();
+    vm.load(watcher(), Some(GUID));
+    let mut host = Bindings::new(LevelWorld::from_things(&things));
+    let mut level = LevelScripts::new(&vm, &host.world);
+    let member = |host: &mut Bindings<LevelWorld>, name: &str| {
+        host.world
+            .get_member(MemberKind::Thing, &Value::Thing(Some(1)), "Watcher", name)
+            .unwrap()
+    };
+    // No view: the middle of the screen every tick, never off screen.
+    for _ in 0..61 {
+        let t = level.tick_level(&mut vm, &mut host, 1000);
+        assert!(t.faults.is_empty(), "{:?}", t.faults);
+    }
+    assert!(host.unbound.is_empty(), "{:?}", host.unbound);
+    assert_eq!(member(&mut host, "sx"), Value::Float(640.));
+    assert_eq!(member(&mut host, "sy"), Value::Float(360.));
+    assert_eq!(member(&mut host, "xres"), Value::Int(1280));
+    let c = host.world.camera.clone();
+    assert_eq!(
+        (
+            c.screen_queries,
+            c.screen_queries_without_view,
+            c.screen_queries_off_screen
+        ),
+        (61, 61, 0)
+    );
+    // A camera that looks at the Thing (at (1, 2, 3)): the middle again, now measured.
+    let view_at = |eye: [f32; 3]| {
+        let camera = CameraPose {
+            eye,
+            direction: [0., 0., -1.],
+        }
+        .matrix();
+        let view_proj = view_projection(&camera, OVERRIDE_FOV_DEG, 16. / 9., 10., 40_000.).unwrap();
+        CameraView { camera, view_proj }
+    };
+    host.world.camera.view = Some(view_at([1., 2., 1003.]));
+    level.tick_level(&mut vm, &mut host, 1000);
+    let (Value::Float(x), Value::Float(y)) = (member(&mut host, "sx"), member(&mut host, "sy"))
+    else {
+        panic!()
+    };
+    assert!(
+        (x - 640.).abs() < 0.01 && (y - 360.).abs() < 0.01,
+        "{x} {y}"
+    );
+    assert_eq!(host.world.camera.screen_queries_off_screen, 0);
+    // A camera far to the left of it: the Thing is more than 100 pixels past the right
+    // edge on each of 61 ticks, which is when a speech bubble would close.
+    host.world.camera.view = Some(view_at([-3000., 2., 1003.]));
+    for _ in 0..61 {
+        level.tick_level(&mut vm, &mut host, 1000);
+    }
+    let Value::Float(x) = member(&mut host, "sx") else {
+        panic!()
+    };
+    assert!(x > 1280. + 100., "{x}");
+    let c = &host.world.camera;
+    assert_eq!(
+        (
+            c.screen_queries,
+            c.screen_queries_without_view,
+            c.screen_queries_off_screen
+        ),
+        (123, 61, 61)
+    );
+    // The tick steps the blend once.
+    use lbp_script_vm::natives::dispatch;
+    let on = [Value::Bool(true), Value::Float(0.25)];
+    dispatch(
+        &mut host.world,
+        "Cam",
+        "SetOverrideCameraActivation__bf",
+        &on,
+    )
+    .unwrap()
+    .unwrap();
+    for want in [0.25, 0.5, 0.75, 1., 1.] {
+        level.tick_level(&mut vm, &mut host, 1000);
+        assert_eq!(host.world.camera.override_camera.blend, want);
+    }
+    assert_eq!(host.world.camera.override_camera.ticks_in, 5);
+}

@@ -26,6 +26,7 @@ use lbp_script_vm::{ClassId, Host, MemberKind, ObjectId, Step, Task, Value, Vm};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+mod camera;
 mod display;
 mod global_settings;
 mod message_view;
@@ -33,6 +34,7 @@ mod messages;
 mod sensors;
 mod switches;
 pub mod transform;
+pub use camera::*;
 pub use display::*;
 pub use global_settings::*;
 pub use message_view::*;
@@ -263,17 +265,6 @@ fn to_local(m: &[f32; 16], p: [f32; 3]) -> Option<[f32; 3]> {
     }
     let d = [p[0] - m[12], p[1] - m[13], p[2] - m[14]];
     Some([dot(&bc, &d) / det, dot(&ca, &d) / det, dot(&ab, &d) / det])
-}
-
-/// Camera state scripts set through `Cam.*` natives, for the viewer to read.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct CameraState {
-    /// The last `Cam.SetCameraFromToUp__rrrffff`.
-    pub from_to_up: Option<CameraFromToUp>,
-    pub from_to_up_calls: u64,
-    /// The last `Cam.SetDOFAndFog__fff` (as passed).
-    pub dof_and_fog: Option<[f32; 3]>,
-    pub motion_blur_clears: u64,
 }
 
 /// An engine part a script reached through a native member (`thing.SpriteLight`), with
@@ -2196,6 +2187,44 @@ impl World for LevelWorld {
         self.camera.motion_blur_clears += 1;
         Ok(())
     }
+    /// The two vectors as passed; nothing in a level without a PWorld, which has no
+    /// level camera (FOUND: the native does nothing without one).
+    fn set_override_camera(
+        &mut self,
+        position: [f32; 4],
+        direction: [f32; 4],
+    ) -> Result<(), String> {
+        let o = &mut self.camera.override_camera;
+        o.set_calls += 1;
+        if self.world.is_some() {
+            (o.position, o.direction) = (position, direction);
+        }
+        Ok(())
+    }
+    /// The blend's target and rate; the blend itself moves in
+    /// [`LevelWorld::step_camera`]. Nothing in a level without a PWorld.
+    fn set_override_camera_activation(&mut self, on: bool, rate: f32) -> Result<(), String> {
+        let o = &mut self.camera.override_camera;
+        o.activation_calls += 1;
+        o.activations_on += u64::from(on);
+        if self.world.is_some() {
+            (o.target, o.rate) = (if on { 1. } else { 0. }, rate);
+        }
+        Ok(())
+    }
+    /// [`LevelWorld::camera_matrix`].
+    fn camera_matrix(&mut self) -> Result<[f32; 16], String> {
+        self.camera.matrix_queries += 1;
+        Ok(LevelWorld::camera_matrix(self))
+    }
+    /// [`LevelWorld::screen_position`].
+    fn screen_position(&mut self, point: [f32; 4]) -> Result<[f32; 4], String> {
+        Ok(LevelWorld::screen_position(self, point))
+    }
+    /// [`SCREEN`], whatever a display's window measures.
+    fn screen_size(&mut self) -> Result<[i32; 2], String> {
+        Ok(SCREEN)
+    }
     /// No cinema mode in the PC run (INFERRED default).
     fn cinema_mode_count(&mut self) -> Result<i32, String> {
         Ok(0)
@@ -2959,7 +2988,8 @@ impl LevelScripts {
 
     /// One game tick of a level: [`Self::tick`], then [`Self::trigger_events`], so a
     /// script an event suspends is resumed on the next tick (order INFERRED), then
-    /// [`Self::switch_reactions`], then [`Self::apply_global_settings`].
+    /// [`Self::switch_reactions`], then [`Self::apply_global_settings`], then the
+    /// camera's step ([`LevelWorld::step_camera`], place INFERRED).
     ///
     /// FOUND in the 01.33 executable: the world update (0xeacd4) calls the switch pass
     /// (0xdd228, at 0xeb270) after 0xe0f0c, 0xcfc40 and 0xcfbb4 and before 0xcfed4, and
@@ -2982,6 +3012,7 @@ impl LevelScripts {
         report.absorb(self.trigger_events(vm, host, budget));
         report.absorb(self.switch_reactions(vm, host, budget));
         report.absorb(self.apply_global_settings(vm, host, budget));
+        host.world.step_camera();
         host.world.advance_frame();
         host.world.end_pad_frame();
         report

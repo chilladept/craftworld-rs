@@ -375,8 +375,9 @@ pub(crate) fn spawn_lane(z: f32) -> f32 {
 /// straight down -z (no pitch), vertical FOV [`FOLLOW_FOV_DEG`]. RPCS3 memory read in the
 /// owner's blank Moon level (PC run d208, idle, one pose): CONFIRMED_FROM_LOCAL_DATA
 /// (emulated) for that pose; whether the x lead follows his facing or lags while walking is
-/// not measured (INFERRED: held constant).
-const FOLLOW_EYE: [f32; 3] = [296., 168., 1218.];
+/// not measured (INFERRED: held constant). The runtime keeps the value, for the camera it
+/// tells the level scripts of when nothing draws.
+const FOLLOW_EYE: [f32; 3] = lbp_runtime::FOLLOW_EYE;
 const FOLLOW_FOV_DEG: f32 = 60.;
 
 fn value(all: &[String], flag: &str) -> Option<String> {

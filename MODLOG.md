@@ -1,5 +1,39 @@
 # Development log
 
+## 2026-10-13 - D269 the script camera and the screen
+
+RScript plan stage 5, PR 5, the last of stage 5. FOUND (EBOOT 01.33, through the Ghidra bridge and a decode
+of the vector code): the level's camera keeps one override. `Cam.SetOverrideCamera__rr` (0x3760e4) stores a
+position and a direction as passed; `Cam.SetOverrideCameraActivation__bf` (0x374cec) sets a blend target
+(1.0 or 0.0) and a blend rate, and nothing else writes them, so only a script ends an override. Each camera
+update (0x6eb650) the blend steps linearly by the rate (0x38eb40), the weight is 0.5 - 0.5 cos(pi x blend),
+the eye is mixed linearly and the view direction on the arc from the follow camera (0x3918ec); above a blend
+of 0.0001 the lens is 60 degrees, near 10, far 40000. `Cam.GetCameraMatrix__` (0x7347e0) copies the render
+camera's camera matrix (column W the eye, column Z backward). `HUD.GetScreenSpacePosition__r` (0x2e7bdc,
+0x2e74a0) projects a point with the view-projection matrix to pixels from the top left, y down, dividing by
+0.0001 when w is exactly 0 and with no test for a point behind the camera; `HUD.GetXRes__` / `GetYRes__`
+return two globals that hold 1280 and 720. New `lbp-runtime/src/camera.rs`: `OverrideCamera`, `CameraView`,
+`CameraPose`, `CameraState` (moved, with the view and counters), `step`, `ease`, `slerp`, `blend_pose`,
+`screen_position`, `view_projection`, `LevelWorld::step_camera` (at the end of `tick_level`), `camera_pose`,
+`camera_matrix`, `screen_position`. Natives 219 -> 225 (the six named). `level_scripts` reports
+`play_all.camera`. Viewer: a `script_camera` system after the viewer's camera system takes that placement as
+the follow camera, draws with the mixed camera and the 60 degree lens while the override is in, and writes
+the camera it drew with for the scripts; `FOLLOW_EYE` moved into the runtime. MEASURED, 378 levels, 60 ticks
+(plain / trigger visit / pulsed): Things stopped by a fault 4 -> 4 in all three; unbound natives called
+51 -> 48 / 87 -> 81 / 87 -> 81; unbound calls 73,325 -> 62,000 / 1,002,445 -> 865,777 / 1,010,529 -> 872,549;
+the override comes in on 0 / 101 / 101 levels (fully in on 98), 39,386 / 39,588 set calls; screen positions
+asked 3,775 / 32,360 / 32,730 times in 28 / 61 / 70 levels; messages, global settings and display counts
+equal to D268. INFERRED: world +Y as up under an override, the step at the end of the tick, directions at
+length 1 in the mix, and the answers without a display (the default follow pose or the identity; the middle
+of the screen), chosen so that a run without a display counts as before. Not bound:
+`Native.SetSpeechBubbleActive__Q5Thingb` (its part and effect are not established). Viewer seen without
+taking focus on main_04_bravery_test with the Sackboy started in the scoreboard's trigger: the camera is
+centred on the scoreboard at the override's position; without the scripts the follow camera. The blend in
+motion was not seen (the scripts tick while the scene loads). Open: with `--play-sackboy` some levels start
+the Sackboy at the scoreboard's own checkpoint, so the camera goes to the scoreboard at once. Tests: 6 unit
+tests and two world tests in `lbp-runtime`, the natives without a world in `lbp-script-vm`, one view test in
+the viewer. +0 viewable, +0 Complete. `docs/level-scripts.md` part 20.
+
 ## 2026-10-13 - D268 hidden, tinted and moved Things in the viewer
 
 RScript plan stage 5, PR 4. FOUND (EBOOT 01.33, through the Ghidra bridge): `Thing.HideRenderMesh` (0x642cd4)

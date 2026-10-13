@@ -442,6 +442,34 @@ pub trait World {
     fn clear_motion_blur(&mut self) -> Result<(), String> {
         Err(not_available("the camera"))
     }
+    /// `Cam.SetOverrideCamera__rr`: the position and the direction of the camera a script
+    /// lays over the follow camera, as passed.
+    fn set_override_camera(
+        &mut self,
+        _position: [f32; 4],
+        _direction: [f32; 4],
+    ) -> Result<(), String> {
+        Err(not_available("the camera"))
+    }
+    /// `Cam.SetOverrideCameraActivation__bf`: the override on or off, and how far its
+    /// blend moves per camera update.
+    fn set_override_camera_activation(&mut self, _on: bool, _rate: f32) -> Result<(), String> {
+        Err(not_available("the camera"))
+    }
+    /// `Cam.GetCameraMatrix__`: the render camera's matrix, camera to world (column W the
+    /// eye, column Z pointing backward), in the order of [`World::world_transform`].
+    fn camera_matrix(&mut self) -> Result<[f32; 16], String> {
+        Err(not_available("the camera"))
+    }
+    /// `HUD.GetScreenSpacePosition__r`: a world point on the screen, (x, y) in pixels from
+    /// the top left corner with y down, then the depth and 0.
+    fn screen_position(&mut self, _point: [f32; 4]) -> Result<[f32; 4], String> {
+        Err(not_available("the screen"))
+    }
+    /// `HUD.GetXRes__` and `HUD.GetYRes__`: the screen's width and height in pixels.
+    fn screen_size(&mut self) -> Result<[i32; 2], String> {
+        Err(not_available("the screen"))
+    }
     /// `HUD.GetCinemaModeCount__` (s32; scripts only test it against zero).
     fn cinema_mode_count(&mut self) -> Result<i32, String> {
         Err(not_available("the HUD"))
@@ -2320,6 +2348,53 @@ const TABLE: &[(&str, &str, NativeFn)] = &[
     ("Game", "SetGlobalSettingsAudioTo__ifffffffffff", |w, c| {
         recorded(w, "SetGlobalSettingsAudioTo", None, c.params)
     }),
+    // ---- D269: the override camera and the screen (docs/level-scripts.md part 20) ----
+    // FOUND (01.33, 0x5fc45c -> 0x7349f8 -> 0x3760e4). Declared static
+    // `void SetOverrideCamera(v4, v4)` on Cam (script tables). The scoreboard script
+    // calls it every frame with a position and a direction it eases itself. The core
+    // stores the two vectors in the level's camera and does nothing else; without a
+    // level camera it does nothing.
+    ("Cam", "SetOverrideCamera__rr", |w, c| {
+        w.set_override_camera(vec4(param(c, 0)?)?, vec4(param(c, 1)?)?)?;
+        Ok(Value::Void)
+    }),
+    // FOUND (01.33, 0x5fc348 -> 0x734bc4 -> 0x374cec). Declared static
+    // `void SetOverrideCameraActivation(bool, f32)` on Cam. The scoreboard script calls
+    // it with (true, 0.05) when its trigger fires and with (false, 0.05) when it is
+    // destroyed. The core sets the override's blend target to 1.0 or 0.0 and its blend
+    // rate to the float; the camera update steps the blend. No owner and no priority.
+    ("Cam", "SetOverrideCameraActivation__bf", |w, c| {
+        w.set_override_camera_activation(boolean(param(c, 0)?)?, float(param(c, 1)?)?)?;
+        Ok(Value::Void)
+    }),
+    // FOUND (01.33, 0x609ed0 -> 0x7347e0). Declared static `m44 GetCameraMatrix()` on
+    // Cam. The scoreboard script takes column W as the camera's position and minus
+    // column Z as its direction. The core copies the render camera's camera matrix out;
+    // the look-at builder that fills it (0x2e7990) writes right, up, backward, eye.
+    ("Cam", "GetCameraMatrix__", |w, _| {
+        Ok(Value::Mat44(w.camera_matrix()?))
+    }),
+    // FOUND (01.33, 0x601d30 -> 0x4b6e80 -> 0x2e7bdc, 0x2e74a0). Declared static
+    // `GetScreenSpacePosition(v4)` on HUD, returning the 2D point type (held in a
+    // vector). The
+    // speech-bubble script passes its Thing's position each tick and reads x and y
+    // against the screen size with a margin of 100. The core projects the point with
+    // the render camera's view-projection matrix and maps it to pixels from the top
+    // left; the native zeroes the fourth component. INFERRED: the third is the depth.
+    ("HUD", "GetScreenSpacePosition__r", |w, c| {
+        Ok(Value::Vec4(w.screen_position(vec4(param(c, 0)?)?)?))
+    }),
+    // FOUND (01.33, 0x5fa5e0 -> 0x4b6a94). Declared static `s32 GetXRes()` on HUD: one
+    // global, which the screen-space projection reads too. The speech-bubble script
+    // compares the screen position's x with it.
+    ("HUD", "GetXRes__", |w, _| {
+        Ok(Value::Int(w.screen_size()?[0]))
+    }),
+    // FOUND (01.33, 0x5fa5a4 -> 0x4b6aac). Declared static `s32 GetYRes()` on HUD: the
+    // global after it; the same script compares y with it.
+    ("HUD", "GetYRes__", |w, _| {
+        Ok(Value::Int(w.screen_size()?[1]))
+    }),
     // ---- the game's own test scripts ----
     ("Test", "Check__bQ7StringAi", |w, c| {
         let ok = boolean(param(c, 0)?)?;
@@ -2593,6 +2668,72 @@ mod tests {
         let to = [Value::Float(1.), Value::Bool(false)];
         assert!(call("Game", "SetGlobalSettingsGravityTo__fb", &to).is_err());
         assert!(call("Game", "TrackSpeechKey__Q6String", &[Value::Object(None)]).is_err());
+    }
+
+    #[test]
+    fn d269_camera_and_screen_natives_check_their_arguments_and_ask_the_world() {
+        let v = Value::Vec4([1., 2., 3., 1.]);
+        // A world without a camera or a screen says so.
+        let pair = [v.clone(), v.clone()];
+        assert!(call("Cam", "SetOverrideCamera__rr", &pair).is_err());
+        let on = [Value::Bool(true), Value::Float(0.05)];
+        assert!(call("Cam", "SetOverrideCameraActivation__bf", &on).is_err());
+        assert!(call("Cam", "GetCameraMatrix__", &[]).is_err());
+        let point = std::slice::from_ref(&v);
+        assert!(call("HUD", "GetScreenSpacePosition__r", point).is_err());
+        assert!(call("HUD", "GetXRes__", &[]).is_err());
+        assert!(call("HUD", "GetYRes__", &[]).is_err());
+
+        /// A world with a screen and a camera that keeps what it is given.
+        #[derive(Default)]
+        struct Screen(Vec<String>);
+        impl World for Screen {
+            fn set_override_camera(&mut self, p: [f32; 4], d: [f32; 4]) -> Result<(), String> {
+                self.0.push(format!("set {} {}", p[0], d[2]));
+                Ok(())
+            }
+            fn set_override_camera_activation(&mut self, on: bool, r: f32) -> Result<(), String> {
+                self.0.push(format!("activation {on} {r}"));
+                Ok(())
+            }
+            fn camera_matrix(&mut self) -> Result<[f32; 16], String> {
+                Ok(IDENTITY)
+            }
+            fn screen_position(&mut self, p: [f32; 4]) -> Result<[f32; 4], String> {
+                Ok([p[0] * 2., p[1] * 2., 0.5, 0.])
+            }
+            fn screen_size(&mut self) -> Result<[i32; 2], String> {
+                Ok([1280, 720])
+            }
+        }
+        let mut w = Screen::default();
+        let mut go =
+            |class: &str, m: &str, args: &[Value]| dispatch(&mut w, class, m, args).unwrap();
+        assert_eq!(go("Cam", "SetOverrideCamera__rr", &pair), Ok(Value::Void));
+        assert_eq!(
+            go("Cam", "SetOverrideCameraActivation__bf", &on),
+            Ok(Value::Void)
+        );
+        assert_eq!(
+            go("Cam", "GetCameraMatrix__", &[]),
+            Ok(Value::Mat44(IDENTITY))
+        );
+        assert_eq!(
+            go("HUD", "GetScreenSpacePosition__r", point),
+            Ok(Value::Vec4([2., 4., 0.5, 0.]))
+        );
+        assert_eq!(go("HUD", "GetXRes__", &[]), Ok(Value::Int(1280)));
+        assert_eq!(go("HUD", "GetYRes__", &[]), Ok(Value::Int(720)));
+        // Wrong argument types and counts are errors, not defaults.
+        let bad = [Value::Float(1.), v.clone()];
+        assert!(go("Cam", "SetOverrideCamera__rr", &bad).is_err());
+        let bad = [Value::Int(1), Value::Float(0.05)];
+        assert!(go("Cam", "SetOverrideCameraActivation__bf", &bad).is_err());
+        assert!(go("HUD", "GetScreenSpacePosition__r", &[Value::Int(1)]).is_err());
+        assert!(go("HUD", "GetXRes__", &pair).is_err());
+        assert_eq!(w.0, ["set 1 3", "activation true 0.05"]);
+        // The table: 219 natives before these six.
+        assert_eq!(bound().count(), 225);
     }
 
     #[test]

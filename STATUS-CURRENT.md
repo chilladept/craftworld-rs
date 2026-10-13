@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D268
+# Current state (overwrite each milestone) — after D269
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -11,7 +11,42 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D268 hidden, tinted and moved Things (2026-10-13)
+## Latest: D269 the script camera and the screen (2026-10-13)
+- RScript plan stage 5, PR 5 (the last of stage 5). FOUND in the EBOOT: the level's camera keeps one
+  override: a position and a direction (`Cam.SetOverrideCamera__rr`, 0x3760e4), a blend target and a
+  blend rate (`Cam.SetOverrideCameraActivation__bf`, 0x374cec). Each camera update (0x6eb650) the blend
+  steps linearly by the rate, is eased with 0.5 - 0.5 cos(pi x blend), and the eye is mixed linearly and
+  the view direction on the arc from the follow camera; above a blend of 0.0001 the lens is 60 degrees,
+  near 10, far 40000. Only a script ends it. `Cam.GetCameraMatrix__` (0x7347e0) is camera to world;
+  `HUD.GetScreenSpacePosition__r` (0x2e7bdc, 0x2e74a0) gives pixels from the top left, y down, on the
+  1280 x 720 of `HUD.GetXRes__` / `GetYRes__`, with no test for a point behind the camera.
+- Runtime: `lbp-runtime/src/camera.rs`. `CameraState` has the `OverrideCamera`, the `CameraView` a
+  display writes (camera matrix, view-projection) and counters; `step`, `ease`, `slerp`, `blend_pose`,
+  `screen_position`, `view_projection`; `LevelWorld::step_camera` at the end of `tick_level`,
+  `camera_pose(follow_eye, follow_dir)` for a display. Natives 219 -> 225 (the six above).
+- Viewer: `--level-scripts` takes its own camera placement as the follow camera each frame, draws with
+  the mixed camera and the 60 degree lens while the override is in, and writes the camera it drew with
+  for the scripts (`level_play.rs`, `script_camera`). Orbit, pan and zoom go on underneath. It prints
+  `Camera at tick N`.
+- MEASURED (378 levels, 60 ticks; plain / trigger visit / pulsed): unbound natives called 51 -> 48 /
+  87 -> 81 / 87 -> 81; unbound calls 73,325 -> 62,000 / 1,002,445 -> 865,777 / 1,010,529 -> 872,549; the
+  override comes in on 0 / 101 / 101 levels (fully in on 98; 39,386 / 39,588 set calls); screen
+  positions asked in 28 / 61 / 70 levels (3,775 / 32,360 / 32,730 calls). Things stopped by a fault
+  4 -> 4; messages, global settings and display counts equal to D268.
+- INFERRED: world +Y as up under the override; the step at the end of the tick; both directions at
+  length 1 in the mix; without a display `GetCameraMatrix` is the default follow pose (or the identity)
+  and a screen position is the middle of the screen, so that a run without a display counts as before.
+- Not bound: `Native.SetSpeechBubbleActive__Q5Thingb` (which part it finds and what the call does are
+  not established). `Cam.SetCameraFromToUp` is the Pod's: stage 6.
+- Checked in the window without taking focus (main_04_bravery_test, the Sackboy started in the
+  scoreboard's trigger): with the scripts the camera is centred on the scoreboard, at the override's
+  position; without them the follow camera. Not seen: the blend in motion (the scripts tick while the
+  scene loads, so it was fully in at the first frame), a bubble closed for being off the screen.
+  Open: with `--play-sackboy` some levels start the Sackboy at the scoreboard's own checkpoint, and the
+  camera then goes to the scoreboard at once and stays. Next: stage 6, the Pod.
+  `docs/level-scripts.md` part 20.
+
+## Before: D268 hidden, tinted and moved Things (2026-10-13)
 - RScript plan stage 5, PR 4. FOUND in the EBOOT: `Thing.HideRenderMesh` / `ShowRenderMesh` clear and
   set two bits (mask 3) of the PRenderMesh's visibility byte, the stored `visibilityFlags`, and go down
   the Thing's children that have a mesh and no shape (0xebf98); bit 0 is "visible in play mode"

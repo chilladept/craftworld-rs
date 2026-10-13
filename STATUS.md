@@ -4821,3 +4821,83 @@ correction; gravity for the physics; the engine's `Update__` call; the device lo
 **+0 newly viewable / +0 newly Complete (runtime and viewer feature).**
 Next: stage 5 PR 5, camera and screen natives. Open: shapes that scripts recolour or move, the editor
 colour a script sets, the tint's alpha, the animation position per Thing.
+
+## D269 the script camera and the screen (2026-10-13)
+- RScript plan stage 5, PR 5 (`docs/rscript-plan.md`), the last of stage 5. A scoreboard takes the
+  camera and a speech bubble tests whether its Thing is on the screen; six natives they call were not
+  bound. The runtime now keeps the override camera and the camera a display drew with, and the Bevy
+  viewer moves its camera to the override and back.
+- FOUND (EBOOT 01.33, read-only through the Ghidra bridge and a decode of the vector code; script
+  listings):
+  - `Cam.SetOverrideCamera__rr` (0x5fc45c -> 0x7349f8 -> 0x3760e4) stores a position and a direction
+    in the level's camera, as passed. `Cam.SetOverrideCameraActivation__bf` (0x5fc348 -> 0x734bc4 ->
+    0x374cec) sets a blend target (1.0 or 0.0) and a blend rate. Nothing else writes them: the engine
+    never ends an override. One override per level camera, no owner, no priority.
+  - The camera's apply function (0x6eb650): the blend steps toward the target by the rate (the target
+    itself when nearer than the rate, 0x38eb40); the weight is 0.5 - 0.5 cos(pi x blend); the view
+    direction goes on the arc from the follow camera's to the override's (0x3918ec: linear above a dot
+    product of 0.999); the eye is mixed linearly; the camera aims 1000 units along the direction.
+  - While the blend is above 0.0001 the lens is 60 degrees of vertical field of view, near 10, far
+    40000 (0x378470, 0x38367c), and the tracked players' weights are multiplied by 1 - blend (0x3764a4).
+  - `Cam.GetCameraMatrix__` (0x609ed0 -> 0x7347e0) copies the render camera's camera matrix: column W
+    the eye, column Z backward (the look-at builder 0x2e7990).
+  - `HUD.GetScreenSpacePosition__r` (0x601d30 -> 0x4b6e80 -> 0x2e7bdc, 0x2e74a0): the point with w = 1
+    through the view-projection matrix, divided by w (by 0.0001 when w is exactly 0), then
+    x = (ndc.x + 1) / 2 x XRes, y = (1 - ndc.y) / 2 x YRes: pixels from the top left, y down, and no test
+    for a point behind the camera. `HUD.GetXRes__` (0x4b6a94) and `GetYRes__` (0x4b6aac) return two
+    globals that hold 1280 and 720.
+  - Who calls them: the scoreboard reads the camera matrix once when its trigger fires, turns the
+    override on with the rate 0.05 and from then on hands its own eased position and direction over
+    every frame; it turns it off when it is destroyed. The speech bubble asks for its screen position
+    each tick and closes after more than 60 ticks more than 100 pixels outside the screen.
+- Runtime (`lbp-runtime`):
+  - New `camera.rs`: `OverrideCamera`, `CameraView`, `CameraPose`, `CameraState` (moved here, with the
+    view, the override and counters), `step`, `ease`, `slerp`, `blend_pose`, `screen_position`,
+    `view_projection`, the constants `SCREEN`, `OVERRIDE_THRESHOLD`, `OVERRIDE_FOV_DEG`,
+    `OVERRIDE_NEAR`, `OVERRIDE_FAR`, `FOLLOW_EYE`, and on `LevelWorld`: `step_camera`, `camera_pose`,
+    `default_follow_pose`, `camera_matrix`, `screen_position`.
+  - `tick_level` steps the camera after the global-settings pass.
+  - Natives 219 -> 225: `Cam.SetOverrideCamera__rr`, `Cam.SetOverrideCameraActivation__bf`,
+    `Cam.GetCameraMatrix__`, `HUD.GetScreenSpacePosition__r`, `HUD.GetXRes__`, `HUD.GetYRes__`.
+  - Without a view (tests, the measuring runs): the camera matrix is the default follow pose under
+    the override, or the identity without a player; a screen position is the middle of the screen.
+- `level_scripts`: `play_all.camera` (and `camera.override` for a level played alone): set and
+  activation calls, levels and ticks with the override in, camera matrix and screen queries.
+- Viewer (`lbp-bevy-viewer --level-scripts`): system `script_camera` after the viewer's camera system.
+  The placement that system made is the follow camera; while the override is in the camera is put at
+  `camera_pose` with the 60 degree field of view, and the viewer's own comes back afterwards; the
+  camera drawn with is written as `camera.view`. Orbit state is untouched. A `Camera at tick N` line
+  and a camera line in the window. `sackboy_play.rs` reads `FOLLOW_EYE` from the runtime.
+- MEASURED (378 levels, 13,547 scripted Things, 60 ticks; plain / `--visit-triggers` / with
+  `--pulse-switches`):
+  - Things stopped by a fault 4 -> 4 in all three; fault kinds 2.
+  - Unbound natives called 51 -> 48 / 87 -> 81 / 87 -> 81; unbound calls 73,325 -> 62,000 /
+    1,002,445 -> 865,777 / 1,010,529 -> 872,549; native calls unchanged (571,776 / 5,363,790 /
+    5,423,370). The natives gone from the list are the six; nothing else on it changed.
+  - Override: set calls 0 / 39,386 / 39,588; activations 0 / 101 / 101, all on; levels where it comes
+    in 0 / 101 / 101, fully in 98, still in after the last tick 101.
+  - Camera matrix queries 0 / 101 / 101. Screen position queries 3,775 / 32,360 / 32,730 in 28 / 61 /
+    70 levels, all without a view, 0 off the screen.
+  - Messages, global settings, display, trigger events and switch reactions equal to D268.
+  - The blend at the rate 0.05: 20 steps in, 20 out (f32, in the unit test).
+  - Viewer, release, main_04_bravery_test, 1280 x 720, shown without taking focus, the Sackboy started
+    in the scoreboard's trigger: `Camera at tick 701: override fully in`, camera at level (-9167.9,
+    3023.8, 800.0). Two frames under ignored `local-analysis/`: without the scripts the follow camera;
+    with them the camera centred on the scoreboard. On comp_01_rocket_funland 488 screen queries (449
+    before the scene was up), 0 off the screen, the bubble stays open.
+- INFERRED: world +Y as up under an override; the step once per tick after the scripts; both directions
+  at length 1 in the mix; the turn axis of an opposite pair; the third component of a screen position;
+  that the two resolution globals keep their values; the stand-ins without a view.
+- Not bound: `Native.SetSpeechBubbleActive__Q5Thingb` (16 levels, 63 calls): it finds one part of the
+  Thing and makes one call with the bool; which part and what it does are not established.
+- Tests: 6 unit tests in `camera.rs` and two world tests (`lbp-runtime`: 58 unit, 40 world); the six
+  natives without a world and their argument checks in `lbp-script-vm`; the view matrices in the
+  viewer. fmt, the CI clippy line, the CI test set, the Python tests and `cargo check` of both viewers
+  pass; clippy on the Bevy viewer passes; its tests pass but the one that fails on main.
+- Not tested: the blend in the window (the scripts tick while the scene loads, so the override was
+  fully in at the first frame); a bubble closed for being off the screen; any picture against the game
+  in RPCS3.
+**+0 newly viewable / +0 newly Complete (runtime and viewer feature).**
+Next: stage 6, the Pod (`SetCameraFromToUp`). Open: the game's follow camera, the up vector under an
+override, the speech-bubble camera; with `--play-sackboy` some levels start the Sackboy at the
+scoreboard's own checkpoint, so the camera goes to the scoreboard at once.
