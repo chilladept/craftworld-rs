@@ -4671,3 +4671,73 @@ Next: stage 5 PR 2, the viewer draws the open messages; then global settings, Th
 **+0 newly viewable / +0 newly Complete (viewer feature).**
 Next: stage 5 PR 3, global settings applied; then Things, camera. Open: the player's close button, the
 game's bubble placement and art.
+
+## D267 script global settings take effect (2026-10-13)
+- RScript plan stage 5, PR 3 (`docs/rscript-plan.md`). Scripts set global-settings targets in 93 levels
+  and the settings in force moved in none. The cause is FOUND and fixed: the engine calls a script
+  function every frame that steps the blend, and the runtime did not.
+- FOUND (EBOOT 01.33, read-only through the Ghidra bridge; script listings):
+  - The PWorld's per-frame function 0xd5e84 goes through the eight global-settings slots. For a slot
+    with a UID it looks the Thing up (0xce860); a Thing with a PScript gets `ApplyGlobalSettings__()`
+    (0x88ff8c -> 0x620bd8, the only caller); otherwise the slot's UID and priority are set to 0.
+  - On its first run it writes every slot again through the UID setter with the priority test off
+    (0xce554): an empty slot loses a stored priority.
+  - The world update (0xeacd4) calls it at 0xeb2a4, after the switch pass (0xdd228).
+  - The global-settings script takes its slot and sets targets with blend on in
+    `BeginApplyGlobalSettings`, then in `ApplyGlobalSettings__` writes the factor 3x^2 - 2x^3 of
+    x = seconds / transition time with `Game.SetGlobalSettingsBlendFactor`, and 1.0 afterwards.
+  - Looked for and not found: the engine's per-Thing `Update__` call. The one function that calls a
+    script function of that name by its name object (0x625780) is reached from one game-state object
+    outside the world update (0x3f8d24).
+- Runtime (`lbp-runtime`):
+  - `LevelScripts::apply_global_settings`, in `tick_level` after `switch_reactions`;
+    `LevelWorld::global_settings_holder` (the lookup, the clearing, the first pass); the constant
+    `APPLY_GLOBAL_SETTINGS`.
+  - New `global_settings.rs`: `SettingsInForce` and `WorldState::settings_in_force` (water level,
+    gravity, wave magnitude, water tint, murkiness, the five lighting values, water bits; audio is not
+    kept), `LevelWorld::settings_at_load` and `settings_unlike_load`, `GlobalSettingsReport`
+    (`StepReport::global_settings`), `GLOBAL_SETTING_NAMES`, `LightFollower` with `RELIGHT_STEP`.
+  - `WorldState::lighting_stored`: the five current values the level file stores.
+  - No new native; `Game.SetGlobalSettingsBlendFactor` is now reached.
+- `level_scripts`: `play_all.global_settings`, and the same block for a level played alone: calls by type,
+  slots cleared, and by type the levels and ticks on which the setting in force was unlike the one in
+  force when the level was read.
+- Viewer (`lbp-bevy-viewer --level-scripts`): the level's main block, presets and light frame are kept
+  (`lighting::LevelRelight`); after each tick `level_play.rs` asks `LightFollower` and builds the light
+  again through the existing path, by `LevelSettings::at_lighting` (P3m). One printed line per new
+  light; a global-settings line in the "Level scripts" window.
+  - Applied: lighting (preset position) and darkness (exposure and fog colour), the two values the
+    viewer already uses for the level file.
+  - Not applied: fog, fog tint (what the factors do was not read), colour correction (an index into
+    eight records the game holds, not read), gravity (unit not read), water (not drawn).
+- MEASURED (378 levels, 13,547 scripted Things, 60 ticks; plain / `--visit-triggers` / with
+  `--pulse-switches`):
+  - Ticks 22,680 / 104,826 / 105,582; calls 4,562 / 80,255 / 80,631 in 66 / 109 / 121 levels.
+  - A setting in force unlike the level file: 48 / 81 / 96 levels, 2,819 / 40,159 / 40,334 ticks
+    (0 levels before).
+  - Lighting group 47 / 76 / 89 levels (lighting or darkness: 42 / 70 / 85), gravity 3 / 11 / 15,
+    water level 0 / 1 / 2; water tint, murkiness and bits 1 level each in the pulsed run.
+  - Slots cleared 0, holders without the function 0.
+  - The stored current lighting values equal the stored start, target and factor blended, in all 378
+    levels.
+  - Things stopped by a fault 4 -> 4 in all three runs; fault kinds 2; unbound natives 51 / 87 / 87
+    with the same calls as before; native calls 557,861 -> 571,776, 5,130,313 -> 5,363,790,
+    5,188,665 -> 5,423,370.
+  - Viewer, release, cutscene_outro_theme1, 1280 x 720, shown without taking focus: lit from the
+    file at lighting 0.40, darkness 0.00; with the scripts one new light at lighting 1.000, darkness
+    0.600 (exposure 1.134 -> 0.437). Two pairs of frames under ignored `local-analysis/`. The
+    viewer's own fog covers most of each frame, with and without the scripts.
+  - A new light in the first frame after the scene was spawned lost the GPU device, 2 of 2 runs. With
+    a wait of 60 drawn frames, 89 new lights on 89 ticks in a row (a test ramp) did not.
+- INFERRED: the call after `Update__` in the tick; UIDs unique; the first-pass flag clear for a
+  loaded level; a holder without the function keeps its slot. PLACEHOLDER: `RELIGHT_STEP` 0.002 and
+  the 60-frame wait.
+- Tests: 3 unit tests in `global_settings.rs` and the world test
+  `d267_the_slot_holders_apply_their_global_settings_each_tick`, with a made-up script (`lbp-runtime`:
+  49 unit, 37 world). fmt, the CI clippy line, the CI test set, the Python tests and `cargo check` of
+  both viewers pass; clippy on the Bevy viewer passes.
+- Not tested: a blend followed step by step on real level data in the window; any other level; any
+  light against the game in RPCS3.
+**+0 newly viewable / +0 newly Complete (runtime and viewer feature).**
+Next: stage 5 PR 4, hidden, moved and tinted Things; then the camera. Open: fog, fog tint and colour
+correction; gravity for the physics; the engine's `Update__` call; the device loss on an early light.

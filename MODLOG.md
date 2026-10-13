@@ -1,5 +1,30 @@
 # Development log
 
+## 2026-10-13 - D267 script global settings take effect
+
+RScript plan stage 5, PR 3. FOUND (EBOOT 01.33, through the Ghidra bridge): the PWorld's per-frame function
+0xd5e84, called from the world update after the switch pass, runs the script function `ApplyGlobalSettings__`
+on the scripted Thing of each of the eight global-settings slots (0x88ff8c -> 0x620bd8, its only caller) and
+clears a slot whose Thing is gone or has no script; on its first run an empty slot loses a stored priority.
+The global-settings script steps its blend factor there (script listings). New
+`LevelScripts::apply_global_settings` in `tick_level`, `LevelWorld::global_settings_holder`, and
+`lbp-runtime/src/global_settings.rs`: `SettingsInForce` (`WorldState::settings_in_force`: water level,
+gravity, wave, tint, murkiness, the lighting group, water bits), `LevelWorld::settings_at_load` and
+`settings_unlike_load`, `GlobalSettingsReport`, `LightFollower`. `level_scripts` reports
+`play_all.global_settings`. Viewer: `--level-scripts` keeps the level's main block, presets and light frame
+(`lighting::LevelRelight`) and builds the light again when lighting or darkness in force moves, by the P3m
+rule (`LevelSettings::at_lighting`); fog, fog tint, colour correction, gravity and water are not applied
+(mapping not read). MEASURED, 378 levels, 60 ticks, plain / trigger visit / pulsed: calls 4,562 / 80,255 /
+80,631 in 66 / 109 / 121 levels; a setting in force unlike the level file in 48 / 81 / 96 levels (0 before)
+on 2,819 / 40,159 / 40,334 ticks; lighting group 47 / 76 / 89 levels, gravity 3 / 11 / 15, water level
+0 / 1 / 2; slots cleared 0. Things stopped by a fault 4 -> 4 in all three; unbound natives unchanged; no new
+native (the blend-factor native is now reached). INFERRED: the call's place after `Update__` (the engine's
+per-Thing `Update__` call was looked for and not found), unique UIDs, the first-pass flag. Viewer seen
+without taking focus on cutscene_outro_theme1: lighting 0.4 -> 1.0, darkness 0 -> 0.6, one new light.
+MEASURED there: a new light in the first frame after the scene is spawned lost the GPU device (2 of 2 runs);
+a 60-frame wait avoids it (PLACEHOLDER, cause open). Tests: 3 unit tests and one world test with a made-up
+script. +0 viewable, +0 Complete. `docs/level-scripts.md` part 18.
+
 ## 2026-10-13 - D266 the viewer draws speech bubbles and the subtitle
 
 RScript plan stage 5, PR 2. `lbp-bevy-viewer --level-scripts` loads the English base and patch translation

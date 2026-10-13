@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D266
+# Current state (overwrite each milestone) — after D267
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -11,7 +11,29 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D266 the viewer draws the messages (2026-10-13)
+## Latest: D267 script global settings take effect (2026-10-13)
+- RScript plan stage 5, PR 3. FOUND in the EBOOT: the PWorld's per-frame function (0xd5e84, after the
+  switch pass in the world update) calls `ApplyGlobalSettings__` on the scripted Thing of each
+  global-settings slot and clears a slot whose Thing is gone. The script steps its blend factor there,
+  which is why no setting moved before.
+- Runtime: `LevelScripts::apply_global_settings` in `tick_level`; `LevelWorld::global_settings_holder`;
+  `lbp-runtime/src/global_settings.rs` with `WorldState::settings_in_force` (`SettingsInForce`),
+  `LevelWorld::settings_at_load` / `settings_unlike_load`, `GlobalSettingsReport`
+  (`StepReport::global_settings`) and `LightFollower`.
+- Viewer: `--level-scripts` builds the level's light again when lighting or darkness in force changes,
+  by the rule it already uses for the file's values (`LevelSettings::at_lighting`). Not applied: fog,
+  fog tint, colour correction (mapping not read), gravity, water. It prints `Lighting at tick N`.
+- MEASURED (378 levels, 60 ticks; plain / trigger visit / pulsed): calls 4,562 / 80,255 / 80,631; a
+  setting in force unlike the level file in 48 / 81 / 96 levels (0 before); lighting group 47 / 76 /
+  89, gravity 3 / 11 / 15, water level 0 / 1 / 2. Things stopped by a fault 4 -> 4; unbound natives
+  unchanged.
+- INFERRED: the call's place after `Update__` (the engine's per-Thing `Update__` call was not found).
+- Checked in the window without taking focus: cutscene_outro_theme1, lighting 0.4 -> 1.0, darkness
+  0 -> 0.6. Open: a new light in the first frame after the scene is spawned lost the GPU device (a
+  60-frame wait avoids it, cause unknown); the viewer's fog covers most of those frames.
+  Next: PR 4, hidden, moved and tinted Things. `docs/level-scripts.md` part 18.
+
+## Before: D266 the viewer draws the messages (2026-10-13)
 - RScript plan stage 5, PR 2. `lbp-bevy-viewer --level-scripts` loads the English base and patch
   translation tables for its level world (as `level_scripts`) and draws `LevelWorld::messages`: a plain
   box per open bubble above its anchor Thing (speaker name, text, close prompt string of

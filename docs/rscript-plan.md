@@ -154,6 +154,18 @@ UI (`UpdateUI__`) and photo natives are not planned.
   to D265 (Things stopped by a fault 4). Follows: PR 3 global settings applied, PR 4
   hidden, moved and tinted Things, PR 5 camera and screen natives. Still open: the
   player's close button, the game's bubble placement and art.
+- Stage 5, PR 3 (D267, part 18): global settings take effect. FOUND: the PWorld's
+  per-frame function calls `ApplyGlobalSettings__` on the scripted Thing of each
+  global-settings slot, after the switch pass, and clears a slot whose Thing is gone;
+  the script steps its blend factor there. `LevelScripts::apply_global_settings` does
+  that each tick, `WorldState::settings_in_force` hands out the values, and the viewer
+  lights a played level again when lighting or darkness changes (the P3m preset rule).
+  Over 378 levels the settings in force now differ from the level file in 48 / 81 / 96
+  levels (plain / trigger visit / pulsed; 0 before), 4,562 / 80,255 / 80,631 calls;
+  Things stopped by a fault stay at 4, no new unbound native. INFERRED: the call's
+  place after `Update__` (the engine's `Update__` call was not found). Not applied:
+  fog, fog tint, colour correction, gravity, water. Follows: PR 4 hidden, moved and
+  tinted Things, PR 5 camera and screen natives.
 
 ## Rules
 
