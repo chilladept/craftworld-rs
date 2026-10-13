@@ -559,6 +559,10 @@ struct Played {
     engine_faults: usize,
     calls: BTreeMap<String, u64>,
     unbound: BTreeMap<String, u64>,
+    /// `Game.GotoScoreboard__b` requests recorded.
+    scoreboard_requests: usize,
+    /// Global-settings slots that hold a Thing UID at the end.
+    global_settings_held: usize,
     /// Switch outputs whose signal at the end differs from the stored one, by switch type.
     outputs_changed: BTreeMap<i32, usize>,
     /// Things deactivated at the end.
@@ -731,6 +735,17 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
         "things_deactivated_at_end": deactivated,
         "things_moved": moved_things(&host.world, &loaded),
         "frame_at_end": host.world.pworld.frame,
+        "players": host.world.player_records.iter().map(|r| serde_json::json!({
+            "number": r.number, "team": r.team, "score": r.score,
+            "multiplier_counter": r.multiplier_counter,
+            "multiplier_timer": r.multiplier_timer,
+            "multiplier_source": r.multiplier_source,
+            "multiplier_visible": r.multiplier_visible,
+        })).collect::<Vec<_>>(),
+        "global_settings_thing_uids": host.world.pworld.global_settings_thing_uids,
+        "global_settings_thing_priority": host.world.pworld.global_settings_thing_priority,
+        "engine_calls": host.world.engine_calls,
+        "scoreboard_requests": host.world.scoreboard_requests,
         "stopped_by_fault": level.stopped.len(),
         "threads_running_at_end": level.threads(),
         "pending_at_end": level.pending(),
@@ -778,6 +793,14 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
             .cloned()
             .collect(),
         engine_faults: engine_faults.len(),
+        scoreboard_requests: host.world.scoreboard_requests.len(),
+        global_settings_held: host
+            .world
+            .pworld
+            .global_settings_thing_uids
+            .iter()
+            .filter(|&&uid| uid != 0)
+            .count(),
         calls: host.calls,
         unbound: host.unbound,
         outputs_changed,
@@ -802,6 +825,9 @@ struct PlayTotals {
     reactions: ReactionReport,
     calls: BTreeMap<String, (u64, usize)>,
     unbound: BTreeMap<String, (u64, usize)>,
+    scoreboard_requests: usize,
+    levels_with_scoreboard_requests: usize,
+    global_settings_held: usize,
     faults: BTreeMap<String, (u64, usize)>,
     thread_faults: BTreeMap<String, (u64, usize)>,
     outputs_changed: BTreeMap<i32, usize>,
@@ -832,6 +858,9 @@ impl PlayTotals {
         }
         self.levels_with_outputs_changed += usize::from(!p.outputs_changed.is_empty());
         self.deactivated += p.deactivated;
+        self.scoreboard_requests += p.scoreboard_requests;
+        self.levels_with_scoreboard_requests += usize::from(p.scoreboard_requests > 0);
+        self.global_settings_held += p.global_settings_held;
         if let Some(f) = &p.first_tick {
             self.first_reactions.absorb(f.reactions.clone());
             for (ty, n) in &f.changed {
@@ -878,10 +907,21 @@ impl PlayTotals {
         };
         let total = |m: &BTreeMap<String, (u64, usize)>| m.values().map(|v| v.0).sum::<u64>();
         let (calls, unbound) = (total(&self.calls), total(&self.unbound));
+        let recorded: Vec<(String, (u64, usize))> = lbp_script_vm::natives::RECORDED_ONLY
+            .iter()
+            .filter_map(|(class, name)| {
+                let key = format!("{class}.{name}");
+                let n = *self.calls.get(&key)?;
+                Some((key, n))
+            })
+            .collect();
         serde_json::json!({
             "unit": "native call; scripted Thing; fault (a Thing stops at its first fault)",
             "ticks_per_level": opts.ticks,
             "unbound_natives_fault": opts.strict,
+            "scoreboard_requests": self.scoreboard_requests,
+            "levels_with_scoreboard_requests": self.levels_with_scoreboard_requests,
+            "global_setting_slots_held_at_end": self.global_settings_held,
             "levels_played": self.levels,
             "levels_with_faults": self.levels_with_faults,
             "instances": self.instances,
@@ -909,6 +949,13 @@ impl PlayTotals {
             "native_calls_unbound": unbound,
             "natives_called": self.calls.len(),
             "natives_called_unbound": self.unbound.len(),
+            // Bound natives whose whole effect is a record in the world (a subset of
+            // `native_calls_bound`).
+            "native_calls_recorded_only": recorded.iter().map(|(_, n)| n.0).sum::<u64>(),
+            "recorded_only_natives": recorded.iter().map(|(k, n)| serde_json::json!({
+                "native": k, "count": n.0, "levels": n.1,
+            })).collect::<Vec<_>>(),
+            "natives_in_table": lbp_script_vm::natives::bound().count(),
             "faults": total(&self.faults),
             "fault_kinds": self.faults.len(),
             "thread_faults": total(&self.thread_faults),
