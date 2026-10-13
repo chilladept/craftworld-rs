@@ -13,6 +13,7 @@ mod browser;
 mod level_play;
 mod level_selector;
 mod lighting;
+mod pod_dissolve;
 mod sackboy_play;
 mod speech_overlay;
 mod thing_view;
@@ -94,6 +95,39 @@ struct LevelLoaded {
     shell: Option<LevelScene>,
     /// The shell's own spawn for the figure, from its data (feet in shell level units).
     shell_feet: Option<Result<([f32; 3], String), String>>,
+    /// D278: the transition mask of the tent's dissolve, decoded when the shell layer
+    /// has a script world (`LevelMode::shell_scripted`); an error when it is not there.
+    dissolve_mask: Option<Result<lbp_texture::Texture, String>>,
+}
+/// D278: the mask of the Pod tent's dissolve (`pod_dissolve::TRANSITION_MASK`) as an
+/// image, with a word on how the load went; there while the shell layer has a script
+/// world. Without the image the band under the dissolve's line is not tinted.
+#[derive(Resource)]
+pub(crate) struct PodDissolveMask {
+    pub(crate) image: Option<Handle<Image>>,
+    pub(crate) note: String,
+}
+/// D278: reads and decodes one texture by GUID (the recipe of the level scene's
+/// runtime textures).
+fn decode_texture(
+    catalog: &Catalog,
+    source: &AttachedSource,
+    guid: u32,
+    control: &LoadControl,
+) -> Result<lbp_texture::Texture, String> {
+    control.check()?;
+    let key = lbp_preview::resolve(catalog, Some(guid), None)?;
+    lbp_texture::decode_reader(
+        key.size,
+        |offset, count| {
+            source
+                .read_hex_checked(&key, offset, count, control)
+                .map(|p| p.bytes)
+                .map_err(lbp_texture::Error::Input)
+        },
+        || control.check().is_err(),
+    )
+    .map_err(|e| e.to_string())
 }
 /// D113 level mode (docs/d113-level-scene.md). Empty target = single-mesh mode.
 #[derive(Default)]
@@ -326,6 +360,7 @@ impl Viewer {
             mesh_alternates: swapped_meshes(self.level.shell_scripted()),
             ..scene_options.clone()
         };
+        let dissolve_mask_wanted = self.level.shell_scripted();
         let options = self.preview_options();
         let (mesh_options, _) = self.standalone_options();
         let animation_guid = self.animation_guid.trim().to_ascii_lowercase();
@@ -413,11 +448,17 @@ impl Viewer {
                             })
                             .transpose()?;
                         let (shell, shell_feet) = shell.unzip();
+                        // D278: a mask that is not there leaves the dissolve untinted.
+                        let dissolve_mask = dissolve_mask_wanted.then(|| {
+                            let guid = pod_dissolve::TRANSITION_MASK;
+                            decode_texture(&catalog, &source, guid, &worker)
+                        });
                         Ok(LevelLoaded {
                             scene,
                             identity,
                             shell,
                             shell_feet,
+                            dissolve_mask,
                         })
                     });
                     let load_clip = |guid: &str| {
@@ -1320,8 +1361,19 @@ fn load(
                     shell_plan,
                     scripted,
                 );
-                if let Some(things) = shell_things {
+                if let Some(mut things) = shell_things {
+                    // D278: the tent of the shell's pod Thing is drawn with the dissolve.
+                    things.dissolve_mesh = Some(POD_TENT_MESH);
                     commands.insert_resource(thing_view::ShellThings(things));
+                }
+                if let Some(mask) = level.dissolve_mask.take() {
+                    let mask = dissolve_mask_image(mask, &mut images);
+                    v.level.lines.push(format!(
+                        "Pod tent dissolve mask {:08x}: {}",
+                        pod_dissolve::TRANSITION_MASK,
+                        mask.note
+                    ));
+                    commands.insert_resource(mask);
                 }
                 if scripted && asked > 0. && asked < 1. {
                     v.level.lines.push(format!(
@@ -2808,6 +2860,29 @@ fn clear_pod_shell(mut commands: Commands, v: Res<Viewer>, roots: Query<Entity, 
         }
         // D277: the shell's Thing map goes with its entities.
         commands.remove_resource::<thing_view::ShellThings>();
+        // D278: and the dissolve's mask.
+        commands.remove_resource::<PodDissolveMask>();
+    }
+}
+/// D278: the decoded transition mask as a data texture (linear, repeating, with mips).
+fn dissolve_mask_image(
+    mask: Result<lbp_texture::Texture, String>,
+    images: &mut Assets<Image>,
+) -> PodDissolveMask {
+    let image = mask.and_then(|t| {
+        let size = (t.header.width, t.header.height);
+        let wrap = lbp_preview::TextureWrapping::uniform(true);
+        adapter::linear_image(size.0, size.1, t.rgba, wrap).map(|image| (image, size))
+    });
+    match image {
+        Ok((image, (width, height))) => PodDissolveMask {
+            image: Some(images.add(image)),
+            note: format!("loaded, {width} x {height}"),
+        },
+        Err(e) => PodDissolveMask {
+            image: None,
+            note: format!("not loaded ({e}); the band under the line is not tinted"),
+        },
     }
 }
 /// The Pod rig, and (D275) whether the planets level's scripts run: the camera and the
@@ -3000,6 +3075,7 @@ fn spawn_level(
                     item,
                     scene_row: v.scene.len(),
                     own_material: false,
+                    dissolve: None,
                 });
                 things.add(item.thing, entity);
             }

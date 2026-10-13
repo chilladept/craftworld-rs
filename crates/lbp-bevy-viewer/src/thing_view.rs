@@ -16,6 +16,12 @@
 //! D276 (part 27): the meshes of [`SWAPPED_MESHES`] are loaded with the scene. A Thing
 //! drawn with one of a pair has a second, hidden set of draw entities for the other
 //! (`Item::alternate`), and [`apply`] shows the set of the mesh the PRenderMesh has now.
+//!
+//! D278 (part 29): in a map with a [`LevelThings::dissolve_mesh`] (the Pod's shell
+//! layer) the pod Thing's entities of that mesh are drawn with a top-down dissolve while
+//! the alpha of the Thing's shape colour is between 0 and 1. [`apply`] keeps the value
+//! on the tag ([`LevelThing::dissolve`]) and gives the entity a material of its own;
+//! `level_play::follow_dissolve` writes the line into that material each frame.
 use crate::dual::{self, ViewerMaterial};
 use bevy::prelude::*;
 use lbp_runtime::{pack_colour, DisplayChange, LevelWorld, WHITE};
@@ -51,8 +57,18 @@ pub struct LevelThing {
     pub item: Item,
     /// The entity's row in the viewer's scene list (the list the lighting walks).
     pub scene_row: usize,
-    /// The entity has a material of its own (made for its first tint).
+    /// The entity has a material of its own (made for its first tint or dissolve).
     pub own_material: bool,
+    /// D278: the entity is drawn with the dissolve, at this value and flat colour.
+    pub dissolve: Option<Dissolving>,
+}
+
+/// D278: the dissolve of one draw entity: the pod's change-over value, strictly between
+/// 0 and 1, and the red, green and blue of the pod Thing's shape colour as stored.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Dissolving {
+    pub value: f32,
+    pub colour: [f32; 3],
 }
 
 /// The Thing-to-entity map of the level scene.
@@ -63,6 +79,10 @@ pub struct LevelThings {
     pub entities: HashMap<u32, Vec<Entity>>,
     /// A number no other scene has had.
     pub scene: u64,
+    /// D278: the mesh GUID whose entities of the level's pod Thing are drawn with the
+    /// dissolve; none (the default) for a level without it. The viewer sets it on the
+    /// Pod shell layer's map only.
+    pub dissolve_mesh: Option<u32>,
 }
 
 static SCENES: AtomicU64 = AtomicU64::new(1);
@@ -73,6 +93,7 @@ impl LevelThings {
             normalize,
             entities: HashMap::new(),
             scene: SCENES.fetch_add(1, Ordering::Relaxed),
+            dissolve_mesh: None,
         }
     }
 
@@ -126,6 +147,8 @@ pub struct Followed {
     /// D276: Things whose draw entities were changed over to the mesh the PRenderMesh
     /// has now (to the other mesh of a pair, or back to the file's).
     pub mesh_swapped: usize,
+    /// D278: Things whose dissolve was set to a new value or taken off.
+    pub dissolved: usize,
 }
 
 impl Followed {
@@ -144,16 +167,24 @@ impl Followed {
         self.tint_alpha_not_drawn += o.tint_alpha_not_drawn;
         self.mesh_not_drawn += o.mesh_not_drawn;
         self.mesh_swapped += o.mesh_swapped;
+        self.dissolved += o.dissolved;
     }
 
     /// Whether anything in the scene was changed.
     pub fn any(&self) -> bool {
-        self.hidden + self.shown + self.tinted + self.untinted + self.placed + self.mesh_swapped > 0
+        self.hidden
+            + self.shown
+            + self.tinted
+            + self.untinted
+            + self.placed
+            + self.mesh_swapped
+            + self.dissolved
+            > 0
     }
 
     pub fn line(&self) -> String {
         format!(
-            "listed {}, with a draw entity {}; hidden {}, shown {}, tinted {}, tint taken off {}, placed {}, mesh swapped {} ({} entities); not followed: no draw entity {}, editor or shape colour {}, tint of alpha only {}, no placement {}, another mesh {}",
+            "listed {}, with a draw entity {}; hidden {}, shown {}, tinted {}, tint taken off {}, placed {}, mesh swapped {}, dissolve set {} ({} entities); not followed: no draw entity {}, editor or shape colour {}, tint of alpha only {}, no placement {}, another mesh {}",
             self.listed,
             self.drawn,
             self.hidden,
@@ -162,6 +193,7 @@ impl Followed {
             self.untinted,
             self.placed,
             self.mesh_swapped,
+            self.dissolved,
             self.entities,
             self.not_drawn,
             self.colour_not_drawn,
@@ -214,6 +246,12 @@ pub type Parts<'a> = (
 ///   the other; the visibility rule above still hides the set that is shown, whichever
 ///   of the two changes comes first. A mesh that was not loaded with the scene leaves
 ///   the file's mesh in the scene, and is counted.
+/// - Dissolve (D278): in a map with a [`LevelThings::dissolve_mesh`], the pod Thing's
+///   entities of that mesh (not its decorations, not the entities of another mesh) get
+///   the change-over value the alpha of its shape colour stands for
+///   (`pod_dissolve::value`) and the colour's red, green and blue on their tag, and a
+///   material of their own on the first value. At alpha 1 nothing is touched. The shape
+///   colour's change is then not counted as "not drawn".
 pub fn apply(
     world: &LevelWorld,
     list: &[(u32, DisplayChange)],
@@ -237,7 +275,6 @@ pub fn apply(
         let other_colour = packed(now.mesh_colour) != packed(was.mesh_colour)
             || packed(now.shape_colour) != packed(was.shape_colour)
             || tint_of(now.shape_tint) != tint_of(was.shape_tint);
-        done.colour_not_drawn += usize::from(change.colour && other_colour);
         let list = things.entities.get(&thing).filter(|l| !l.is_empty());
         // D276: the Thing has a second set of entities for another mesh, and the mesh
         // it has now is that set's.
@@ -247,6 +284,25 @@ pub fn apply(
                     .any(|&e| entities.get(e).is_ok_and(|(tag, ..)| keep(&tag.item)))
             })
         };
+        // D278: the pod Thing of a map with the dissolve, with entities of that mesh.
+        let dissolves = |item: &Item| {
+            things.dissolve_mesh.is_some() && !item.alternate && item.mesh == things.dissolve_mesh
+        };
+        let pod = things.dissolve_mesh.is_some()
+            && world.pod_thing(true) == Some(thing)
+            && sets(&|item| !item.decoration && dissolves(item));
+        let dissolving = now.shape_colour.filter(|_| pod).and_then(|[r, g, b, a]| {
+            let value = crate::pod_dissolve::value(a)?;
+            Some(Dissolving {
+                value,
+                colour: [r, g, b],
+            })
+        });
+        // A shape colour that is drawn as the dissolve is not "not drawn".
+        let only_shape_colour = packed(now.mesh_colour) == packed(was.mesh_colour)
+            && tint_of(now.shape_tint) == tint_of(was.shape_tint);
+        let as_dissolve = pod && only_shape_colour;
+        done.colour_not_drawn += usize::from(change.colour && other_colour && !as_dissolve);
         let other_mesh = now.mesh != was.mesh;
         let alternates = sets(&|item| item.alternate);
         let preloaded = other_mesh && sets(&|item| item.alternate && item.mesh == now.mesh);
@@ -269,6 +325,7 @@ pub fn apply(
         done.tint_alpha_not_drawn += usize::from(change.colour && alpha_only);
         let (mut hid, mut showed, mut tinted, mut untinted, mut placed) =
             (false, false, false, false, false);
+        let mut dissolved = false;
         for &entity in list {
             let Ok((mut tag, mut transform, mut visibility, mut material)) =
                 entities.get_mut(entity)
@@ -305,17 +362,30 @@ pub fn apply(
                     *visibility = want;
                 }
             }
-            if change.colour && (tint.is_some() || tag.own_material) {
-                if !tag.own_material {
-                    let Some(copy) = materials.get(material.0.id()).cloned() else {
-                        continue;
-                    };
-                    let handle = materials.add(copy);
-                    if let Some(row) = scene.get_mut(tag.scene_row) {
-                        row.2 = handle.clone();
+            if pod && !tag.item.decoration && dissolves(&tag.item) && tag.dissolve != dissolving {
+                // The line itself is written each frame (`level_play::follow_dissolve`);
+                // taken off, it is cleared here.
+                let ready = match dissolving {
+                    Some(_) => own_material(&mut tag, &mut material, materials, scene),
+                    None => {
+                        if let Some(mut m) = materials.get_mut(material.0.id()) {
+                            dual::set_dissolve(&mut m, None);
+                        }
+                        true
                     }
-                    material.0 = handle;
-                    tag.own_material = true;
+                };
+                if ready {
+                    tag.dissolve = dissolving;
+                    dissolved = true;
+                }
+            }
+            // A material of the entity's own may be there for a dissolve alone (D278):
+            // a tint is taken off only where one is on.
+            let has_tint =
+                tag.own_material && materials.get(material.0.id()).is_some_and(dual::tinted);
+            if change.colour && (tint.is_some() || has_tint) {
+                if !own_material(&mut tag, &mut material, materials, scene) {
+                    continue;
                 }
                 if let Some(mut m) = materials.get_mut(material.0.id()) {
                     dual::set_thing_tint(&mut m, tint);
@@ -329,9 +399,34 @@ pub fn apply(
         done.tinted += usize::from(tinted);
         done.untinted += usize::from(untinted);
         done.placed += usize::from(placed);
+        done.dissolved += usize::from(dissolved);
         done.not_placed += usize::from(moved == Some(None));
     }
     done
+}
+
+/// Gives a draw entity a material of its own, a copy of the shared one, on its first
+/// tint or dissolve: the copy takes the shared one's place in the entity's scene row, so
+/// lighting and clean-up reach it. False when the shared material is not there.
+fn own_material(
+    tag: &mut LevelThing,
+    material: &mut MeshMaterial3d<ViewerMaterial>,
+    materials: &mut Assets<ViewerMaterial>,
+    scene: &mut [crate::OwnedScene],
+) -> bool {
+    if tag.own_material {
+        return true;
+    }
+    let Some(copy) = materials.get(material.0.id()).cloned() else {
+        return false;
+    };
+    let handle = materials.add(copy);
+    if let Some(row) = scene.get_mut(tag.scene_row) {
+        row.2 = handle.clone();
+    }
+    material.0 = handle;
+    tag.own_material = true;
+    true
 }
 
 #[cfg(test)]
@@ -410,6 +505,7 @@ mod tests {
                         item,
                         scene_row: row,
                         own_material: false,
+                        dissolve: None,
                     },
                 ))
                 .id();
@@ -576,6 +672,7 @@ mod tests {
                 item,
                 scene_row: row,
                 own_material: false,
+                dissolve: None,
             };
             let parts = (
                 Transform::IDENTITY,
@@ -680,6 +777,198 @@ mod tests {
         assert_eq!((sum.mesh_not_drawn, sum.mesh_swapped), (1, 2));
     }
 
+    /// D278. The pod Thing of a map with a dissolve mesh: the tent's two entities get
+    /// the value and the colour and a material each on the first tick of the change-over;
+    /// the platform's entity and the decoration get nothing; at alpha 1 nothing is
+    /// cloned or counted; at alpha 0 and back at alpha 1 the dissolve is taken off. A map
+    /// without a dissolve mesh counts the colour as not drawn, as before.
+    #[test]
+    fn d278_the_tent_entities_dissolve_by_the_shape_colours_alpha() {
+        let [[tent, platform]] = SWAPPED_MESHES;
+        let mut world = level();
+        world.things[1].mesh_guid = Some(tent);
+        world.things[1].shape_colour = Some([1.; 4]);
+        world.pod.mesh_resources.extend([tent, platform]);
+        assert_eq!(world.pod_thing(true), Some(1));
+        let mut app = App::new();
+        app.insert_resource(Assets::<ViewerMaterial>::default());
+        let shared = app
+            .world_mut()
+            .resource_mut::<Assets<ViewerMaterial>>()
+            .add(dual::material(StandardMaterial::default()));
+        let item = |mesh, alternate, decoration| Item {
+            thing: 1,
+            decoration,
+            world: Mat4::IDENTITY,
+            mesh,
+            alternate,
+        };
+        let mut things = LevelThings::new(Mat4::IDENTITY);
+        things.dissolve_mesh = Some(tent);
+        let mut spawned = Vec::new();
+        for (row, item) in [
+            item(Some(tent), false, false),
+            item(Some(tent), false, false),
+            item(Some(platform), true, false),
+            item(Some(tent), false, true),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let tag = LevelThing {
+                item,
+                scene_row: row,
+                own_material: false,
+                dissolve: None,
+            };
+            let parts = (
+                Transform::IDENTITY,
+                Visibility::default(),
+                MeshMaterial3d(shared.clone()),
+                tag,
+            );
+            let entity = app.world_mut().spawn(parts).id();
+            things.add(1, entity);
+            spawned.push(entity);
+        }
+        app.insert_resource(things);
+        let mut scene: Vec<crate::OwnedScene> = spawned
+            .iter()
+            .map(|&e| (e, Handle::default(), shared.clone(), None))
+            .collect();
+        let seen = |app: &App| -> Vec<(Option<f32>, bool)> {
+            let tag = |e: &Entity| app.world().get::<LevelThing>(*e).unwrap();
+            let own = |e: &Entity| {
+                app.world()
+                    .get::<MeshMaterial3d<ViewerMaterial>>(*e)
+                    .unwrap()
+                    .0
+                    != shared
+            };
+            spawned
+                .iter()
+                .map(|e| (tag(e).dissolve.map(|d| d.value), own(e)))
+                .collect()
+        };
+        let untouched = (None, false);
+        let count = |app: &App| app.world().resource::<Assets<ViewerMaterial>>().len();
+
+        // Alpha 1 with another colour (the script's first update, not in use): nothing
+        // is cloned, nothing is set; the colour is not counted as not drawn.
+        world.set_shape_editor_colour(1, [0., 0., 0., 1.]).unwrap();
+        let list = world.take_display_dirty();
+        assert_eq!(list, [(1, DisplayChange::COLOUR)]);
+        let done = run(&mut app, &world, list, &mut scene);
+        assert_eq!((done.dissolved, done.colour_not_drawn), (0, 0));
+        assert!(!done.any());
+        assert_eq!(seen(&app), [untouched; 4]);
+        assert_eq!(count(&app), 1);
+
+        // The first tick of the change-over: the two tent entities, each with its own
+        // material in its scene row; the platform's entity and the decoration not.
+        world
+            .set_shape_editor_colour(1, [0.25, 0.5, 0.75, 0.95])
+            .unwrap();
+        let list = world.take_display_dirty();
+        let done = run(&mut app, &world, list, &mut scene);
+        assert_eq!((done.dissolved, done.colour_not_drawn), (1, 0));
+        assert!(done.any() && done.line().contains("dissolve set 1"));
+        assert_eq!((done.tinted, done.untinted), (0, 0));
+        let now = seen(&app);
+        assert!((now[0].0.unwrap() - 0.05).abs() < 1e-6 && now[0].1);
+        assert_eq!(now[0], now[1]);
+        assert_eq!(now[2..], [untouched; 2]);
+        assert_eq!(count(&app), 3);
+        assert_ne!(scene[0].2, shared);
+        assert_ne!(scene[0].2, scene[1].2);
+        assert_eq!(scene[2].2, shared);
+        let tag = app.world().get::<LevelThing>(spawned[0]).unwrap();
+        assert_eq!(tag.dissolve.unwrap().colour, [0.25, 0.5, 0.75]);
+        // A scene spawned now is told through the first list.
+        let things = app.world().resource::<LevelThings>();
+        assert!(first_list(&world, things)[0].1.colour);
+
+        // The next tick: a new value, no new material.
+        world
+            .set_shape_editor_colour(1, [0.25, 0.5, 0.75, 0.5])
+            .unwrap();
+        let list = world.take_display_dirty();
+        let done = run(&mut app, &world, list, &mut scene);
+        assert_eq!((done.dissolved, done.untinted), (1, 0));
+        assert_eq!(seen(&app)[1], (Some(0.5), true));
+        assert_eq!(count(&app), 3);
+        // The line is in the material (as `level_play::follow_dissolve` writes it).
+        let own = scene[0].2.clone();
+        {
+            let mut materials = app.world_mut().resource_mut::<Assets<ViewerMaterial>>();
+            let mut m = materials.get_mut(own.id()).unwrap();
+            let d = dual::Dissolve {
+                plane: Vec4::Y,
+                ..Default::default()
+            };
+            dual::set_dissolve(&mut m, Some(&d));
+        }
+
+        // Alpha 0 with the platform's mesh: the swap, and the dissolve is taken off
+        // the tag and the material; the material stays the entity's own.
+        world
+            .set_shape_editor_colour(1, [0.25, 0.5, 0.75, 0.])
+            .unwrap();
+        world.set_render_mesh_mesh(1, Some(platform)).unwrap();
+        let list = world.take_display_dirty();
+        let done = run(&mut app, &world, list, &mut scene);
+        assert_eq!((done.dissolved, done.mesh_swapped), (1, 1));
+        assert_eq!(
+            seen(&app),
+            [(None, true), (None, true), untouched, untouched]
+        );
+        let materials = app.world().resource::<Assets<ViewerMaterial>>();
+        assert!(dual::dissolve(materials.get(own.id()).unwrap()).is_none());
+        // The same list again changes nothing.
+        let done = run(
+            &mut app,
+            &world,
+            vec![(1, DisplayChange::COLOUR)],
+            &mut scene,
+        );
+        assert_eq!(done.dissolved, 0);
+
+        // Back: the tent's mesh and a value under 1 on one tick, then closed.
+        world
+            .set_shape_editor_colour(1, [0.25, 0.5, 0.75, 0.05])
+            .unwrap();
+        world.set_render_mesh_mesh(1, Some(tent)).unwrap();
+        let list = world.take_display_dirty();
+        let done = run(&mut app, &world, list, &mut scene);
+        assert_eq!((done.dissolved, done.mesh_swapped), (1, 1));
+        assert!((seen(&app)[0].0.unwrap() - 0.95).abs() < 1e-6);
+        world
+            .set_shape_editor_colour(1, [0.25, 0.5, 0.75, 1.])
+            .unwrap();
+        let list = world.take_display_dirty();
+        let done = run(&mut app, &world, list, &mut scene);
+        assert_eq!(done.dissolved, 1);
+        assert_eq!(seen(&app)[..2], [(None, true); 2]);
+        assert_eq!(count(&app), 3);
+
+        // A map without a dissolve mesh (every other level): the colour is counted as
+        // not drawn and nothing is set.
+        app.world_mut().resource_mut::<LevelThings>().dissolve_mesh = None;
+        world
+            .set_shape_editor_colour(1, [0.25, 0.5, 0.75, 0.5])
+            .unwrap();
+        let list = world.take_display_dirty();
+        let done = run(&mut app, &world, list, &mut scene);
+        assert_eq!((done.dissolved, done.colour_not_drawn), (0, 1));
+        assert_eq!(seen(&app)[0].0, None);
+        let mut sum = Followed::default();
+        sum.absorb(&Followed {
+            dissolved: 2,
+            ..Default::default()
+        });
+        assert!(sum.any() && sum.dissolved == 2);
+    }
+
     /// D277. Two levels drawn at once, each with its own map and script world, and the
     /// same Thing number (1) in both: a change in one world reaches the entities of its
     /// own map only, placed by that map's display matrix.
@@ -709,6 +998,7 @@ mod tests {
                 item,
                 scene_row: row,
                 own_material: false,
+                dissolve: None,
             };
             let parts = (
                 Transform::from_matrix(map.normalize * item.world),

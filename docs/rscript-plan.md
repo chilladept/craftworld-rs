@@ -346,6 +346,16 @@ UI (`UpdateUI__`) and photo natives are not planned.
   pod's alpha; the two orange pieces are string joints (Things 13, 14) that nothing
   hides. Left: the dissolve, the Sackboy and pad as input (PR 4b), the player's Pod
   decorations.
+- After stage 6, "Pod picture" PR 5 (D278, part 29): the tent's dissolve, viewer only.
+  FOUND in the pod's three materials and two captured frames: a pixel is cut when its
+  height over the camera is above 1150 - 1550 v (plus a ragged term and a second
+  mask), and the transition mask only tints a 400-unit band under the line toward the
+  flat player colour; the camera at both end states is the script camera's eye. The
+  viewer's material has a discard by a world-space plane and that tint
+  (`pod_dissolve.rs`); the tent stays in place under scripts. Closed and open stills
+  equal part 28's byte for byte; stills at five values show the tent cut from the top
+  down. Not compared against the game. Left: the second mask, the platform's edge at
+  1, the per-backdrop masks, the Sackboy and pad as input (PR 4b).
 
 ## Rules
 

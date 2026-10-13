@@ -1,5 +1,14 @@
 # Development log
 
+## 2026-10-13 - D278 the Pod tent's top-down dissolve
+
+Pod picture PR 5, viewer only. The tent of the shell's pod Thing is cut from the top down while pod.bin's
+change-over runs: a discard above `camera y + 1150 - 1550 v` (FOUND in the pod's materials; the camera is
+the script camera's, MEASURED at the end states) and a band under the line tinted by the transition mask
+(`pod_dissolve.rs`, a dissolve block in the viewer material). The tent no longer slides away. Closed and
+open stills equal D277's byte for byte. Left: the second mask, the platform's edge at 1, the input.
+`docs/level-scripts.md` part 29.
+
 ## 2026-10-13 - D277 both Pod levels in one viewer session
 
 Pod picture PR 4a. Under `--level-scripts` with the shell layer pod.bin has its own script world and the two

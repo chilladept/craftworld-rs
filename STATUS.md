@@ -5353,3 +5353,47 @@ Next: Pod picture PR 4, the two Pod levels in one viewer session. `docs/level-sc
   pass, 1 fails (`sackboy_play::tests::input_script_steps`, fails on main).
 **+0 newly viewable / +0 newly Complete (viewer feature).**
 Next: the tent's dissolve; PR 4b, the Puter key through the pad zone. `docs/level-scripts.md` part 28.
+
+## D278 the Pod tent's top-down dissolve (2026-10-13)
+- "Pod picture" PR 5, viewer only. Full detail: `docs/level-scripts.md` part 29. No runtime
+  change, no new native.
+- Before: under `--level-scripts` with the shell layer the tent slid out of the frame as a whole
+  (the viewer's placeholder) and popped at the mesh swap.
+- FOUND (the three materials of `pod.mol`, their vertex program; notes in ignored
+  `local-analysis/rscript/stage6/pod-dissolve-notes.md`): with v the change-over value, a tent
+  pixel is discarded when its height over the camera is above 1150 - 1550 v, plus 100 x the green
+  of the material's diffuse, plus 400 where `pod_mask.tex` (0x1fbc7) is white; the transition mask
+  (132243, UV x 40) only tints the 400 units under the line toward the flat shape colour. MEASURED
+  (two captured frames replayed offline): the camera of the pod's draws is the planets script
+  camera's eye closed and open; the colour is the shape colour, alpha 1 - v.
+- Viewer: `pod_dissolve.rs` (numbers, line, plane), a dissolve block in the viewer material
+  (discard in the opaque pass by a world-space plane, tint by the mask), `thing_view::apply`
+  (value and colour on the tent's entities of the shell's pod Thing, own material on the first
+  value, nothing at alpha 1), `level_play::follow_dissolve` (the plane each frame from the tent
+  root and the script camera's y), the tent root at t = 0 under scripts, the mask decoded with the
+  level.
+- INFERRED: the shell level and the script camera share one frame. PLACEHOLDER: position
+  coordinates for the mask on a bucket without a diffuse texture; the shell root following v.
+- Viewer captures, no focus taken (`--qa-capture`, hidden window, `--level-guid 00018fdb
+  --pod-camera 1 --pod-shell 000027b9 --window-16-9 --preview-lighting --qa-hide-ui`;
+  `local-analysis/rscript/stage6/shots/d278-*`): without scripts, with scripts closed at 600, and
+  in use from 600 held at 640 (and `--pod-open` at 600): equal byte for byte to D277's. In use
+  from 600: `Pod tent dissolve at tick 601: value 0.05, 3 draw entities; cut above level y 820.4`,
+  the script's mask GUID the same as the preloaded one; swap on 620.
+- Eye check (holds at 602, 605, 610, 615, 619): the tent in place and cut from the top down, the
+  edge ragged on the wall-art panels, circuit traces in the band under it, the room and the planets
+  through the cut part; at 619 only parts of the tent under the floor line are left.
+- Not done: the second mask (islands that stand 400 units longer), the glass's constant, the mesh's
+  plain UV for the mask, the platform's edge at 1 (drawn solid), the six per-backdrop masks, fog on
+  the flat colour, the input (PR 4b). Not seen: the motion, the way back, a player colour (black
+  without an avatar). Not compared: anything against the game.
+- Tests: viewer `d278_the_line_falls_with_the_value`,
+  `d278_the_world_plane_measures_in_level_units`, `d278_the_dissolve_setter_writes_and_clears`,
+  `d278_the_tent_entities_dissolve_by_the_shape_colours_alpha`,
+  `d278_the_tent_root_stays_closed_under_the_script_camera`, the shader test extended.
+  `cargo fmt --all --check`, CI clippy, CI tests (611), `cargo check` of both viewers, the viewer's
+  clippy and the Python tests (36) pass; `cargo test -q -p lbp-bevy-viewer` 67 pass, 1 fails
+  (`sackboy_play::tests::input_script_steps`, fails on main).
+**+0 newly viewable / +0 newly Complete (viewer feature).**
+Next: `pod_mask.tex` and the plain UV; PR 4b, the Puter key through the pad zone.
+`docs/level-scripts.md` part 29.

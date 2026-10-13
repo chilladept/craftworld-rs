@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D277
+# Current state (overwrite each milestone) — after D278
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -11,7 +11,48 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D277 both Pod levels in one viewer session (2026-10-13)
+## Latest: D278 the Pod tent's top-down dissolve (2026-10-13)
+- "Pod picture" PR 5, viewer only (`docs/level-scripts.md` part 29). Under `--level-scripts
+  --pod-camera N --pod-shell HEX` the tent no longer slides out of the frame: it stays where the
+  closed picture has it and is cut from the top down while pod.bin's change-over value v is between
+  0 and 1.
+- FOUND (the pod's three materials, one vertex program; notes in ignored
+  `local-analysis/rscript/stage6/pod-dissolve-notes.md`): a tent pixel is discarded when its height
+  over the camera is above 1150 - 1550 v, plus 100 x the green of the material's diffuse, plus 400
+  where a second mask (`pod_mask.tex`, 0x1fbc7) is white; the transition mask (132243, UV x 40) only
+  tints the 400 units under the line toward the flat shape colour. Alpha of the pod's shape colour =
+  1 - v; at alpha 1 the rule is off. MEASURED (two captured frames): the camera handed to the pod's
+  draws is the planets script camera's eye in both end states; between them not captured.
+- Viewer: `pod_dissolve.rs` (the numbers and the plane arithmetic), a dissolve block in the viewer
+  material (`dual.rs`: discard in the opaque pass by a world-space plane, tint by the mask),
+  `thing_view::apply` keeps the value and colour on the tent's entities of the shell's pod Thing
+  (own material on the first value; nothing touched at alpha 1; `Followed::dissolved`),
+  `level_play::follow_dissolve` writes the plane each frame from the tent root and the script
+  camera's y; the tent root is placed at t = 0 (`shell_layer_root`); the mask is decoded with the
+  level (`PodDissolveMask`).
+- INFERRED: the shell level's frame and the script camera's frame are one frame (so camera y between
+  the end states is the script's). PLACEHOLDER: mask coordinates from the position (70-unit tile)
+  on a bucket without a diffuse texture; the shell root still follows v (the DualShock moves against
+  the tent's floor between the ends).
+- Not the game's rule: the viewer's surface colour green for the diffuse green; `in.uv` is the
+  diffuse sampler's coordinates (x 2 on the glass panels); no second mask; flat colour not fogged;
+  the platform at v = 1 solid; the six other backdrop masks not loaded. No avatar: the flat colour
+  is black.
+- MEASURED (no focus taken; `local-analysis/rscript/stage6/shots/d278-*`): without scripts, closed
+  at 600, and open at 640 equal part 28's captures byte for byte. In use from 600: `Pod tent
+  dissolve at tick 601: value 0.05, 3 draw entities; cut above level y 820.4 ...; the script's mask
+  GUID: the same`, `Shell Things at tick 620: ... mesh swapped 1, dissolve set 1`.
+- Eye check (602, 605, 610, 615, 619): the tent in place, cut from the top down (roof open at 605,
+  a third of the frame at 610, low walls at 615, only parts under the floor at 619), circuit traces
+  in the band under the edge, the room and planets through the cut part. Nothing compared against
+  the game.
+- Tests: six viewer tests (`d278_*`, the shader test extended). fmt, CI clippy, CI tests (611),
+  Python tests (36), `cargo check` of both viewers and the viewer's clippy pass; the viewer's tests
+  pass (67) but `sackboy_play::tests::input_script_steps` (fails on main).
+- Next: `pod_mask.tex` and the plain UV; the platform's edge at 1; PR 4b, the Puter key through the
+  pad zone and press.
+
+## Before: D277 both Pod levels in one viewer session (2026-10-13)
 - "Pod picture" PR 4a: viewer, one runtime accessor, one tool option (`docs/level-scripts.md` part
   28). With the shell layer under `--level-scripts` only the planets level was played: the pod's mesh
   swap never showed in the Pod picture and the tent left on the viewer's own dolly.

@@ -12,7 +12,9 @@
 //! the picture was drawn with; and the camera is put where a script writes the camera
 //! itself, with the Pod's planets level hung under its script-moved world Thing (part
 //! 23). With the Pod's shell layer the shell level has a script world of its own, and
-//! the two tick in one session (part 28). The rest is the clock and the counts.
+//! the two tick in one session (part 28), and the tent of the shell's pod Thing is drawn
+//! with the game's top-down dissolve while pod.bin's change-over runs (part 29). The rest
+//! is the clock and the counts.
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts, EguiPrimaryContextPass};
 use lbp_catalog::{attachment::AttachedSource, LoadControl};
@@ -85,6 +87,11 @@ struct Play {
     /// The Pod's shell level (pod.bin), played in one session with the level above
     /// (part 28): there under `--pod-camera N` with `--pod-shell HEX`.
     shell: Option<ShellLevel>,
+    /// Part 29: the height of the eye of the camera a script wrote, level units, as last
+    /// shown: the camera the tent's dissolve line is measured from.
+    script_eye_y: Option<f32>,
+    /// Part 29: the dissolve's first line was printed.
+    dissolve_printed: bool,
 }
 
 /// The script world of the Pod's shell layer (part 28): the second level of the
@@ -350,6 +357,8 @@ pub fn install(app: &mut App) -> Result<(), String> {
         world_root: None,
         world_root_placed: 0,
         shell,
+        script_eye_y: None,
+        dissolve_printed: false,
     })
     .insert_resource(crate::CaptureHold(hold_at.is_some()))
     .insert_resource(Time::<Fixed>::from_hz(f64::from(TICK_HZ)))
@@ -360,7 +369,10 @@ pub fn install(app: &mut App) -> Result<(), String> {
     // After the viewer's own camera has placed the follow camera, before a capture.
     .add_systems(
         Update,
-        script_camera.after(crate::camera).before(crate::capture),
+        (script_camera, follow_dissolve)
+            .chain()
+            .after(crate::camera)
+            .before(crate::capture),
     )
     .add_systems(EguiPrimaryContextPass, (speech, window));
     Ok(())
@@ -814,7 +826,9 @@ fn camera_view(display: Mat4, global: Mat4, clip_from_view: Mat4) -> Option<Came
 /// [`tick`] writes from the change-over value of pod.bin's script (part 28;
 /// PLACEHOLDER, see [`opening`]). A shell point keeps its place in the frame; the
 /// planets behind it are the script's view. While no script camera is shown the roots
-/// stay where they were. The shell's own script world gets no camera view here.
+/// stay where they were. The shell's own script world gets no camera view here. Part
+/// 29: the tent root is placed with `t` = 0 always ([`shell_layer_root`]): the tent
+/// stays where the closed picture has it and goes by its dissolve.
 ///
 /// INFERRED: world +Y is up under the override. Not applied: the near and far planes of
 /// either script camera (the viewer keeps its own, in display units). One line is
@@ -851,11 +865,7 @@ fn script_camera(
             if let (CameraSource::Script, Some(rig), Some(puter)) = (camera.source, &rig, &puter) {
                 let (eye, turn, t) = (transform.translation, transform.rotation, puter.t);
                 for (mut root, tent) in &mut shell_roots {
-                    let placed = if tent {
-                        rig.0.tent_root_at(eye, turn, t)
-                    } else {
-                        rig.0.shell_root_at(eye, turn, t)
-                    };
+                    let placed = shell_layer_root(&rig.0, eye, turn, t, tent);
                     if *root != placed {
                         *root = placed;
                         p.shell_placed += 1;
@@ -870,6 +880,9 @@ fn script_camera(
                         rig.0.scale
                     );
                 }
+            }
+            if camera.source == CameraSource::Script {
+                p.script_eye_y = Some(camera.pose.eye[1]);
             }
             match camera.source {
                 CameraSource::Script => p.script_frames += 1,
@@ -956,6 +969,113 @@ fn script_camera(
             ),
         }
     }
+}
+
+/// Where a root of the Pod's shell layer goes under a script camera at `eye` turned by
+/// `turn` (display units), at opening progress `t`. The shell root follows `t`. The tent
+/// root does not (part 29): it stays at `t` = 0, the closed picture's place, since the
+/// tent leaves by its dissolve; its slide out of the frame was the viewer's placeholder.
+fn shell_layer_root(
+    rig: &crate::pod_menu::PodRig,
+    eye: Vec3,
+    turn: Quat,
+    t: f32,
+    tent: bool,
+) -> Transform {
+    if tent {
+        rig.tent_root_at(eye, turn, 0.)
+    } else {
+        rig.shell_root_at(eye, turn, t)
+    }
+}
+
+/// The draw entities of the shell layer, for [`follow_dissolve`]: the tag, the material
+/// and the root the entity hangs under.
+type Dissolved<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static crate::thing_view::LevelThing,
+        &'static MeshMaterial3d<crate::ViewerMaterial>,
+        Option<&'static ChildOf>,
+    ),
+>;
+
+/// Writes the line of the tent's dissolve into the materials of the draw entities that
+/// carry a dissolve value (part 29; `thing_view::apply` keeps the value on the tag),
+/// each frame after [`script_camera`] has placed the camera and the tent root.
+///
+/// The line is `camera y + 1150 - 1550 v` in the shell level's own y
+/// (`pod_dissolve::line_y`; FOUND), the camera being the one the planets level's script
+/// wrote (MEASURED at the two end states; INFERRED that the two levels share one frame
+/// there). It goes to the shader as a plane in Bevy world space: the entity hangs under
+/// the tent root, which moves each frame, so the level-to-world matrix is the root's
+/// own `Transform` (not its `GlobalTransform`, which is a frame behind here) times the
+/// shell's display matrix. A material is written only when its values change, so a
+/// held tick costs nothing. Nothing while no script camera has been shown: the tent is
+/// then drawn whole. One line is printed the first time, with the mask's state.
+fn follow_dissolve(
+    mut play: NonSendMut<Play>,
+    things: Option<Res<crate::thing_view::ShellThings>>,
+    mask: Option<Res<crate::PodDissolveMask>>,
+    tagged: Dissolved,
+    roots: Query<&Transform>,
+    mut materials: ResMut<Assets<crate::ViewerMaterial>>,
+) {
+    let (Some(things), Some(camera_y)) = (things, play.script_eye_y) else {
+        return;
+    };
+    let image = mask.as_ref().and_then(|m| m.image.clone());
+    let (mut written, mut value) = (0, None);
+    for (tag, material, parent) in &tagged {
+        let Some(dissolve) = tag.dissolve else {
+            continue;
+        };
+        let root = parent
+            .and_then(|p| roots.get(p.parent()).ok())
+            .map_or(Mat4::IDENTITY, Transform::to_matrix);
+        let Some(wanted) = crate::pod_dissolve::uniforms(
+            dissolve.value,
+            dissolve.colour,
+            camera_y,
+            root * things.0.normalize,
+            image.clone(),
+        ) else {
+            continue;
+        };
+        let id = material.0.id();
+        let stale = |m: &crate::ViewerMaterial| crate::dual::dissolve(m).as_ref() != Some(&wanted);
+        if !materials.get(id).is_some_and(stale) {
+            continue;
+        }
+        if let Some(mut m) = materials.get_mut(id) {
+            crate::dual::set_dissolve(&mut m, Some(&wanted));
+            written += 1;
+            value = Some((dissolve.value, dissolve.colour));
+        }
+    }
+    let Some((v, colour)) = value.filter(|_| !play.dissolve_printed) else {
+        return;
+    };
+    play.dissolve_printed = true;
+    let preloaded = crate::pod_dissolve::TRANSITION_MASK;
+    let named = play
+        .shell
+        .as_ref()
+        .and_then(|s| s.host.world.pod.transition_texture);
+    let same = match named {
+        Some(g) if g == preloaded => "the same".to_string(),
+        Some(g) => format!("another, {g} (the six other backdrop masks are not loaded)"),
+        None => "none yet".to_string(),
+    };
+    println!(
+        "Pod tent dissolve at tick {}: value {v:.2}, {written} draw entities; cut above level y {:.1} (camera y {camera_y:.1} + {} - {} x value), flat colour {colour:.3?}; mask {preloaded} {}; the script's mask GUID: {same}",
+        play.scripts.ticks,
+        crate::pod_dissolve::line_y(camera_y, v),
+        crate::pod_dissolve::LINE_AT_ZERO,
+        crate::pod_dissolve::LINE_FALL,
+        mask.as_ref().map_or("not asked for", |m| m.note.as_str()),
+    );
 }
 
 /// The Pod rig, its Puter state and the shell and tent roots, for [`script_camera`]
@@ -1171,6 +1291,37 @@ mod tests {
     use super::*;
     use bevy::camera::CameraProjection;
     use lbp_runtime::OVERRIDE_FOV_DEG;
+
+    /// D278. Under the script's camera the tent root is placed at opening progress 0
+    /// whatever the progress is: where the closed picture has it, bit for bit, while the
+    /// shell root follows the progress as before.
+    #[test]
+    fn d278_the_tent_root_stays_closed_under_the_script_camera() {
+        let rig = crate::pod_menu::PodRig::new(
+            (Vec3::new(-0.3, 0.2, 0.0), 0.25),
+            (Vec3::new(0.01, -0.2, -0.1), 0.12),
+            -0.4,
+            1.,
+        );
+        let (eye, turn) = (
+            Vec3::new(-0.4, -1.7, 1.8),
+            Quat::from_euler(EulerRot::YXZ, 0.2, 0.8, 0.),
+        );
+        let closed = rig.tent_root_at(eye, turn, 0.);
+        for t in [0., 0.05, 0.5, 0.95, 1.] {
+            assert_eq!(shell_layer_root(&rig, eye, turn, t, true), closed);
+            assert_eq!(
+                shell_layer_root(&rig, eye, turn, t, false),
+                rig.shell_root_at(eye, turn, t)
+            );
+        }
+        // The rig's own tent does leave between the ends: the rule above is a choice.
+        assert_ne!(rig.tent_root_at(eye, turn, 0.5), closed);
+        assert_ne!(
+            rig.shell_root_at(eye, turn, 0.5),
+            rig.shell_root_at(eye, turn, 0.)
+        );
+    }
 
     /// The view handed to the scripts: a level point in front of the camera lands in the
     /// middle of the runtime's screen, the camera matrix is in level units with axes of
