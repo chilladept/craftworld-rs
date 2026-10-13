@@ -28,7 +28,8 @@
 //! drive: the pass itself computes the logic types and keeps the sensors' stored signals). `switch_reactions` counts the
 //! output targets the pass visited and the reaction calls by script GUID. `triggers` is the PTrigger
 //! census over the levels read, `switches` the PSwitch census with the input tables built
-//! from the outputs' targets. Names and counts only; no bytecode. Output: a NEW JSON file under
+//! from the outputs' targets, `pworld` the census of the PWorld values scripts read (game
+//! mode, pause flag, frame, water level, global-setting arrays). Names and counts only; no bytecode. Output: a NEW JSON file under
 //! ignored `local-analysis/`. Counting unit: Thing with a PScript part (instances) or
 //! distinct script class (function names).
 use lbp_catalog::{attachment::AttachedSource, LoadControl};
@@ -67,6 +68,82 @@ struct Totals {
     classes: BTreeSet<lbp_script_vm::ClassId>,
     triggers: Triggers,
     switches: Switches,
+    pworld: WorldCensus,
+}
+
+/// Census of the stored PWorld values (`LevelWorld::pworld`). Unit: level.
+#[derive(Default)]
+struct WorldCensus {
+    without_world: usize,
+    game_mode: BTreeMap<i32, usize>,
+    is_paused: BTreeMap<bool, usize>,
+    /// Stored `frame` by size class, and the most common exact values.
+    frame_ranges: BTreeMap<&'static str, usize>,
+    frame_values: BTreeMap<i32, usize>,
+    frame_equals_sim_frame: usize,
+    water_level_not_zero: usize,
+    /// Lengths of the two global-setting arrays ("uids/priorities").
+    global_setting_lengths: BTreeMap<String, usize>,
+    with_a_global_setting_uid: usize,
+    global_setting_priorities: BTreeMap<i32, usize>,
+}
+
+impl WorldCensus {
+    fn add(&mut self, world: &LevelWorld) {
+        if world.world.is_none() {
+            self.without_world += 1;
+            return;
+        }
+        let p = &world.pworld;
+        *self.game_mode.entry(p.game_mode).or_default() += 1;
+        *self.is_paused.entry(p.is_paused).or_default() += 1;
+        let range = match p.frame {
+            i32::MIN..=-1 => "negative",
+            0 => "0",
+            1..=30 => "1 to 30",
+            31..=1800 => "31 to 1800 (a minute)",
+            1801..=108_000 => "1801 to 108000 (an hour)",
+            _ => "above 108000",
+        };
+        *self.frame_ranges.entry(range).or_default() += 1;
+        *self.frame_values.entry(p.frame).or_default() += 1;
+        self.frame_equals_sim_frame += usize::from(p.frame == p.sim_frame);
+        self.water_level_not_zero += usize::from(p.water_level != 0.);
+        let lengths = format!(
+            "{}/{}",
+            p.global_settings_thing_uids.len(),
+            p.global_settings_thing_priority.len()
+        );
+        *self.global_setting_lengths.entry(lengths).or_default() += 1;
+        self.with_a_global_setting_uid +=
+            usize::from(p.global_settings_thing_uids.iter().any(|u| *u != 0));
+        for v in &p.global_settings_thing_priority {
+            *self.global_setting_priorities.entry(*v).or_default() += 1;
+        }
+    }
+
+    fn json(&self) -> serde_json::Value {
+        let mut common: Vec<_> = self.frame_values.iter().collect();
+        common.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+        common.truncate(12);
+        serde_json::json!({
+            "unit": "level with a PWorld; global_setting_priorities counts array entries",
+            "levels_without_world": self.without_world,
+            "game_mode": self.game_mode,
+            "is_paused": self.is_paused.iter()
+                .map(|(k, n)| (k.to_string(), *n)).collect::<BTreeMap<_, _>>(),
+            "frame_ranges": self.frame_ranges,
+            "frame_distinct_values": self.frame_values.len(),
+            "frame_min": self.frame_values.keys().next(),
+            "frame_max": self.frame_values.keys().next_back(),
+            "frame_most_common": common,
+            "frame_equals_sim_frame": self.frame_equals_sim_frame,
+            "water_level_not_zero": self.water_level_not_zero,
+            "global_setting_array_lengths": self.global_setting_lengths,
+            "levels_with_a_global_setting_uid": self.with_a_global_setting_uid,
+            "global_setting_priorities": self.global_setting_priorities,
+        })
+    }
 }
 
 /// PTrigger census. Unit: Thing with a PTrigger part.
@@ -370,6 +447,7 @@ fn add_level(vm: &Vm, world: &LevelWorld, t: &mut Totals) -> serde_json::Value {
     let found = instances(vm, world);
     t.triggers.add(vm, world, &found);
     t.switches.add(vm, world, &found);
+    t.pworld.add(world);
     let mut level_classes = BTreeMap::<String, usize>::new();
     let mut unresolved = BTreeSet::new();
     for inst in &found {
@@ -405,6 +483,9 @@ fn add_level(vm: &Vm, world: &LevelWorld, t: &mut Totals) -> serde_json::Value {
         "scripted": found.len(),
         "classes": level_classes,
         "unresolved_guids": unresolved,
+        "game_mode": world.pworld.game_mode,
+        "frame": world.pworld.frame,
+        "is_paused": world.pworld.is_paused,
     })
 }
 
@@ -494,6 +575,33 @@ struct FirstTick {
     deactivated: usize,
 }
 
+/// Things whose world matrix is not the one the level stores: the count, and for the
+/// first `MAX_MOVED` the world and local position with the length of the x axis (the
+/// scale).
+const MAX_MOVED: usize = 24;
+
+fn moved_things(world: &LevelWorld, loaded: &[Option<[f32; 16]>]) -> serde_json::Value {
+    let place = |m: &[f32; 16]| {
+        let scale = (m[0] * m[0] + m[1] * m[1] + m[2] * m[2]).sqrt();
+        serde_json::json!({"position": m[12..15], "x_axis_length": scale})
+    };
+    let moved: Vec<_> = world
+        .things
+        .iter()
+        .zip(loaded)
+        .enumerate()
+        .filter(|(_, (t, m))| t.world_matrix != **m)
+        .collect();
+    serde_json::json!({
+        "count": moved.len(),
+        "first": moved.iter().take(MAX_MOVED).map(|(i, (t, _))| serde_json::json!({
+            "thing": i,
+            "world": t.world_matrix.as_ref().map(place),
+            "local": t.local_matrix.as_ref().map(place),
+        })).collect::<Vec<_>>(),
+    })
+}
+
 /// How far from a trigger's Thing the `--visit-triggers` player goes to leave it.
 const VISIT_AWAY: f32 = 1.0e7;
 
@@ -502,6 +610,7 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
     world.add_class_defaults(vm);
     world.progression_flags = opts.flags.clone();
     world.pod_computer_in_use = opts.in_use_from == Some(0);
+    let loaded: Vec<_> = world.things.iter().map(|t| t.world_matrix).collect();
     let mut host = Bindings::new(world);
     host.default_unbound = !opts.strict;
     let engine_faults = lbp_runtime::add_engine_objects(vm, &mut host, BUDGET_PER_CALL);
@@ -620,6 +729,8 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
         "ticks_with_faults": ticks_with_faults,
         "switch_outputs_changed_by_type": outputs_changed,
         "things_deactivated_at_end": deactivated,
+        "things_moved": moved_things(&host.world, &loaded),
+        "frame_at_end": host.world.pworld.frame,
         "stopped_by_fault": level.stopped.len(),
         "threads_running_at_end": level.threads(),
         "pending_at_end": level.pending(),
@@ -1077,6 +1188,7 @@ fn run() -> Result<(), String> {
         "function_names": ranked,
         "triggers": totals.triggers.json(),
         "switches": totals.switches.json(),
+        "pworld": totals.pworld.json(),
         "per_level": levels,
         "runs": runs,
         "play_all": play_opts.as_ref().filter(|_| every).map(|o| play_totals.json(o)),
