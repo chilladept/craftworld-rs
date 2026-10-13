@@ -99,9 +99,14 @@ UI (`UpdateUI__`) and photo natives are not planned.
   input table built from the outputs' targets (INFERRED; 177,800 targets, no port
   collision); the switch-input natives follow the rules FOUND in the executable, and
   `GetSwitchActivationTernary`, `GetInput`, `GetOutput`, `GetInThing` and `IsScoreBoard`
-  are bound (123). Things stopped by a fault 1,722 -> 582. Still open: the logic network
-  is not evaluated (signals stay as the level file stores them) and
-  `SwitchPerformReaction__b` is never called.
+  are bound (123). Things stopped by a fault 1,722 -> 582.
+- Stage 3b done (D261, part 12): the switch network runs each tick in wiring order with the
+  output rules FOUND in the executable for the logic types (gates, battery, toggle,
+  selector, counter, timer, microchip and board, microchip off); sensors and the
+  randomiser keep the stored signal. `SwitchPerformReaction__b` / `__bf` are called by the
+  game's edge rule on the 16 script GUIDs the game lists. 378 levels, 60 ticks: 24,612
+  outputs change, 204 + 36 reaction calls run (3,052 + 1,345 with every output pulsed),
+  stopped Things 582 -> 597, 19 more unbound natives reached. Still open: sensors.
 
 ## Rules
 

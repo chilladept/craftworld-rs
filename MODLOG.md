@@ -1,5 +1,23 @@
 # Development log
 
+## 2026-10-13 - D261 the switch network runs and switch reactions reach the scripts
+
+RScript plan stage 3b. `lbp-runtime/src/switches.rs`: `LevelWorld::update_switches` orders the switches by
+their wiring once (cycles broken, a back wire reads last tick's value) and each tick computes every output,
+writes it where the 3a input natives read it, and applies it to its targets with the game's edge rule (FOUND
+0x1244a4, 0x11ddf0). Computed types (rules FOUND in 0x11bd58 and its jump table): microchip, circuit board,
+NOT / node, AND, OR, XOR, battery, direction, sign split, toggle, selector, counter, timer, with the inverted
+rule; sensors and the randomiser keep the stored signal. A microchip that is off forces the outputs of
+everything on its board to {0, 0, -1} (Thing+0x7f). `SwitchPerformReaction__b(on)` is called on the target
+Thing's own script when its script GUID is one of the 16 the game lists, `__bf(on, 1.0 or 0.0)` for one GUID;
+a Thing that the game classifies by another part or by its switch type first gets no call (FOUND 0x3ed2c).
+`lbp-level` keeps the PSwitch logic fields and the PMicrochip board. `level_scripts`: logic census, switch
+counters, `--pulse-switches`. PC run, 378 levels, 60 ticks: 24,612 of 144,608 outputs differ from the stored
+value; 204 `__b` and 36 `__bf` calls run (222 and 37 with the trigger visit, 3,052 and 1,345 with every
+output pulsed); stopped Things 582 -> 597 (the reactions reach two new faults); 19 more unbound natives
+reached. Not done: sensors, the randomiser, dirty flags, sequencer boards. +0 viewable, +0 Complete.
+`docs/level-scripts.md` part 12.
+
 ## 2026-10-13 - D260 switch inputs reach the level scripts
 
 RScript plan stage 3a. `lbp-level` keeps PSwitch (outputs with signal and targets, type, inverted,

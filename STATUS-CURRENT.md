@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D260
+# Current state (overwrite each milestone) — after D261
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -11,7 +11,18 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D260 switch inputs (2026-10-13)
+## Latest: D261 switch network and reactions (2026-10-13)
+- RScript plan stage 3b. `lbp-runtime/src/switches.rs`: each tick `LevelWorld::update_switches` computes
+  every switch output in wiring order and applies it to its targets (FOUND in the EBOOT: 0x1244a4, 0x11ddf0,
+  0x11bd58, 0x3ed2c, 0x409dc). Computed: microchip, circuit board, NOT, AND, OR, XOR, battery, direction,
+  sign split, toggle, selector, counter, timer, inverted forms, microchip off. Stored signal kept: sensors,
+  randomiser, sequencer boards. `SwitchPerformReaction__b` / `__bf` are called on the 16 script GUIDs the
+  game lists.
+- MEASURED, 378 levels, 60 ticks: 24,612 of 144,608 outputs differ from the stored value; 204 `__b` and
+  36 `__bf` calls (3,052 and 1,345 with `--pulse-switches`); stopped Things 582 -> 597; 19 more unbound
+  natives reached. Next: stage 4, player and game state. `docs/level-scripts.md` part 12.
+
+## Before: D260 switch inputs (2026-10-13)
 - RScript plan stage 3a. PSwitch is kept by `lbp-level`; `LevelWorld::wire_inputs` builds each Thing's
   input table from the switch outputs' targets (INFERRED build; table and readers FOUND in the EBOOT:
   0x7541e0, 0x754308, 0x7542a4, 0x75437c, 0x754ccc, 0x754244, 0x754af8). `IsSwitchTriggered__i` is true
@@ -19,8 +30,7 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
   `GetInput`, `GetOutput`, `Native.GetInThing`, `BaseWorld.IsScoreBoard`.
 - MEASURED, 378 levels: 141,572 PSwitch Things, 177,800 targets, no port collision, 3,732 scripted Things
   with a wired port. Things stopped by a fault 1,722 -> 582; with the trigger visit unbound natives
-  reached 94 -> 91. Signals are the stored ones: the logic network is not evaluated and
-  `SwitchPerformReaction__b` is not called. Next: stage 3b. `docs/level-scripts.md` part 11.
+  reached 94 -> 91. `docs/level-scripts.md` part 11.
 
 ## Before: D259 trigger events (2026-10-12)
 - RScript plan stage 2. PTrigger is kept by `lbp-level`; `LevelWorld::update_triggers` tests the players

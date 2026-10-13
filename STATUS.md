@@ -4287,3 +4287,40 @@ Next: stage 3, switch events and inputs.
 - Not tested: the viewer window; any switch against the game in RPCS3.
 **+0 newly viewable / +0 newly Complete (runtime feature).**
 Next: stage 3b, evaluate the logic network and call the switch reactions.
+
+## D261 switch network and switch reactions (2026-10-13)
+- RScript plan stage 3b (`docs/rscript-plan.md`). New module `crates/lbp-runtime/src/switches.rs`;
+  `tick_level` runs the script tick, the trigger events, then `LevelWorld::update_switches`.
+- FOUND in the EBOOT: per-switch update 0x1244a4 (edge rule: on = new ternary not 0 and (ternary changed or
+  forced); targets visited on an on/off change, a player change or `on`); apply 0x11ddf0 (reaction by the
+  target's object kind; state changes of toggle, counter, selector and timer on input edges); output
+  compute 0x11bd58 through jump table 0x11be00, inverted table 0x11bfd4; kind classifier 0x3ed2c (order of
+  tests, which switch types take a kind before the script GUID is looked at); microchip off 0x409dc.
+- Computed types: 36 microchip, 37 circuit board, 23/24/40 NOT / pass / node, 14 AND, 21 OR, 22 XOR,
+  28 battery, 20 direction, 27 sign split, 17 toggle, 35 selector, 15 counter, 16 timer. Stored signal kept:
+  every sensor type, 19 randomiser, a board owned by a sequencer. Constant {0, 0, -1}: the types the game
+  gives no handler.
+- INFERRED: the type names (order of the `SWITCH_TYPE_*` strings); 30 ticks per second and timer length in
+  ticks; the first pass compares against the stored signals, so power-up edges fire on tick 1; the off
+  flags are computed once before the first pass; cycle breaking by lowest Thing index.
+- MEASURED census (378 levels, 141,572 PSwitch): the AND / OR mode word is 0 or 1 (AND 5,671 / 56, OR
+  4,084 / 5); 5,686 NOT gates are inverted and 108 are not; 28,278 microchips, each with a type-37 board,
+  5,420 with port 0 wired; 4,298 of 4,599 battery outputs are stored off while the battery is on.
+- MEASURED runs (378 levels, release):
+  - plain, 60 ticks: 75,140 target visits, 204 `__b` and 36 `__bf` calls, 24,612 outputs differ from the
+    stored value at the end, 18,100 Things off under a microchip; stopped Things 582 -> 597.
+  - with the trigger visit: 222 `__b`, 37 `__bf`; stopped 582 -> 598.
+  - with every output pulsed on and off: 3,052 `__b`, 1,345 `__bf`; stopped 1,794 (new: `PWorld.Frame` in
+    ScoreTweak 925 Things, `Thing.Pos` in Trigger_Speech_Bubble 287).
+  - plain, 300 ticks: 226 `__b`, 37 `__bf`; stopped 598.
+  - 19 more unbound natives reached in the plain run (global settings, speech bubble, music, Gooey frame).
+- Not modelled: sensors (tag, player, impact, grab ...), the randomiser, dirty flags (every switch runs
+  each tick), sequencer boards and cursor chips, the three extra gates of `__bf`, object kinds 0x49, 0x53,
+  0x54, the mesh / trigger / gameplay-data kind tests, the activating-player record, the force flag.
+- Tests: 21 unit tests in `switches.rs` (edge rule, order with cycles, each type, inverted forms, timer and
+  counter over ticks, toggle, selector, microchip off) and two world tests
+  (`stage3b_switch_reactions_go_to_listed_scripts_only`, the AND -> NOT -> script chain). fmt, clippy,
+  the CI test set pass.
+- Not tested: the viewer window; any switch against the game in RPCS3.
+**+0 newly viewable / +0 newly Complete (runtime feature).**
+Next: stage 4, player and game state.
