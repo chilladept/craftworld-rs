@@ -66,18 +66,34 @@ pub trait World {
     fn world_thing(&mut self) -> Result<Option<u32>, String> {
         Err(not_available("the world thing"))
     }
-    fn world_position(&mut self, _thing: u32) -> Result<[f32; 4], String> {
-        Err(not_available("positions"))
+    /// The Thing's PPos world matrix in game memory order (translation at 12..15); `None`
+    /// for a Thing without a PPos.
+    fn world_transform(&mut self, _thing: u32) -> Result<Option<[f32; 16]>, String> {
+        Err(not_available("transforms"))
+    }
+    /// The Thing's PPos local matrix (against its parent), as [`World::world_transform`].
+    fn local_transform(&mut self, _thing: u32) -> Result<Option<[f32; 16]>, String> {
+        Err(not_available("transforms"))
     }
     fn centre_of_mass(&mut self, _thing: u32) -> Result<[f32; 4], String> {
         Err(not_available("centres of mass"))
     }
-    /// Local transform in game memory order (translation at 12..15).
+    /// Stores the local matrix, works out the world matrix from the parent's and moves the
+    /// Thing's descendants along. Nothing for a Thing without a PPos.
     fn set_local_transform(&mut self, _thing: u32, _m: [f32; 16]) -> Result<(), String> {
         Err(not_available("transforms"))
     }
+    /// The Thing's "deactivated" flag.
     fn is_inactive(&mut self, _thing: u32) -> Result<bool, String> {
         Err(not_available("activity state"))
+    }
+    /// The Thing's microchip Thing when it has one, else the Thing itself.
+    fn microchip_proxy(&mut self, _thing: u32) -> Result<u32, String> {
+        Err(not_available("microchips"))
+    }
+    /// Does the Thing sit on a circuit board that belongs to a sequencer?
+    fn is_on_sequencer(&mut self, _thing: u32) -> Result<bool, String> {
+        Err(not_available("sequencers"))
     }
     /// Does the Thing carry this part (`"PJoint"`, `"PSwitch"`, ...)?
     fn has_part(&mut self, _thing: u32, _part: &str) -> Result<bool, String> {
@@ -162,8 +178,9 @@ pub trait World {
     fn player_number(&mut self, _index: i32) -> Result<i32, String> {
         Err(not_available("players"))
     }
-    /// Absolute world transform of a Thing (`Thing.SetWorldPosition__m`), same matrix order
-    /// as [`World::set_local_transform`].
+    /// Stores the world matrix (`Thing.SetWorldPosition__m`), works out the local matrix
+    /// from the parent's and moves the Thing's descendants along. Nothing for a Thing
+    /// without a PPos. Same matrix order as [`World::world_transform`].
     fn set_world_transform(&mut self, _thing: u32, _m: [f32; 16]) -> Result<(), String> {
         Err(not_available("transforms"))
     }
@@ -490,6 +507,21 @@ fn this(c: &Call<'_>) -> Result<u32, String> {
             .ok_or("member native called without a receiver")?,
     )
 }
+
+/// The Thing a member native acts on, when the native itself checks for null.
+fn receiver(c: &Call<'_>) -> Result<Option<u32>, String> {
+    thing(
+        c.receiver
+            .ok_or("member native called without a receiver")?,
+    )
+}
+
+/// The matrix the position natives give for a null Thing. FOUND: a constant matrix is
+/// copied out; INFERRED that it is the identity (the constants sit behind a TOC pointer
+/// that was not resolved).
+const IDENTITY: [f32; 16] = [
+    1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.,
+];
 
 /// For the `Thing.*Switch*__i` natives: the signal wired to the receiver's input port.
 fn wired(w: &mut dyn World, c: &Call<'_>) -> Result<Option<SwitchInput>, String> {
@@ -823,22 +855,81 @@ const TABLE: &[(&str, &str, NativeFn)] = &[
     ("System", "GetWorld__", |w, _| {
         Ok(Value::Thing(w.world_thing()?))
     }),
+    // FOUND (01.33, 0x643138 -> 0x755874). Declared `m44 GetWorldPosition()`: the whole
+    // PPos world matrix, not a position (scripts take the translation column out of it
+    // themselves). For a null Thing or one without a PPos the game leaves the result
+    // untouched; INFERRED stand-in here: the identity.
     ("Thing", "GetWorldPosition__", |w, c| {
-        Ok(Value::Vec4(w.world_position(this(c)?)?))
+        Ok(Value::Mat44(match receiver(c)? {
+            Some(t) => w.world_transform(t)?.unwrap_or(IDENTITY),
+            None => IDENTITY,
+        }))
     }),
     ("Thing", "GetCOM__", |w, c| {
         Ok(Value::Vec4(w.centre_of_mass(this(c)?)?))
     }),
+    // FOUND (01.33, 0x642e48 -> 0x753bb0 -> 0xf2e80). Declared `void SetLocalPosition(m44)`.
+    // Nothing for a null Thing or one without a PPos. The matrix becomes the local matrix;
+    // world = parent's world x local when the parent has a PPos, else world = local; then
+    // every descendant with a PPos gets world = its parent's world x its own local.
+    // Not modelled: a Thing flag (byte +0x17 bit 0) that makes world = local under a
+    // parent, and the refresh of bodies and shapes.
     ("Thing", "SetLocalPosition__m", |w, c| {
-        let m = match param(c, 0)? {
-            Value::Mat44(m) => *m,
-            other => return Err(format!("expected m44, got {other:?}")),
-        };
-        w.set_local_transform(this(c)?, m)?;
+        let m = matrix(param(c, 0)?)?;
+        if let Some(t) = receiver(c)? {
+            w.set_local_transform(t, m)?;
+        }
         Ok(Value::Void)
     }),
+    // FOUND (01.33, 0x642ee0 -> 0x755a98). Declared `m44 GetLocalPosition()`: the PPos
+    // local matrix; a constant matrix for a null Thing or one without a PPos (INFERRED:
+    // the identity).
+    ("Thing", "GetLocalPosition__", |w, c| {
+        Ok(Value::Mat44(match receiver(c)? {
+            Some(t) => w.local_transform(t)?.unwrap_or(IDENTITY),
+            None => IDENTITY,
+        }))
+    }),
+    // FOUND (01.33, 0x6422f0 -> 0x7533ac). Declared `bool IsInactive()`: the Thing's
+    // "deactivated" byte (+0x7f), which the switch pass keeps for the Things on a
+    // microchip that is off. The game does not test the Thing for null; a null Thing is
+    // an error here.
     ("Thing", "IsInactive__", |w, c| {
         Ok(Value::Bool(w.is_inactive(this(c)?)?))
+    }),
+    // FOUND (01.33, 0x642bd4 -> 0x754498). Declared static
+    // `Thing GetMicroChipProxyFromThing(Thing)`: null for null; the Thing's microchip
+    // Thing (+0x5c) when it has one, else the Thing itself. INFERRED: what fills +0x5c
+    // (the world's side: the chip whose circuit board the Thing is a child of).
+    ("Thing", "GetMicroChipProxyFromThing__Q5Thing", |w, c| {
+        Ok(Value::Thing(match thing(param(c, 0)?)? {
+            Some(t) => Some(w.microchip_proxy(t)?),
+            None => None,
+        }))
+    }),
+    // FOUND (01.33, 0x643010 -> 0x7556a0). Declared `m44 GetWorldPositionForSensor()`: a
+    // constant matrix for a null Thing (INFERRED: the identity); for a Thing that is not
+    // on a sequencer, the world matrix of its microchip Thing when it has one, else its
+    // own. Left out: the sequencer branch (0x40748, 0x3c594), where a Thing under a
+    // sequencer gets a position along the sequencer; such a Thing gets the same matrix as
+    // any other here. INFERRED: the identity when that Thing has no PPos.
+    ("Thing", "GetWorldPositionForSensor__", |w, c| {
+        Ok(Value::Mat44(match receiver(c)? {
+            Some(t) => {
+                let proxy = w.microchip_proxy(t)?;
+                w.world_transform(proxy)?.unwrap_or(IDENTITY)
+            }
+            None => IDENTITY,
+        }))
+    }),
+    // FOUND (01.33, 0x64b738 -> 0x5e7068 -> 0xf3d94). Declared static
+    // `bool IsOnSequencer(Thing)`: the Thing's parent is a circuit board (object kind
+    // 0x40) and that board's parent has a PSequencer. INFERRED: false for a null Thing.
+    ("Game", "IsOnSequencer__Q5Thing", |w, c| {
+        Ok(Value::Bool(match thing(param(c, 0)?)? {
+            Some(t) => w.is_on_sequencer(t)?,
+            None => false,
+        }))
     }),
     // ---- switches (the Thing's own inputs, by port) ----
     // FOUND in the 01.33 executable through the Ghidra bridge; each native is a thin
@@ -1130,8 +1221,15 @@ const TABLE: &[(&str, &str, NativeFn)] = &[
     ("PodComputer", "GetCrashZoom__", |w, _| {
         Ok(Value::Bool(w.crash_zoom()?))
     }),
+    // FOUND (01.33, 0x6430a0 -> 0x753bfc -> 0xf26bc). Declared `void SetWorldPosition(m44)`.
+    // Nothing for a null Thing or one without a PPos. The matrix becomes the world matrix;
+    // local = inverse(parent's world) x world when the parent has a PPos, else local =
+    // world; then the descendants follow as in `SetLocalPosition__m`.
     ("Thing", "SetWorldPosition__m", |w, c| {
-        w.set_world_transform(this(c)?, matrix(param(c, 0)?)?)?;
+        let m = matrix(param(c, 0)?)?;
+        if let Some(t) = receiver(c)? {
+            w.set_world_transform(t, m)?;
+        }
         Ok(Value::Void)
     }),
     ("Native", "DebugPrint__i", |w, c| {
@@ -1524,6 +1622,34 @@ mod tests {
             Ok(Value::Int(107))
         );
         assert!(call("Thing", "GetThingUID__", &[]).is_err());
+        // Stage 4: the position natives check the Thing for null themselves, so a null
+        // Thing never reaches the world (which here has no transforms at all).
+        let m = Value::Mat44(IDENTITY);
+        for name in [
+            "GetWorldPosition__",
+            "GetLocalPosition__",
+            "GetWorldPositionForSensor__",
+        ] {
+            assert_eq!(call("Thing", name, &[Value::Thing(None)]), Ok(m.clone()));
+            assert!(call("Thing", name, &[Value::Thing(Some(7))]).is_err());
+        }
+        for name in ["SetLocalPosition__m", "SetWorldPosition__m"] {
+            let args = [Value::Thing(None), m.clone()];
+            assert_eq!(call("Thing", name, &args), Ok(Value::Void), "{name}");
+            let args = [Value::Thing(None), Value::Vec4([0.; 4])];
+            assert!(call("Thing", name, &args).is_err(), "{name}");
+        }
+        let null = [Value::Thing(None)];
+        assert_eq!(
+            call("Thing", "GetMicroChipProxyFromThing__Q5Thing", &null),
+            Ok(Value::Thing(None))
+        );
+        assert_eq!(
+            call("Game", "IsOnSequencer__Q5Thing", &null),
+            Ok(Value::Bool(false))
+        );
+        // IsInactive does not: a null Thing is an error.
+        assert!(call("Thing", "IsInactive__", &null).is_err());
         assert_eq!(
             call("Thing", "GetParent__Q5Thing", &[Value::Thing(Some(0))]),
             Ok(Value::Thing(None))

@@ -23,6 +23,7 @@ use lbp_script_vm::{ClassId, Host, MemberKind, ObjectId, Step, Task, Value, Vm};
 use std::collections::{BTreeMap, BTreeSet};
 
 mod switches;
+pub mod transform;
 pub use switches::*;
 
 /// One Thing as the runtime sees it.
@@ -34,6 +35,9 @@ pub struct ThingState {
     pub next_sibling: Option<u32>,
     /// POS world matrix in stored order (translation at 12..14).
     pub world_matrix: Option<[f32; 16]>,
+    /// POS local matrix, against the parent's world matrix. LBP2 level files do not store
+    /// it; [`LevelWorld::derive_local_matrices`] works it out when the level loads.
+    pub local_matrix: Option<[f32; 16]>,
     pub parts: Vec<&'static str>,
     /// GUID of the PScript resource, when the Thing has one.
     pub script_guid: Option<u32>,
@@ -272,6 +276,32 @@ pub struct LevelWorld {
     /// Set once the deactivated flags have their start values
     /// ([`LevelWorld::prepare_switches`]).
     pub switches_prepared: bool,
+    /// The level's PWorld values scripts read ([`WorldState`]).
+    pub pworld: WorldState,
+    /// The owner of each circuit board: board Thing -> the Thing whose PMicrochip names it
+    /// (the first in Thing order). See [`LevelWorld::microchip_of`].
+    pub board_owners: BTreeMap<u32, u32>,
+}
+
+/// PWorld state scripts read through `World.World` members, with the level file's values
+/// at the start.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct WorldState {
+    /// `PWorld.GameMode` (declared `Game.EGameMode`, an s32): 0 normal, 1 competitive,
+    /// 2 cut scene, 3 single player, 4 social, 5 teams (Toolkit `GameMode`).
+    pub game_mode: i32,
+    /// `PWorld.Frame`: the world's frame counter ([`LevelWorld::advance_frame`]).
+    pub frame: i32,
+    /// PWorld `simFrame`, advanced with `frame`.
+    pub sim_frame: i32,
+    /// PWorld `isPaused` as stored (read by nothing here yet).
+    pub is_paused: bool,
+    /// `PWorld.WaterLevel`.
+    pub water_level: f32,
+    /// PWorld `GlobalSettingsThingUIDs` and `GlobalSettingsThingPriority` as stored, one
+    /// entry per global-settings type (read by nothing here yet).
+    pub global_settings_thing_uids: Vec<i32>,
+    pub global_settings_thing_priority: Vec<i32>,
 }
 
 /// VM value for a stored script field; `None` for a field the instance does not store.
@@ -438,6 +468,23 @@ impl LevelWorld {
             .iter()
             .position(|t| t.data.world.is_some())
             .and_then(handle);
+        if let Some(p) = list.iter().find_map(|t| t.data.world.as_ref()) {
+            w.pworld = WorldState {
+                game_mode: p.game_mode,
+                frame: p.frame,
+                sim_frame: p.sim_frame,
+                is_paused: p.is_paused,
+                water_level: p.water_level,
+                global_settings_thing_uids: p.global_settings_thing_uids.clone(),
+                global_settings_thing_priority: p.global_settings_thing_priority.clone(),
+            };
+        }
+        for (i, t) in w.things.iter().enumerate() {
+            if let Some(board) = t.circuit_board {
+                w.board_owners.entry(board).or_insert(i as u32);
+            }
+        }
+        w.derive_local_matrices();
         for t in list {
             if let Some(part) = &t.data.script {
                 for f in &part.fields {
@@ -688,7 +735,9 @@ impl LevelWorld {
         (m[0], m[5], m[10], m[15]) = (1., 1., 1., 1.);
         m[12..15].copy_from_slice(&position);
         if let Some(t) = self.things.get_mut(thing as usize) {
+            // A Sackboy has no parent: his local matrix is his world matrix.
             t.world_matrix = Some(m);
+            t.local_matrix = Some(m);
         }
         if let Some(p) = self.players.iter_mut().find(|p| p.thing == thing) {
             p.layers = layers;
@@ -770,6 +819,149 @@ impl LevelWorld {
             }));
         }
         events
+    }
+
+    /// Gives every Thing with a PPos its local matrix: inverse(parent's world) x world when
+    /// its parent has a PPos, else its world matrix.
+    ///
+    /// FOUND (01.33, 0xf26bc and 0xf1d58): this is how the game keeps the local matrix
+    /// when a world matrix is written. LBP2 level files store the world matrix only.
+    /// INFERRED: a parent whose matrix cannot be inverted counts as no parent.
+    pub fn derive_local_matrices(&mut self) {
+        for i in 0..self.things.len() {
+            let Some(world) = self.things[i].world_matrix else {
+                continue;
+            };
+            let local = self
+                .parent_world(i as u32)
+                .and_then(|p| transform::inverse(&p))
+                .map_or(world, |inv| transform::mul(&inv, &world));
+            self.things[i].local_matrix = Some(local);
+        }
+    }
+
+    /// World matrix of the Thing's parent, when it has a parent with a PPos.
+    fn parent_world(&self, thing: u32) -> Option<[f32; 16]> {
+        let parent = self.things.get(thing as usize)?.parent?;
+        self.things.get(parent as usize)?.world_matrix
+    }
+
+    /// After a Thing moved: every descendant with a PPos gets world = its parent's world x
+    /// its own local, parents before children (FOUND, 0xf250c / 0xf20f0). A descendant
+    /// whose parent has no PPos keeps its matrix (INFERRED), and its children are still
+    /// visited.
+    fn move_descendants(&mut self, thing: u32) {
+        let first = |w: &Self, t: u32| w.things.get(t as usize).and_then(|t| t.first_child);
+        let mut stack: Vec<u32> = first(self, thing).into_iter().collect();
+        // A damaged tree cannot make this run for ever.
+        let mut left = self.things.len();
+        while let Some(t) = stack.pop().filter(|_| left > 0) {
+            left -= 1;
+            let Some(state) = self.things.get(t as usize) else {
+                continue;
+            };
+            let (sibling, local) = (state.next_sibling, state.local_matrix);
+            if let (Some(parent), Some(local)) = (self.parent_world(t), local) {
+                self.things[t as usize].world_matrix = Some(transform::mul(&parent, &local));
+            }
+            stack.extend(sibling);
+            stack.extend(first(self, t));
+        }
+    }
+
+    /// The Thing's microchip Thing (the game's Thing+0x5c), if it has one.
+    ///
+    /// INFERRED: the Thing whose PMicrochip names the circuit board this Thing is a child
+    /// of. For a chip inside a chip that is the inner one; which of the two the game keeps
+    /// is not established.
+    pub fn microchip_of(&self, thing: u32) -> Option<u32> {
+        let parent = self.things.get(thing as usize)?.parent?;
+        self.board_owners.get(&parent).copied()
+    }
+
+    /// One world frame has passed: `PWorld.Frame` (and `simFrame`) go up by one.
+    ///
+    /// INFERRED: the game's increment was not located. Here it happens at the end of
+    /// [`LevelScripts::tick_level`], so the scripts of the first tick read the stored
+    /// frame and those of tick n the stored frame + n - 1.
+    pub fn advance_frame(&mut self) {
+        self.pworld.frame = self.pworld.frame.wrapping_add(1);
+        self.pworld.sim_frame = self.pworld.sim_frame.wrapping_add(1);
+    }
+
+    /// A member of an engine part that the runtime keeps as real state, or `None` for one
+    /// it does not know (those live in the part handle's own map).
+    ///
+    /// FOUND (01.33): the PWorld serializer (0xb3f3c0..0xb3fd20) names `Frame` (s32),
+    /// `GameMode` (i32) and `WaterLevel` (f32) and the level file stores them; the PPos
+    /// readers (0x755874, 0x755a98) give the world matrix its place in the part.
+    /// INFERRED: that the members scripts name are these fields, and that the PTrigger
+    /// members are the stored `radiusMultiplier`, `allZLayers` and `hysteresisMultiplier`
+    /// the trigger test uses ([`LevelWorld::update_triggers`]).
+    fn engine_member(&self, thing: u32, part: &str, field: &str) -> Result<Option<Value>, String> {
+        let t = self.state(thing)?;
+        let trigger = || {
+            t.trigger
+                .as_ref()
+                .ok_or_else(|| format!("thing {thing} has no trigger state"))
+        };
+        Ok(Some(match (part, field) {
+            ("WORLD", "GameMode") => Value::Int(self.pworld.game_mode),
+            ("WORLD", "Frame") => Value::Int(self.pworld.frame),
+            ("WORLD", "WaterLevel") => Value::Float(self.pworld.water_level),
+            ("POS", "WorldPosition") => Value::Mat44(
+                t.world_matrix
+                    .ok_or_else(|| format!("thing {thing} has no position"))?,
+            ),
+            ("TRIGGER", "RadiusMultiplier") => Value::Float(trigger()?.radius),
+            ("TRIGGER", "HysteresisMultiplier") => Value::Float(trigger()?.hysteresis),
+            ("TRIGGER", "AllZLayers") => Value::Bool(trigger()?.all_z_layers),
+            _ => return Ok(None),
+        }))
+    }
+
+    /// Writes a member [`Self::engine_member`] reads; `Ok(false)` for any other member.
+    ///
+    /// `PPos.WorldPosition`: INFERRED a plain field write: the world matrix changes, the
+    /// local matrix and the Thing's descendants do not (the member accessor was not
+    /// located; the natives `SetWorldPosition__m` / `SetLocalPosition__m` do move them).
+    /// No script of the levels writes the PWorld members; a write is kept.
+    fn set_engine_member(
+        &mut self,
+        thing: u32,
+        part: &str,
+        field: &str,
+        value: &Value,
+    ) -> Result<bool, String> {
+        let bad = || format!("{part} member {field} set to {value:?}");
+        let pworld = &mut self.pworld;
+        let t = self
+            .things
+            .get_mut(thing as usize)
+            .ok_or_else(|| format!("no thing {thing}"))?;
+        match (part, field, value) {
+            ("WORLD", "GameMode", Value::Int(i)) => pworld.game_mode = *i,
+            ("WORLD", "Frame", Value::Int(i)) => pworld.frame = *i,
+            ("WORLD", "WaterLevel", Value::Float(f)) => pworld.water_level = *f,
+            ("POS", "WorldPosition", Value::Mat44(m)) => t.world_matrix = Some(*m),
+            ("TRIGGER", "RadiusMultiplier" | "HysteresisMultiplier" | "AllZLayers", v) => {
+                let g = t
+                    .trigger
+                    .as_mut()
+                    .ok_or_else(|| format!("thing {thing} has no trigger state"))?;
+                match (field, v) {
+                    ("RadiusMultiplier", Value::Float(f)) => g.radius = *f,
+                    ("HysteresisMultiplier", Value::Float(f)) => g.hysteresis = *f,
+                    ("AllZLayers", Value::Bool(b)) => g.all_z_layers = *b,
+                    _ => return Err(bad()),
+                }
+            }
+            ("WORLD", "GameMode" | "Frame" | "WaterLevel", _) | ("POS", "WorldPosition", _) => {
+                return Err(bad())
+            }
+            _ => return Ok(false),
+        }
+        Ok(true)
     }
 
     /// Handle for a part a Thing carries (index + 1), created on first use.
@@ -855,13 +1047,38 @@ impl World for LevelWorld {
     fn world_thing(&mut self) -> Result<Option<u32>, String> {
         Ok(self.world)
     }
-    /// Translation column of the POS world matrix (INFERRED: w as stored, normally 1).
-    fn world_position(&mut self, thing: u32) -> Result<[f32; 4], String> {
-        let m = self
-            .state(thing)?
-            .world_matrix
-            .ok_or_else(|| format!("thing {thing} has no position"))?;
-        Ok([m[12], m[13], m[14], m[15]])
+    fn world_transform(&mut self, thing: u32) -> Result<Option<[f32; 16]>, String> {
+        Ok(self.state(thing)?.world_matrix)
+    }
+    fn local_transform(&mut self, thing: u32) -> Result<Option<[f32; 16]>, String> {
+        Ok(self.state(thing)?.local_matrix)
+    }
+    /// FOUND (01.33, 0xf2e80): see `Thing.SetLocalPosition__m` in the native table.
+    fn set_local_transform(&mut self, thing: u32, m: [f32; 16]) -> Result<(), String> {
+        if self.state(thing)?.world_matrix.is_none() {
+            return Ok(());
+        }
+        let world = self
+            .parent_world(thing)
+            .map_or(m, |p| transform::mul(&p, &m));
+        let t = self.thing_mut(thing)?;
+        (t.local_matrix, t.world_matrix) = (Some(m), Some(world));
+        self.move_descendants(thing);
+        Ok(())
+    }
+    /// The "deactivated" flag the switch pass keeps (FOUND: the byte the native reads,
+    /// Thing+0x7f). The flags get their start values first if no switch pass ran yet.
+    fn is_inactive(&mut self, thing: u32) -> Result<bool, String> {
+        self.prepare_switches();
+        Ok(self.state(thing)?.deactivated)
+    }
+    fn microchip_proxy(&mut self, thing: u32) -> Result<u32, String> {
+        self.state(thing)?;
+        Ok(self.microchip_of(thing).unwrap_or(thing))
+    }
+    fn is_on_sequencer(&mut self, thing: u32) -> Result<bool, String> {
+        self.state(thing)?;
+        Ok(self.on_sequencer(thing))
     }
     fn has_part(&mut self, thing: u32, part: &str) -> Result<bool, String> {
         let want = part_name(part);
@@ -918,6 +1135,13 @@ impl World for LevelWorld {
             // Through `Thing` or a script class of a Thing (`World.World`).
             MemberKind::Native => return self.native_member(base, class, field),
             MemberKind::RefPtr => {
+                let (thing, part) = {
+                    let p = self.part_of(base)?;
+                    (p.thing, p.part)
+                };
+                if let Some(v) = self.engine_member(thing, part, field)? {
+                    return Ok(v);
+                }
                 let p = self.part_of(base)?;
                 return p
                     .members
@@ -944,7 +1168,13 @@ impl World for LevelWorld {
         value: Value,
     ) -> Result<(), String> {
         if kind == MemberKind::RefPtr {
-            self.part_of(base)?.members.insert(field.to_owned(), value);
+            let (thing, part) = {
+                let p = self.part_of(base)?;
+                (p.thing, p.part)
+            };
+            if !self.set_engine_member(thing, part, field, &value)? {
+                self.part_of(base)?.members.insert(field.to_owned(), value);
+            }
             return Ok(());
         }
         if kind != MemberKind::Thing {
@@ -1017,8 +1247,19 @@ impl World for LevelWorld {
     fn load_resource(&mut self, _kind: ResourceKind, guid: u32) -> Result<u32, String> {
         Ok(guid)
     }
+    /// FOUND (01.33, 0xf26bc, 0xf1d58): see `Thing.SetWorldPosition__m` in the native
+    /// table. INFERRED: a parent whose matrix cannot be inverted counts as no parent.
     fn set_world_transform(&mut self, thing: u32, m: [f32; 16]) -> Result<(), String> {
-        self.thing_mut(thing)?.world_matrix = Some(m);
+        if self.state(thing)?.world_matrix.is_none() {
+            return Ok(());
+        }
+        let local = self
+            .parent_world(thing)
+            .and_then(|p| transform::inverse(&p))
+            .map_or(m, |inv| transform::mul(&inv, &m));
+        let t = self.thing_mut(thing)?;
+        (t.local_matrix, t.world_matrix) = (Some(local), Some(m));
+        self.move_descendants(thing);
         Ok(())
     }
     fn set_anim_pos(&mut self, thing: u32, pos: f32) -> Result<(), String> {
@@ -1786,6 +2027,7 @@ impl LevelScripts {
         let mut report = self.tick(vm, host, budget);
         report.absorb(self.trigger_events(vm, host, budget));
         report.absorb(self.switch_reactions(vm, host, budget));
+        host.world.advance_frame();
         report
     }
 

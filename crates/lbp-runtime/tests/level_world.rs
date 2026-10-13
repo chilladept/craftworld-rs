@@ -188,7 +188,11 @@ fn thing_tree_positions_parts_and_members() {
     assert_eq!(w.parent(2), Ok(Some(0)));
     assert_eq!(w.thing_uid(1), Ok(7));
     assert!(w.thing_uid(2).is_err());
-    assert_eq!(w.world_position(1), Ok([1., 2., 3., 1.]));
+    assert_eq!(
+        w.world_transform(1).unwrap().unwrap()[12..],
+        [1., 2., 3., 1.]
+    );
+    assert_eq!(w.world_transform(2), Ok(None));
     assert_eq!(w.has_part(1, "PScript"), Ok(true));
     assert_eq!(w.has_part(1, "PSwitch"), Ok(false));
     let me = Value::Thing(Some(1));
@@ -814,16 +818,17 @@ fn part6_camera_world_position_and_engine_state() {
     );
     let mut m = [0.; 16];
     m[12..].copy_from_slice(&[4., 5., 6., 1.]);
-    let me = Value::Thing(Some(2));
-    dispatch(
-        &mut w,
-        "Thing",
-        "SetWorldPosition__m",
-        &[me, Value::Mat44(m)],
-    )
-    .unwrap()
-    .unwrap();
-    assert_eq!(w.world_position(2), Ok([4., 5., 6., 1.]));
+    let set = |w: &mut LevelWorld, t| {
+        dispatch(w, "Thing", "SetWorldPosition__m", &[t, Value::Mat44(m)])
+            .unwrap()
+            .unwrap()
+    };
+    set(&mut w, Value::Thing(Some(1)));
+    assert_eq!(w.world_transform(1), Ok(Some(m)));
+    // Nothing happens for a Thing without a PPos, or for a null Thing.
+    set(&mut w, Value::Thing(Some(2)));
+    assert_eq!(w.world_transform(2), Ok(None));
+    set(&mut w, Value::Thing(None));
     // Defaults of the PC run, and what is not there yet.
     let q = |w: &mut LevelWorld, c, n| dispatch(w, c, n, &[]).unwrap();
     assert_eq!(q(&mut w, "HUD", "GetCinemaModeCount__"), Ok(Value::Int(0)));
@@ -1200,4 +1205,533 @@ fn stage3b_a_gate_chain_fires_the_reaction_true_then_false() {
     );
     assert_eq!(t.reactions.calls_b, [(18256, 1)].into());
     assert_eq!(count(&mut host), Value::Bool(false));
+}
+
+// ---- stage 4: world, position and transform state (docs/rscript-plan.md) ----
+
+fn identity() -> [f32; 16] {
+    lbp_runtime::transform::IDENTITY
+}
+
+fn translation(x: f32, y: f32, z: f32) -> [f32; 16] {
+    let mut m = identity();
+    m[12..15].copy_from_slice(&[x, y, z]);
+    m
+}
+
+/// A quarter turn about z (x axis to +y), scaled by `s`, at (x, y, z).
+fn turned(s: f32, x: f32, y: f32, z: f32) -> [f32; 16] {
+    let mut m = translation(x, y, z);
+    (m[0], m[1], m[4], m[5], m[10]) = (0., s, -s, 0., s);
+    m
+}
+
+fn pos(world: [f32; 16]) -> Option<Pos> {
+    Some(Pos {
+        bone_of: None,
+        anim_hash: 0,
+        world,
+    })
+}
+
+fn close(a: &[f32; 16], b: &[f32; 16]) -> bool {
+    a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-3)
+}
+
+/// The part handle `thing.<member>` gives a script.
+fn part(w: &mut LevelWorld, thing: u32, member: &str) -> Value {
+    w.get_member(
+        MemberKind::Native,
+        &Value::Thing(Some(thing)),
+        "Thing",
+        member,
+    )
+    .unwrap()
+}
+
+#[test]
+fn stage4_pworld_members_are_the_stored_values_and_the_frame_counts_ticks() {
+    let mut things = level();
+    things[0].parts = vec!["WORLD"];
+    things[0].data.world = Some(WorldPart {
+        game_mode: 1,
+        frame: 100,
+        sim_frame: 90,
+        water_level: 3.5,
+        is_paused: true,
+        global_settings_thing_uids: vec![7, 0],
+        global_settings_thing_priority: vec![1, 0],
+        ..Default::default()
+    });
+    let mut w = LevelWorld::from_things(&things);
+    assert_eq!(w.pworld.global_settings_thing_uids, [7, 0]);
+    assert_eq!(w.pworld.global_settings_thing_priority, [1, 0]);
+    assert!(w.pworld.is_paused);
+    // `World.World`: the PWorld of the world Thing.
+    let world = part(&mut w, 0, "World");
+    assert_ne!(world, Value::Raw(0));
+    let get = |w: &mut LevelWorld, f| w.get_member(MemberKind::RefPtr, &world, "PWorld", f);
+    assert_eq!(get(&mut w, "GameMode"), Ok(Value::Int(1)));
+    assert_eq!(get(&mut w, "Frame"), Ok(Value::Int(100)));
+    assert_eq!(get(&mut w, "WaterLevel"), Ok(Value::Float(3.5)));
+    // A member the runtime does not keep still says so.
+    assert!(get(&mut w, "SubLevel")
+        .unwrap_err()
+        .contains("not read yet"));
+    // A write is kept and read back; the wrong type is refused.
+    let set = |w: &mut LevelWorld, f, v| w.set_member(MemberKind::RefPtr, &world, "PWorld", f, v);
+    set(&mut w, "GameMode", Value::Int(5)).unwrap();
+    assert_eq!(get(&mut w, "GameMode"), Ok(Value::Int(5)));
+    assert!(set(&mut w, "GameMode", Value::Float(5.)).is_err());
+    assert_eq!(w.pworld.game_mode, 5);
+
+    // One frame per level tick; create and the first tick read the stored frame.
+    let vm = &mut Vm::default();
+    let mut host = Bindings::new(w);
+    let mut level = LevelScripts::new(vm, &host.world);
+    level.create(vm, &mut host, 1000);
+    assert_eq!(host.world.pworld.frame, 100);
+    level.tick_level(vm, &mut host, 1000);
+    level.tick_level(vm, &mut host, 1000);
+    assert_eq!(
+        host.world
+            .get_member(MemberKind::RefPtr, &world, "PWorld", "Frame"),
+        Ok(Value::Int(102))
+    );
+    assert_eq!(host.world.pworld.sim_frame, 92);
+    // A level without a PWorld reads the defaults.
+    let w = LevelWorld::from_things(&[ThingRecord::default()]);
+    assert_eq!(w.pworld, lbp_runtime::WorldState::default());
+}
+
+#[test]
+fn stage4_ppos_and_ptrigger_members_are_the_things_own_state() {
+    let mut w = LevelWorld::from_things(&trigger_level(0));
+    // `thing.Pos` is the PPos (the name keeps its own P), null without the part.
+    let ppos = part(&mut w, 2, "Pos");
+    assert_ne!(ppos, Value::Raw(0));
+    assert_eq!(part(&mut w, 0, "Pos"), Value::Raw(0));
+    let stored = w.things[2].world_matrix.unwrap();
+    assert_eq!(
+        w.get_member(MemberKind::RefPtr, &ppos, "PPos", "WorldPosition"),
+        Ok(Value::Mat44(stored))
+    );
+    // Thing 2's parent (Thing 1) has a flat matrix, so its local matrix is its world one.
+    assert_eq!(w.things[2].local_matrix, Some(stored));
+
+    let trigger = part(&mut w, 2, "Trigger");
+    let get = |w: &mut LevelWorld, f| w.get_member(MemberKind::RefPtr, &trigger, "PTrigger", f);
+    assert_eq!(get(&mut w, "RadiusMultiplier"), Ok(Value::Float(10.)));
+    assert_eq!(get(&mut w, "HysteresisMultiplier"), Ok(Value::Float(1.5)));
+    assert_eq!(get(&mut w, "AllZLayers"), Ok(Value::Bool(false)));
+
+    // A player 60 away in z and outside the layer span is not inside ...
+    let p = w.add_player([100., 0., 60.], (59., 61.));
+    assert!(w.update_triggers().is_empty());
+    // ... until a script sets AllZLayers: the write reaches the trigger test.
+    let set =
+        |w: &mut LevelWorld, f, v| w.set_member(MemberKind::RefPtr, &trigger, "PTrigger", f, v);
+    set(&mut w, "AllZLayers", Value::Bool(true)).unwrap();
+    assert!(w.things[2].trigger.as_ref().unwrap().all_z_layers);
+    assert_eq!(get(&mut w, "AllZLayers"), Ok(Value::Bool(true)));
+    assert_eq!(w.update_triggers().len(), 2);
+    set(&mut w, "HysteresisMultiplier", Value::Float(4.)).unwrap();
+    set(&mut w, "RadiusMultiplier", Value::Float(20.)).unwrap();
+    let g = w.things[2].trigger.as_ref().unwrap();
+    assert_eq!((g.radius, g.hysteresis), (20., 4.));
+    assert!(set(&mut w, "AllZLayers", Value::Int(1)).is_err());
+    assert!(set(&mut w, "RadiusMultiplier", Value::Bool(true)).is_err());
+
+    // Writing PPos.WorldPosition moves the trigger: the player is left behind.
+    let mut moved = stored;
+    moved[12] = 5000.;
+    w.set_member(
+        MemberKind::RefPtr,
+        &ppos,
+        "PPos",
+        "WorldPosition",
+        Value::Mat44(moved),
+    )
+    .unwrap();
+    assert_eq!(w.things[2].world_matrix, Some(moved));
+    // A plain field write: the local matrix is not worked out again.
+    assert_eq!(w.things[2].local_matrix, Some(stored));
+    let events = w.update_triggers();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].kind, lbp_runtime::TriggerEventKind::Leave);
+    assert_eq!(events[0].thing, p);
+    assert!(w
+        .set_member(
+            MemberKind::RefPtr,
+            &ppos,
+            "PPos",
+            "WorldPosition",
+            Value::Vec4([0.; 4])
+        )
+        .is_err());
+    // Other members of the same parts stay in the handle's own map.
+    set(&mut w, "Custom", Value::Int(3)).unwrap();
+    assert_eq!(get(&mut w, "Custom"), Ok(Value::Int(3)));
+}
+
+/// World Thing 0 (no PPos). Thing 1 under it; Thing 2 under 1; Thing 3 under 2; Thing 4
+/// under 2 without a PPos; Thing 5 under 4; Thing 6 under the world, no PPos.
+fn transform_level() -> Vec<ThingRecord> {
+    let mut t: Vec<ThingRecord> = (0..7)
+        .map(|index| ThingRecord {
+            index,
+            ..Default::default()
+        })
+        .collect();
+    t[0].data.world = Some(WorldPart::default());
+    for (thing, parent, world) in [
+        (1, 0, Some(turned(2., 10., 0., 0.))),
+        (2, 1, Some(translation(10., 4., 0.))),
+        (3, 2, Some(turned(1., 11., 4., 5.))),
+        (4, 2, None),
+        (5, 4, Some(translation(1., 1., 1.))),
+        (6, 0, None),
+    ] {
+        t[thing].parent = Some(parent);
+        if let Some(world) = world {
+            t[thing].parts = vec!["POS"];
+            t[thing].data.pos = pos(world);
+        }
+    }
+    t
+}
+
+#[test]
+fn stage4_local_matrices_are_derived_and_the_transform_natives_move_the_tree() {
+    use lbp_runtime::transform::{inverse, mul};
+    use lbp_script_vm::natives::dispatch;
+    let things = transform_level();
+    let mut w = LevelWorld::from_things(&things);
+    let world = |w: &LevelWorld, t: usize| w.things[t].world_matrix.unwrap();
+    let local = |w: &LevelWorld, t: usize| w.things[t].local_matrix.unwrap();
+    let stored: Vec<_> = things
+        .iter()
+        .map(|t| t.data.pos.as_ref().map(|p| p.world))
+        .collect();
+    // local = inverse(parent world) x world; without a parent PPos it is the world matrix.
+    assert_eq!(local(&w, 1), stored[1].unwrap());
+    let inv1 = inverse(&stored[1].unwrap()).unwrap();
+    assert!(close(&local(&w, 2), &mul(&inv1, &stored[2].unwrap())));
+    // Thing 2 sits 4 along the parent's y axis in world terms: (2, 0, 0) in its space.
+    assert!(close(
+        &mul(&stored[1].unwrap(), &local(&w, 2)),
+        &stored[2].unwrap()
+    ));
+    assert!((local(&w, 2)[12] - 2.).abs() < 1e-4 && local(&w, 2)[13].abs() < 1e-4);
+    assert_eq!(local(&w, 5), stored[5].unwrap());
+    assert_eq!(w.things[4].local_matrix, None);
+    // Loading changes no stored world matrix.
+    for (t, m) in stored.iter().enumerate() {
+        assert_eq!(w.things[t].world_matrix, *m);
+    }
+
+    let call = |w: &mut LevelWorld, name: &str, args: &[Value]| {
+        dispatch(w, "Thing", name, args).unwrap().unwrap()
+    };
+    let me = |t: u32| Value::Thing(Some(t));
+    // The getters return matrices.
+    assert_eq!(
+        call(&mut w, "GetWorldPosition__", &[me(2)]),
+        Value::Mat44(stored[2].unwrap())
+    );
+    assert_eq!(
+        call(&mut w, "GetLocalPosition__", &[me(2)]),
+        Value::Mat44(local(&w, 2))
+    );
+    // A null Thing or one without a PPos: the identity, and the setters do nothing.
+    for t in [Value::Thing(None), me(4)] {
+        for name in ["GetWorldPosition__", "GetLocalPosition__"] {
+            let got = call(&mut w, name, std::slice::from_ref(&t));
+            assert_eq!(got, Value::Mat44(identity()));
+        }
+        for name in ["SetLocalPosition__m", "SetWorldPosition__m"] {
+            let m = Value::Mat44(translation(9., 9., 9.));
+            assert_eq!(call(&mut w, name, &[t.clone(), m]), Value::Void);
+        }
+    }
+    assert_eq!(w.things[4].world_matrix, None);
+    assert_eq!(world(&w, 5), stored[5].unwrap());
+    assert!(dispatch(
+        &mut w,
+        "Thing",
+        "SetLocalPosition__m",
+        &[me(2), Value::Int(1)]
+    )
+    .unwrap()
+    .is_err());
+
+    // SetLocalPosition: world = parent world x local, and the descendants follow.
+    let local3 = local(&w, 3);
+    let new_local = translation(0., 1., 0.);
+    call(
+        &mut w,
+        "SetLocalPosition__m",
+        &[me(2), Value::Mat44(new_local)],
+    );
+    assert_eq!(local(&w, 2), new_local);
+    let world2 = mul(&stored[1].unwrap(), &new_local);
+    assert_eq!(world(&w, 2), world2);
+    // (0, 1, 0) in the parent's space is 2 along -x from (10, 0, 0), turned as the parent.
+    assert!(close(&world2, &turned(2., 8., 0., 0.)));
+    assert_eq!(local(&w, 3), local3);
+    assert_eq!(world(&w, 3), mul(&world2, &local3));
+    // Thing 5's parent has no PPos: it stays.
+    assert_eq!(world(&w, 5), stored[5].unwrap());
+    // Thing 1 (the parent) did not move.
+    assert_eq!(world(&w, 1), stored[1].unwrap());
+
+    // SetWorldPosition on the root of the group: its local matrix is the new world one
+    // (the world Thing has no PPos), the locals below are kept and the worlds follow.
+    let new_world = translation(100., 200., 300.);
+    call(
+        &mut w,
+        "SetWorldPosition__m",
+        &[me(1), Value::Mat44(new_world)],
+    );
+    assert_eq!((world(&w, 1), local(&w, 1)), (new_world, new_world));
+    assert_eq!(local(&w, 2), new_local);
+    assert!(close(&world(&w, 2), &translation(100., 201., 300.)));
+    assert!(close(&world(&w, 3), &mul(&world(&w, 2), &local3)));
+    // SetWorldPosition on a child: local = inverse(parent world) x world.
+    call(
+        &mut w,
+        "SetWorldPosition__m",
+        &[me(2), Value::Mat44(translation(90., 200., 300.))],
+    );
+    assert!(close(&local(&w, 2), &translation(-10., 0., 0.)));
+    assert!(close(
+        &world(&w, 3),
+        &mul(&translation(90., 200., 300.), &local3)
+    ));
+    // A parent with a flat matrix counts as no parent.
+    let mut flat = identity();
+    flat[10] = 0.;
+    call(&mut w, "SetWorldPosition__m", &[me(1), Value::Mat44(flat)]);
+    let far = translation(1., 2., 3.);
+    call(&mut w, "SetWorldPosition__m", &[me(2), Value::Mat44(far)]);
+    assert_eq!((world(&w, 2), local(&w, 2)), (far, far));
+}
+
+/// `Probe.OnCreate__`: reads its own world matrix, stores the position's z in `height`,
+/// then writes the matrix back with z replaced by x.
+fn probe() -> Script {
+    let mut s = lamp();
+    s.class_name = "Probe".into();
+    s.super_class = None;
+    s.strings_a = [
+        "Probe",
+        "Thing",
+        "height",
+        "GetWorldPosition__",
+        lbp_runtime::CREATE,
+        "SetWorldPosition__m",
+    ]
+    .map(String::from)
+    .to_vec();
+    s.type_refs = vec![ty(10, 0), ty(10, 1)];
+    s.field_refs = vec![MemberRef {
+        type_ref: 0,
+        name: 2,
+    }];
+    s.function_refs = vec![
+        MemberRef {
+            type_ref: 1,
+            name: 3,
+        },
+        MemberRef {
+            type_ref: 1,
+            name: 5,
+        },
+    ];
+    s.bytecode = vec![
+        i(0xa3, 10, 0, 0, 0),     // ARG @0 = this
+        i(0xa4, 6, 4, 0, 0),      // r4 = CALL Thing.GetWorldPosition__ (m44)
+        i(0x78, 0, 8, 4, 0),      // r8 = GET_M44_cW r4
+        i(0x5c, 0, 12, 8, 0),     // r12 = GET_V4_Z r8
+        i(0x97, 4, 12, 0, 0),     // thing(r0).height = r12
+        i(0x5a, 0, 13, 8, 0),     // r13 = GET_V4_X r8
+        i(0x7b, 0, 13, 8, 0),     // SET_V4_Z r8 = r13
+        i(0x94, 0, 8, 4, 0),      // SET_M44_cW r4 = r8
+        i(0xa3, 10, 0, 0, 0),     // ARG @0 = this
+        i(0xa3, 6, 4, 16, 0),     // ARG @16 = r4
+        i(0xa4, 0, 0xffff, 1, 0), // CALL Thing.SetWorldPosition__m
+        i(0xa5, 0, 0, 0, 0),      // RETURN
+    ];
+    let mut f = function(0, 4, 0, 12);
+    f.stack_size = 64;
+    s.function_defs = vec![f];
+    s
+}
+
+#[test]
+fn stage4_a_script_takes_the_position_out_of_the_world_matrix() {
+    let mut things = transform_level();
+    things[2].data.script = Some(ScriptPart {
+        script: Some(desc(GUID)),
+        fields: vec![field("height", ScriptValue::Float(0.))],
+    });
+    things[2].data.pos = pos(translation(10., 4., 7.));
+    let mut vm = Vm::default();
+    vm.load(probe(), Some(GUID));
+    let mut host = Bindings::new(LevelWorld::from_things(&things));
+    let child_local = host.world.things[3].local_matrix.unwrap();
+    let mut level = LevelScripts::new(&vm, &host.world);
+    let created = level.create(&mut vm, &mut host, 1000);
+    assert_eq!(
+        (created.done, created.faults.len()),
+        (1, 0),
+        "{:?}",
+        created.faults
+    );
+    assert!(host.unbound.is_empty());
+    // `GetWorldPosition().cW.z` is the Thing's z.
+    assert_eq!(
+        host.world
+            .get_member(MemberKind::Thing, &Value::Thing(Some(2)), "Probe", "height"),
+        Ok(Value::Float(7.))
+    );
+    // The matrix written back has z = x, and the child followed.
+    let m = host.world.things[2].world_matrix.unwrap();
+    assert_eq!(m, translation(10., 4., 10.));
+    assert!(close(
+        &host.world.things[3].world_matrix.unwrap(),
+        &lbp_runtime::transform::mul(&m, &child_local)
+    ));
+}
+
+/// Thing 1: a microchip (PSwitch type 36) at (50, 0, 0) whose board is Thing 2; Thing 3 a
+/// component on the board at (7, 0, 0). Thing 4: a sequencer whose board is Thing 5, with
+/// the component Thing 6. Thing 7: a switch whose output (off) is wired to port 0 of the
+/// chip. Thing 8: loose, under the world.
+fn chip_level() -> Vec<ThingRecord> {
+    use lbp_level::parts::Microchip;
+    let mut t: Vec<ThingRecord> = (0..9)
+        .map(|index| ThingRecord {
+            index,
+            ..Default::default()
+        })
+        .collect();
+    t[0].data.world = Some(WorldPart::default());
+    let logic = |switch_type| {
+        Some(Switch {
+            switch_type,
+            ..Default::default()
+        })
+    };
+    for (thing, parent) in [
+        (1, 0),
+        (2, 1),
+        (3, 2),
+        (4, 0),
+        (5, 4),
+        (6, 5),
+        (7, 0),
+        (8, 0),
+    ] {
+        t[thing].parent = Some(parent);
+    }
+    t[1].parts = vec!["POS", "SWITCH", "MICROCHIP"];
+    t[1].data.pos = pos(translation(50., 0., 0.));
+    t[1].data.switch = logic(36);
+    t[1].data.microchip = Some(Microchip {
+        circuit_board: Some(2),
+    });
+    t[2].parts = vec!["SWITCH"];
+    t[2].data.switch = logic(37);
+    t[3].parts = vec!["POS"];
+    t[3].data.pos = pos(translation(7., 0., 0.));
+    t[4].parts = vec!["POS", "SEQUENCER", "MICROCHIP"];
+    t[4].data.pos = pos(translation(-20., 0., 0.));
+    t[4].data.microchip = Some(Microchip {
+        circuit_board: Some(5),
+    });
+    t[5].parts = vec!["SWITCH"];
+    t[5].data.switch = logic(37);
+    t[6].parts = vec!["POS"];
+    t[6].data.pos = pos(translation(3., 0., 0.));
+    t[7].parts = vec!["SWITCH"];
+    t[7].data.switch = Some(Switch {
+        switch_type: 28,
+        outputs: vec![Some(SwitchOutput {
+            signal: SwitchSignal {
+                activation: 0.,
+                ternary: 0,
+                player: -1,
+            },
+            targets: vec![(Some(1), 0)],
+        })],
+        ..Default::default()
+    });
+    t[8].parts = vec!["POS"];
+    t[8].data.pos = pos(translation(1., 2., 3.));
+    t
+}
+
+#[test]
+fn stage4_inactive_microchip_proxy_sensor_position_and_sequencer() {
+    use lbp_script_vm::natives::dispatch;
+    let mut w = LevelWorld::from_things(&chip_level());
+    let call = |w: &mut LevelWorld, class: &str, name: &str, args: &[Value]| {
+        dispatch(w, class, name, args).unwrap()
+    };
+    let me = |t: u32| Value::Thing(Some(t));
+
+    // IsInactive: the deactivated flag. The chip's port 0 is wired and off, so the chip,
+    // its board and the component on it are inactive, before any switch pass ran.
+    let inactive = |w: &mut LevelWorld, t: u32| call(w, "Thing", "IsInactive__", &[me(t)]);
+    for t in [1, 2, 3] {
+        assert_eq!(inactive(&mut w, t), Ok(Value::Bool(true)), "thing {t}");
+    }
+    for t in [0, 6, 7, 8] {
+        assert_eq!(inactive(&mut w, t), Ok(Value::Bool(false)), "thing {t}");
+    }
+    // It follows the flag the switch pass keeps.
+    w.set_deactivated(3, false);
+    assert_eq!(inactive(&mut w, 3), Ok(Value::Bool(false)));
+    assert!(inactive(&mut w, 99).is_err());
+    assert!(call(&mut w, "Thing", "IsInactive__", &[Value::Thing(None)]).is_err());
+
+    // The microchip proxy: the chip for a component on its board, else the Thing itself.
+    let proxy = |w: &mut LevelWorld, t: Value| {
+        call(w, "Thing", "GetMicroChipProxyFromThing__Q5Thing", &[t])
+    };
+    assert_eq!(proxy(&mut w, me(3)), Ok(me(1)));
+    assert_eq!(proxy(&mut w, me(6)), Ok(me(4)));
+    for t in [0, 1, 2, 8] {
+        assert_eq!(proxy(&mut w, me(t)), Ok(me(t)), "thing {t}");
+    }
+    assert_eq!(proxy(&mut w, Value::Thing(None)), Ok(Value::Thing(None)));
+    assert_eq!(w.microchip_of(3), Some(1));
+    assert_eq!(w.microchip_of(8), None);
+
+    // The sensor position: the world matrix of the proxy.
+    let sensor =
+        |w: &mut LevelWorld, t: Value| call(w, "Thing", "GetWorldPositionForSensor__", &[t]);
+    assert_eq!(
+        sensor(&mut w, me(3)),
+        Ok(Value::Mat44(translation(50., 0., 0.)))
+    );
+    assert_eq!(
+        sensor(&mut w, me(8)),
+        Ok(Value::Mat44(translation(1., 2., 3.)))
+    );
+    // The board has no PPos and no chip of its own: the identity, as for a null Thing.
+    assert_eq!(sensor(&mut w, me(2)), Ok(Value::Mat44(identity())));
+    assert_eq!(
+        sensor(&mut w, Value::Thing(None)),
+        Ok(Value::Mat44(identity()))
+    );
+
+    // IsOnSequencer: the parent is a circuit board whose parent has a PSequencer.
+    let on = |w: &mut LevelWorld, t: Value| call(w, "Game", "IsOnSequencer__Q5Thing", &[t]);
+    assert_eq!(on(&mut w, me(6)), Ok(Value::Bool(true)));
+    for t in [3, 5, 4, 8, 0] {
+        assert_eq!(on(&mut w, me(t)), Ok(Value::Bool(false)), "thing {t}");
+    }
+    assert_eq!(on(&mut w, Value::Thing(None)), Ok(Value::Bool(false)));
 }

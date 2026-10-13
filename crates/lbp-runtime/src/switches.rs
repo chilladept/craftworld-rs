@@ -739,8 +739,9 @@ impl LevelWorld {
     }
 
     /// Whether the Thing sits on a circuit board that belongs to a sequencer (FOUND,
-    /// 0xf3d94).
-    fn on_sequencer(&self, thing: u32) -> bool {
+    /// 0xf3d94): its parent has the circuit-board object kind and that board's parent has
+    /// a PSequencer.
+    pub(crate) fn on_sequencer(&self, thing: u32) -> bool {
         let get = |i: u32| self.things.get(i as usize);
         let board = get(thing).and_then(|t| t.parent).and_then(get);
         board.is_some_and(|b| {
