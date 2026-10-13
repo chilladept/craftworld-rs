@@ -22,6 +22,9 @@ use lbp_script_vm::natives::{
 use lbp_script_vm::{ClassId, Host, MemberKind, ObjectId, Step, Task, Value, Vm};
 use std::collections::{BTreeMap, BTreeSet};
 
+mod switches;
+pub use switches::*;
+
 /// One Thing as the runtime sees it.
 #[derive(Debug, Clone, Default)]
 pub struct ThingState {
@@ -51,10 +54,15 @@ pub struct ThingState {
     /// The Thing's input table by port: the switch output wired to each port, `None`
     /// for a port nothing is wired to (see [`LevelWorld::wire_inputs`]).
     pub inputs: Vec<Option<InputWire>>,
+    /// The game's "deactivated" byte (Thing+0x7f): while set, the switch pass forces the
+    /// Thing's outputs off ([`LevelWorld::update_switch`]). FOUND: the game derives it
+    /// from the microchip or circuit board holding the Thing. Nothing sets it here yet
+    /// ([`LevelWorld::set_deactivated`]).
+    pub deactivated: bool,
 }
 
-/// A PSwitch at run time: the stored settings and its outputs. The signals are the ones
-/// the level file stores; nothing evaluates the logic network yet, so they never change.
+/// A PSwitch at run time: the stored settings and its outputs. The switch pass
+/// ([`LevelWorld::update_switch`]) rewrites the outputs' signals each tick.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SwitchState {
     pub switch_type: i32,
@@ -63,12 +71,21 @@ pub struct SwitchState {
     /// In stored order; `None` for an output the level file leaves null.
     pub outputs: Vec<Option<SwitchOutputState>>,
     pub manual_activation: SwitchInput,
+    /// Re-fire flag (PSwitch+0xe3): the next update hands `true` to the targets of every
+    /// output that is on, changed or not, and clears the flag. What sets it in the game
+    /// is not established; nothing sets it here.
+    pub force: bool,
+    /// What the switch remembers between ticks ([`compute_output`]'s state slot).
+    pub memory: SwitchMemory,
 }
 
 /// One output of a PSwitch: its signal and the (Thing, port) inputs it is wired to.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SwitchOutputState {
+    /// The current signal, as the switch-input natives read it.
     pub signal: SwitchInput,
+    /// The signal the level file stores.
+    pub stored: SwitchInput,
     pub targets: Vec<(Option<u32>, i32)>,
 }
 
@@ -230,6 +247,12 @@ pub struct LevelWorld {
     /// Script GUIDs of the loaded classes that are, or derive from, the scoreboard class
     /// (filled by [`LevelWorld::add_class_defaults`]).
     pub score_board_scripts: BTreeSet<u32>,
+    /// The switch Things in pass order, once computed ([`LevelWorld::switch_order`]).
+    pub switch_order: Option<Vec<u32>>,
+    /// A test drive for the switch pass: while `Some(on)`, every output's computed signal
+    /// is replaced by ternary 1 and activation 1.0 (`on`) or ternary 0 and activation 0.0,
+    /// with the stored player. The deactivated forcing still applies. Not a game feature.
+    pub switch_pulse: Option<bool>,
 }
 
 /// VM value for a stored script field; `None` for a field the instance does not store.
@@ -336,6 +359,7 @@ impl LevelWorld {
                             .map(|o| {
                                 o.as_ref().map(|o| SwitchOutputState {
                                     signal: signal(&o.signal),
+                                    stored: signal(&o.signal),
                                     targets: o
                                         .targets
                                         .iter()
@@ -345,6 +369,7 @@ impl LevelWorld {
                             })
                             .collect(),
                         manual_activation: signal(&s.manual_activation),
+                        ..Default::default()
                     }),
                     ..Default::default()
                 })
@@ -413,6 +438,7 @@ impl LevelWorld {
             t.inputs.clear();
         }
         (self.input_collisions, self.input_ports_dropped) = (0, 0);
+        self.switch_order = None;
         for (target, port, wire) in wires {
             let Some(t) = target.and_then(|t| self.things.get_mut(t as usize)) else {
                 continue;
@@ -809,7 +835,8 @@ impl World for LevelWorld {
             .ok()
             .and_then(|i| inside?.get(i).copied()))
     }
-    /// The stored signal of the output wired to the port ([`LevelWorld::wire_inputs`]).
+    /// The current signal of the output wired to the port ([`LevelWorld::wire_inputs`]),
+    /// as the switch pass last wrote it.
     fn switch_input(&mut self, thing: u32, port: i32) -> Result<Option<SwitchInput>, String> {
         Ok(self.input(thing, port)?.map(|(_, o)| o.signal))
     }
@@ -1367,6 +1394,54 @@ pub struct StepReport {
     pub events_without_script: usize,
     /// Trigger events for a Thing already stopped by a fault.
     pub events_to_stopped: usize,
+    /// What the switch pass did ([`LevelScripts::switch_reactions`]).
+    pub reactions: ReactionReport,
+}
+
+/// Counts of one or more switch passes. Unit: a visited output target (one Thing on one
+/// port, once per edge); the maps are by script resource GUID of the target.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ReactionReport {
+    /// Output targets the pass visited ([`output_edge`]).
+    pub targets_visited: usize,
+    /// Visits with `on` true.
+    pub targets_on: usize,
+    /// `SwitchPerformReaction__b` calls made.
+    pub calls_b: BTreeMap<u32, usize>,
+    /// `SwitchPerformReaction__bf` calls made.
+    pub calls_bf: BTreeMap<u32, usize>,
+    /// Visited targets with no script.
+    pub without_script: usize,
+    /// Visited targets whose script is not on the list ([`reaction_for_script`]).
+    pub not_whitelisted: BTreeMap<u32, usize>,
+    /// Listed scripts whose Thing has a PSwitch that takes the object kind
+    /// ([`reaction_shadowed_by_switch`]); no call.
+    pub shadowed_by_switch: BTreeMap<u32, usize>,
+    /// Listed scripts whose class is not loaded or has no code for the function.
+    pub no_function: BTreeMap<u32, usize>,
+    /// Listed scripts already stopped by a fault.
+    pub to_stopped: BTreeMap<u32, usize>,
+}
+
+impl ReactionReport {
+    /// Adds `other`'s counts to this report.
+    pub fn absorb(&mut self, other: ReactionReport) {
+        self.targets_visited += other.targets_visited;
+        self.targets_on += other.targets_on;
+        self.without_script += other.without_script;
+        for (mine, theirs) in [
+            (&mut self.calls_b, other.calls_b),
+            (&mut self.calls_bf, other.calls_bf),
+            (&mut self.not_whitelisted, other.not_whitelisted),
+            (&mut self.shadowed_by_switch, other.shadowed_by_switch),
+            (&mut self.no_function, other.no_function),
+            (&mut self.to_stopped, other.to_stopped),
+        ] {
+            for (guid, n) in theirs {
+                *mine.entry(guid).or_default() += n;
+            }
+        }
+    }
 }
 
 impl StepReport {
@@ -1389,6 +1464,7 @@ impl StepReport {
         }
         self.events_without_script += other.events_without_script;
         self.events_to_stopped += other.events_to_stopped;
+        self.reactions.absorb(other.reactions);
     }
 
     fn add(&mut self, thing: u32, o: Outcome) {
@@ -1574,8 +1650,90 @@ impl LevelScripts {
         report
     }
 
+    /// The per-tick switch pass ([`LevelWorld::switch_order`], [`LevelWorld::update_switch`])
+    /// with the script reaction of each visited target.
+    ///
+    /// FOUND in the 01.33 executable (0x1244a4 -> 0x11ddf0): a switch's targets get the
+    /// signal while that switch is updated, before the next switch in the order, so a
+    /// reaction script sees later switches' outputs as they were last tick. The call goes
+    /// to the script of the target Thing itself (no parent walk; no script, no call), and
+    /// only for the scripts [`reaction_for_script`] lists:
+    /// `SwitchPerformReaction__b(on)` with `on` from [`output_edge`], or for one script
+    /// `SwitchPerformReaction__bf(on, level)`, `level` 1.0 when the output's new ternary
+    /// is not 0, else 0.0 (it is not the activation).
+    /// INFERRED: the argument registers (+4 bool, +8 float), as for the other entries.
+    pub fn switch_reactions(
+        &mut self,
+        vm: &mut Vm,
+        host: &mut Bindings<LevelWorld>,
+        budget: u64,
+    ) -> StepReport {
+        let mut report = StepReport::default();
+        for switch in host.world.switch_order().to_vec() {
+            for v in host.world.update_switch(switch) {
+                let r = &mut report.reactions;
+                r.targets_visited += 1;
+                r.targets_on += usize::from(v.on);
+                let target = host.world.things.get(v.target as usize);
+                let Some(guid) = target.and_then(|t| t.script_guid) else {
+                    r.without_script += 1;
+                    continue;
+                };
+                let Some(kind) = reaction_for_script(guid) else {
+                    *r.not_whitelisted.entry(guid).or_default() += 1;
+                    continue;
+                };
+                if reaction_shadowed_by_switch(target.and_then(|t| t.switch.as_ref())) {
+                    *r.shadowed_by_switch.entry(guid).or_default() += 1;
+                    continue;
+                }
+                let found = self.instances.binary_search_by_key(&v.target, |i| i.thing);
+                let Ok(inst) = found.map(|i| self.instances[i]) else {
+                    *r.no_function.entry(guid).or_default() += 1;
+                    continue;
+                };
+                if self.stopped.contains(&v.target) {
+                    *r.to_stopped.entry(guid).or_default() += 1;
+                    continue;
+                }
+                let level = f32::from(u8::from(v.signal.ternary != 0));
+                let (function, args) = match kind {
+                    Reaction::Bool => (REACTION_B, vec![(4, Value::Bool(v.on))]),
+                    Reaction::BoolFloat => (
+                        REACTION_BF,
+                        vec![(4, Value::Bool(v.on)), (8, Value::Float(level))],
+                    ),
+                };
+                let mut b = budget;
+                let o = self
+                    .runner
+                    .start_with(vm, host, inst, function, &args, &mut b);
+                let r = &mut report.reactions;
+                let count = match (&o, kind) {
+                    (Outcome::NoFunction | Outcome::NoClass, _) => &mut r.no_function,
+                    (_, Reaction::Bool) => &mut r.calls_b,
+                    (_, Reaction::BoolFloat) => &mut r.calls_bf,
+                };
+                *count.entry(guid).or_default() += 1;
+                if matches!(o, Outcome::Fault(_)) {
+                    self.stopped.insert(inst.thing);
+                }
+                report.add(inst.thing, o);
+            }
+        }
+        self.start_threads(vm, host, budget, &mut report);
+        report
+    }
+
     /// One game tick of a level: [`Self::tick`], then [`Self::trigger_events`], so a
-    /// script an event suspends is resumed on the next tick (order INFERRED).
+    /// script an event suspends is resumed on the next tick (order INFERRED), then
+    /// [`Self::switch_reactions`].
+    ///
+    /// FOUND in the 01.33 executable: the world update (0xeacd4) calls the switch pass
+    /// (0xdd228, at 0xeb270) after 0xe0f0c, 0xcfc40 and 0xcfbb4 and before 0xcfed4, and
+    /// not while the game-wide pause test (0x18cf18) holds. Which of those neighbours are
+    /// the trigger pass and the script update is not established, so the place of the
+    /// switch pass after both here is INFERRED.
     pub fn tick_level(
         &mut self,
         vm: &mut Vm,
@@ -1584,6 +1742,7 @@ impl LevelScripts {
     ) -> StepReport {
         let mut report = self.tick(vm, host, budget);
         report.absorb(self.trigger_events(vm, host, budget));
+        report.absorb(self.switch_reactions(vm, host, budget));
         report
     }
 
