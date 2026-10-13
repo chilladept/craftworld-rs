@@ -1000,3 +1000,119 @@ fn script_thread_runs_until_yield_then_resumes_each_tick() {
     let created = again.create(&mut vm, &mut host, 1000);
     assert_eq!((created.faults.len(), created.threads_started), (1, 0));
 }
+
+/// A class whose one function stores the argument register `reg` (machine type `ty`) in
+/// the Thing's `count`.
+fn reactor(name: &str, function: &str, ty: u8, reg: u16) -> Script {
+    let mut s = lamp();
+    s.class_name = name.into();
+    s.super_class = None;
+    s.strings_a[0] = name.into();
+    s.strings_a[4] = function.into();
+    s.bytecode = vec![
+        i(0x97, ty, reg, 0, 0), // thing(r0).count = r<reg>
+        i(0xa5, 0, 0, 0, 0),    // RETURN
+    ];
+    s.function_defs = vec![function_def_with_stack(32)];
+    s
+}
+
+fn function_def_with_stack(stack_size: i32) -> FunctionDef {
+    let mut f = function(0, 4, 0, 2);
+    f.stack_size = stack_size;
+    f
+}
+
+/// Thing 0: a PSwitch with one output (off) wired to Things 1..=6. Scripts: Thing 1 a
+/// listed GUID with `__b`; Thing 2 a GUID that is not listed, with `__b`; Thing 3 the
+/// `__bf` GUID; Thing 4 a listed GUID on a Thing with its own PSwitch; Thing 5 a listed
+/// GUID whose class has no `__b`; Thing 6 no script.
+fn reaction_level() -> Vec<ThingRecord> {
+    let mut t: Vec<ThingRecord> = (0..7)
+        .map(|index| ThingRecord {
+            index,
+            ..Default::default()
+        })
+        .collect();
+    t[0].data.switch = Some(Switch {
+        outputs: vec![Some(SwitchOutput {
+            signal: SwitchSignal {
+                activation: 0.,
+                ternary: 0,
+                player: -1,
+            },
+            targets: (1..7).map(|i| (Some(i), 0)).collect(),
+        })],
+        ..Default::default()
+    });
+    t[4].data.switch = Some(Switch::default());
+    for (thing, guid) in [(1, 18256), (2, 0x2d06), (3, 18420), (4, 18256), (5, 27452)] {
+        t[thing].data.script = Some(ScriptPart {
+            script: Some(desc(guid)),
+            fields: vec![field("count", ScriptValue::Int(-1))],
+        });
+    }
+    t
+}
+
+#[test]
+fn stage3b_switch_reactions_go_to_listed_scripts_only() {
+    use lbp_runtime::{REACTION_B, REACTION_BF};
+    let mut vm = Vm::default();
+    vm.load(reactor("Listed", REACTION_B, 1, 4), Some(18256));
+    vm.load(reactor("Other", REACTION_B, 1, 4), Some(0x2d06));
+    vm.load(reactor("Level", REACTION_BF, 4, 8), Some(18420));
+    vm.load(reactor("Mute", "Tick", 1, 4), Some(27452));
+    let mut host = Bindings::new(LevelWorld::from_things(&reaction_level()));
+    let mut level = LevelScripts::new(&vm, &host.world);
+    let count = |host: &mut Bindings<LevelWorld>, thing: u32| {
+        host.world
+            .get_member(MemberKind::Thing, &Value::Thing(Some(thing)), "X", "count")
+            .unwrap()
+    };
+    let total = |m: &std::collections::BTreeMap<u32, usize>| m.values().sum::<usize>();
+    // The stored signals raise nothing, on the first tick or later.
+    for _ in 0..2 {
+        let t = level.tick_level(&mut vm, &mut host, 1000);
+        assert_eq!(t.reactions, Default::default());
+    }
+    assert_eq!(count(&mut host, 1), Value::Int(-1));
+
+    host.world.switch_pulse = Some(true);
+    let t = level.tick_level(&mut vm, &mut host, 1000);
+    let r = &t.reactions;
+    assert_eq!(
+        (r.targets_visited, r.targets_on, r.without_script),
+        (6, 6, 1)
+    );
+    assert_eq!(r.calls_b, [(18256, 1)].into());
+    assert_eq!(r.calls_bf, [(18420, 1)].into());
+    assert_eq!(r.not_whitelisted, [(0x2d06, 1)].into());
+    assert_eq!(r.shadowed_by_switch, [(18256, 1)].into());
+    assert_eq!(r.no_function, [(27452, 1)].into());
+    assert!(t.faults.is_empty(), "{:?}", t.faults);
+    assert_eq!(count(&mut host, 1), Value::Bool(true));
+    assert_eq!(count(&mut host, 3), Value::Float(1.));
+    // Not listed, or its Thing is a switch: the function exists but is not called.
+    assert_eq!(count(&mut host, 2), Value::Int(-1));
+    assert_eq!(count(&mut host, 4), Value::Int(-1));
+    // Held on: no edge, no call.
+    let t = level.tick_level(&mut vm, &mut host, 1000);
+    assert_eq!(t.reactions, Default::default());
+
+    host.world.switch_pulse = Some(false);
+    let t = level.tick_level(&mut vm, &mut host, 1000);
+    let r = &t.reactions;
+    assert_eq!((r.targets_visited, r.targets_on), (6, 0));
+    assert_eq!((total(&r.calls_b), total(&r.calls_bf)), (1, 1));
+    assert_eq!(count(&mut host, 1), Value::Bool(false));
+    assert_eq!(count(&mut host, 3), Value::Float(0.));
+    assert!(level.stopped.is_empty());
+
+    // A Thing stopped by a fault gets no reaction.
+    level.stopped.insert(1);
+    host.world.switch_pulse = Some(true);
+    let t = level.tick_level(&mut vm, &mut host, 1000);
+    assert_eq!(t.reactions.to_stopped, [(18256, 1)].into());
+    assert!(t.reactions.calls_b.is_empty());
+}

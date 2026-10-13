@@ -4,7 +4,7 @@
 //! level_scripts SNAPSHOT GAME-DIRS LEVEL-PATH NEW-JSON --play=TICKS [--flags=N,..]
 //!     [--puter-in-use=TICK]
 //! level_scripts SNAPSHOT GAME-DIRS --all NEW-JSON [--play=TICKS] [--strict]
-//!     [--visit-triggers]
+//!     [--visit-triggers] [--pulse-switches]
 //!
 //! Loads every magic-confirmed script with its MAP GUID (the U12 loader), reads the level(s)
 //! and reports, per level: scripted Things (PScript with a resource GUID), how many resolve
@@ -22,13 +22,19 @@
 //! natives (they return their type's default and are counted); `--strict` makes them fault
 //! instead. `--visit-triggers` then adds a player who stands on every PTrigger's Thing in
 //! turn (two ticks on it, one far away), so the level's `Enter`, `Inside` and `Leave`
-//! scripts run; the report counts the events raised and run. `triggers` is the PTrigger
+//! scripts run; the report counts the events raised and run. `--pulse-switches` then runs
+//! two more ticks in which every switch output is forced on, then off, through the per-tick
+//! switch pass, so the `SwitchPerformReaction` scripts run with true, then false (a test
+//! drive: the pass itself still returns the stored signals). `switch_reactions` counts the
+//! output targets the pass visited and the reaction calls by script GUID. `triggers` is the PTrigger
 //! census over the levels read, `switches` the PSwitch census with the input tables built
 //! from the outputs' targets. Names and counts only; no bytecode. Output: a NEW JSON file under
 //! ignored `local-analysis/`. Counting unit: Thing with a PScript part (instances) or
 //! distinct script class (function names).
 use lbp_catalog::{attachment::AttachedSource, LoadControl};
-use lbp_runtime::{instances, LevelScripts, LevelWorld, Outcome, Runner, StepReport};
+use lbp_runtime::{
+    instances, LevelScripts, LevelWorld, Outcome, ReactionReport, Runner, StepReport,
+};
 use lbp_script_vm::natives::Bindings;
 use lbp_script_vm::Vm;
 use std::collections::{BTreeMap, BTreeSet};
@@ -320,6 +326,34 @@ struct PlayOptions {
     in_use_from: Option<u64>,
     strict: bool,
     visit: bool,
+    pulse: bool,
+}
+
+/// The switch pass counts. Unit: visited output target; `g<N>` = script resource GUID.
+fn reactions_json(r: &ReactionReport) -> serde_json::Value {
+    let by_guid = |m: &BTreeMap<u32, usize>| {
+        m.iter()
+            .map(|(g, n)| (format!("g{g}"), *n))
+            .collect::<BTreeMap<_, _>>()
+    };
+    let total = |m: &BTreeMap<u32, usize>| m.values().sum::<usize>();
+    serde_json::json!({
+        "targets_visited": r.targets_visited,
+        "targets_visited_on": r.targets_on,
+        "calls_b": total(&r.calls_b),
+        "calls_bf": total(&r.calls_bf),
+        "calls_b_by_guid": by_guid(&r.calls_b),
+        "calls_bf_by_guid": by_guid(&r.calls_bf),
+        "targets_without_script": r.without_script,
+        "targets_not_whitelisted": total(&r.not_whitelisted),
+        "not_whitelisted_by_guid": by_guid(&r.not_whitelisted),
+        "listed_but_switch_thing": total(&r.shadowed_by_switch),
+        "listed_but_switch_thing_by_guid": by_guid(&r.shadowed_by_switch),
+        "listed_without_function": total(&r.no_function),
+        "listed_without_function_by_guid": by_guid(&r.no_function),
+        "listed_but_stopped": total(&r.to_stopped),
+        "listed_but_stopped_by_guid": by_guid(&r.to_stopped),
+    })
 }
 
 /// One level played: the report and what `--all` adds up.
@@ -332,6 +366,7 @@ struct Played {
     events_run: [usize; 3],
     events_without_script: usize,
     events_to_stopped: usize,
+    reactions: ReactionReport,
     fault_kinds: BTreeMap<String, usize>,
     thread_faults: Vec<String>,
     engine_faults: usize,
@@ -412,6 +447,19 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
             visited += 1;
         }
     }
+    // `--pulse-switches`: one tick with every switch output forced on, one with it forced
+    // off, so each wired target sees a rising and a falling edge.
+    let mut pulse = StepReport::default();
+    if opts.pulse {
+        for on in [true, false] {
+            host.world.switch_pulse = Some(on);
+            let t = level.tick_level(vm, &mut host, BUDGET_PER_CALL);
+            ticks_with_faults += usize::from(!t.faults.is_empty());
+            note_faults(&t);
+            pulse.absorb(t);
+        }
+        host.world.switch_pulse = None;
+    }
     let report = |r: &StepReport| {
         serde_json::json!({
             "done": r.done, "yielded": r.yielded, "resumed": r.resumed,
@@ -422,6 +470,7 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
             "trigger_events_run": r.events_run,
             "trigger_events_without_script": r.events_without_script,
             "trigger_events_to_stopped": r.events_to_stopped,
+            "switch_reactions": reactions_json(&r.reactions),
         })
     };
     let mut unbound: Vec<_> = host.unbound.iter().collect();
@@ -435,6 +484,8 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
         "ticks_total": report(&sum),
         "triggers_visited": visited,
         "visit_total": report(&visit),
+        "switches_pulsed": opts.pulse,
+        "pulse_total": report(&pulse),
         "ticks_with_faults": ticks_with_faults,
         "stopped_by_fault": level.stopped.len(),
         "threads_running_at_end": level.threads(),
@@ -464,6 +515,7 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
         }).collect::<Vec<_>>(),
     });
     sum.absorb(visit);
+    sum.absorb(pulse);
     Played {
         json,
         instances: level.instances.len(),
@@ -473,6 +525,7 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
         events_run: sum.events_run,
         events_without_script: sum.events_without_script,
         events_to_stopped: sum.events_to_stopped,
+        reactions: sum.reactions,
         fault_kinds,
         thread_faults: sum
             .thread_faults
@@ -499,6 +552,7 @@ struct PlayTotals {
     events_run: [usize; 3],
     events_without_script: usize,
     events_to_stopped: usize,
+    reactions: ReactionReport,
     calls: BTreeMap<String, (u64, usize)>,
     unbound: BTreeMap<String, (u64, usize)>,
     faults: BTreeMap<String, (u64, usize)>,
@@ -518,6 +572,7 @@ impl PlayTotals {
         }
         self.events_without_script += p.events_without_script;
         self.events_to_stopped += p.events_to_stopped;
+        self.reactions.absorb(p.reactions.clone());
         self.levels_with_faults +=
             usize::from(!p.fault_kinds.is_empty() || !p.thread_faults.is_empty());
         let bump = |m: &mut BTreeMap<String, (u64, usize)>, k: &str, n: u64| {
@@ -568,6 +623,8 @@ impl PlayTotals {
             "trigger_events_run": self.events_run,
             "trigger_events_without_script": self.events_without_script,
             "trigger_events_to_stopped": self.events_to_stopped,
+            "switches_pulsed": opts.pulse,
+            "switch_reactions": reactions_json(&self.reactions),
             "native_calls": calls,
             "native_calls_bound": calls - unbound,
             "native_calls_unbound": unbound,
@@ -625,13 +682,15 @@ fn run() -> Result<(), String> {
                 && !a.starts_with("--puter-in-use=")
                 && *a != "--strict"
                 && *a != "--visit-triggers"
+                && *a != "--pulse-switches"
         })
         .collect();
     if args.len() != 5 {
         return Err(
             "usage: level_scripts SNAPSHOT GAME-DIRS LEVEL-PATH|--all NEW-JSON \
                     [--entry=NAME]... [--ticks=N] [--play=TICKS] [--flags=N,..] \
-                    [--puter-in-use=TICK] [--strict] [--visit-triggers]"
+                    [--puter-in-use=TICK] [--strict] [--visit-triggers] \
+                    [--pulse-switches]"
                 .into(),
         );
     }
@@ -649,6 +708,7 @@ fn run() -> Result<(), String> {
         in_use_from,
         strict: all.iter().any(|a| a == "--strict"),
         visit: all.iter().any(|a| a == "--visit-triggers"),
+        pulse: all.iter().any(|a| a == "--pulse-switches"),
     });
     if play.is_some() && !entries.is_empty() {
         return Err("use --play or --entry, not both".into());
