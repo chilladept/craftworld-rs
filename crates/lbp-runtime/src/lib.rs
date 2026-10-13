@@ -327,21 +327,27 @@ fn signal(s: &SwitchSignal) -> SwitchInput {
     }
 }
 
-/// `"PSpriteLight"` -> `"SPRITE_LIGHT"`, the reader's part name.
-fn part_name(native: &str) -> String {
-    let base = native.strip_prefix('P').unwrap_or(native);
-    let mut out = String::new();
-    for (i, c) in base.chars().enumerate() {
-        if c.is_ascii_uppercase() && i > 0 {
-            out.push('_');
-        }
-        out.push(c.to_ascii_uppercase());
-    }
-    // The one part whose reader name does not split at the capital.
-    if out == "YELLOW_HEAD" {
-        out = "YELLOWHEAD".into();
-    }
-    out
+/// The reader's part name for a script-side one: `"PSpriteLight"` (the `HasP...` natives)
+/// or `"SpriteLight"` (a native member, `thing.SpriteLight`) -> `"SPRITE_LIGHT"`. `None`
+/// when the name is no part.
+///
+/// The names are compared without case and underscores, so the reader names that do not
+/// split at a capital match too (`MetaData`, `MicroChip`, `WormHole`, `YellowHead`). The
+/// script side spells `TagSynchroniser` with an s. The whole name is tried first and the
+/// leading `P` dropped only when that fails: `Pos`, `PhysicsTweak`, `PoppetPowerup`,
+/// `PocketItem`, `PowerUp` and `Paint` keep their own `P`.
+fn part_name(native: &str) -> Option<&'static str> {
+    let find = |name: &str| {
+        let want = name
+            .to_ascii_uppercase()
+            .replace('_', "")
+            .replace("SYNCHRONISER", "SYNCHRONIZER");
+        lbp_level::thing::PARTS
+            .iter()
+            .map(|p| p.0)
+            .find(|p| p.replace('_', "") == want)
+    };
+    find(native).or_else(|| find(native.strip_prefix('P')?))
 }
 
 impl LevelWorld {
@@ -797,8 +803,7 @@ impl LevelWorld {
     /// `thing.SpriteLight` and the like: the part as a raw pointer, null when the Thing
     /// lacks it. Only names of the reader's part list are parts.
     fn native_member(&mut self, base: &Value, class: &str, field: &str) -> Result<Value, String> {
-        let want = part_name(field);
-        let Some(&(part, ..)) = lbp_level::thing::PARTS.iter().find(|p| p.0 == want) else {
+        let Some(part) = part_name(field) else {
             return Err(format!(
                 "world does not provide native member {class}.{field}"
             ));
@@ -860,7 +865,7 @@ impl World for LevelWorld {
     }
     fn has_part(&mut self, thing: u32, part: &str) -> Result<bool, String> {
         let want = part_name(part);
-        Ok(self.state(thing)?.parts.iter().any(|p| *p == want))
+        Ok(self.state(thing)?.parts.iter().any(|p| Some(*p) == want))
     }
     fn trigger_count(&mut self, thing: u32) -> Result<i32, String> {
         let t = self.state(thing)?;
@@ -1862,10 +1867,43 @@ impl LevelScripts {
 mod tests {
     #[test]
     fn part_names() {
-        assert_eq!(super::part_name("PSpriteLight"), "SPRITE_LIGHT");
-        assert_eq!(super::part_name("PJoint"), "JOINT");
-        assert_eq!(super::part_name("PSwitch"), "SWITCH");
-        assert_eq!(super::part_name("PYellowHead"), "YELLOWHEAD");
-        assert_eq!(super::part_name("YellowHead"), "YELLOWHEAD");
+        use super::part_name;
+        assert_eq!(part_name("PSpriteLight"), Some("SPRITE_LIGHT"));
+        assert_eq!(part_name("PJoint"), Some("JOINT"));
+        assert_eq!(part_name("PSwitch"), Some("SWITCH"));
+        assert_eq!(part_name("PYellowHead"), Some("YELLOWHEAD"));
+        assert_eq!(part_name("YellowHead"), Some("YELLOWHEAD"));
+        // A name that starts with its own `P` keeps it.
+        assert_eq!(part_name("Pos"), Some("POS"));
+        assert_eq!(part_name("PPos"), Some("POS"));
+        assert_eq!(part_name("World"), Some("WORLD"));
+        assert_eq!(part_name("MetaData"), Some("METADATA"));
+        assert_eq!(part_name("MicroChip"), Some("MICROCHIP"));
+        assert_eq!(part_name("WormHole"), Some("WORMHOLE"));
+        assert_eq!(part_name("TagSynchroniser"), Some("TAG_SYNCHRONIZER"));
+        assert_eq!(part_name("PTagSynchroniser"), Some("TAG_SYNCHRONIZER"));
+        assert_eq!(part_name("Os"), None);
+        assert_eq!(part_name("P"), None);
+        assert_eq!(part_name(""), None);
+        assert_eq!(part_name("Thing"), None);
+    }
+
+    /// Every part the reader knows is found by its script-side spelling (`SPRITE_LIGHT`
+    /// as `SpriteLight`), bare as a native member and with the `P` of the part class.
+    #[test]
+    fn every_part_name_maps_back() {
+        for &(part, ..) in lbp_level::thing::PARTS {
+            let camel: String = part
+                .split('_')
+                .map(|w| w[..1].to_owned() + &w[1..].to_ascii_lowercase())
+                .collect();
+            assert_eq!(super::part_name(&camel), Some(part), "{camel}");
+            assert_eq!(
+                super::part_name(&format!("P{camel}")),
+                Some(part),
+                "P{camel}"
+            );
+            assert_eq!(super::part_name(part), Some(part));
+        }
     }
 }
