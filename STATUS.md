@@ -5220,3 +5220,48 @@ Next: the shared session and the change-over in the viewer. `docs/level-scripts.
   on main). Not run: anything against the game.
 **+0 newly viewable / +0 newly Complete (runtime and viewer feature).**
 Next: Pod picture PR 2, the shell layer under the script's camera. `docs/level-scripts.md` part 25.
+
+## D275 the Pod shell layer under the script's camera (2026-10-13)
+- "Pod picture" PR 2, viewer only. Full detail: `docs/level-scripts.md` part 26. No native, no
+  runtime change, nothing new read in the EBOOT.
+- Viewer (before: its own Pod camera with the shell layer, and a line "not applied"): `PodRig::layer_at(eye, turn, s, rot)` (`layer` calls it), `shell_root_at`, `tent_root_at`
+  (`pod_menu.rs`). `LevelMode::pod_scripted`: under `--level-scripts` with `--pod-camera N` the
+  planets level hangs under the world Thing's root with the Thing map on, with or without the shell
+  layer; `place_menu_planets`, `planets_root(t)` and the default per-bone placement of
+  `--pod-game-camera` are left out there. `pod_shell` builds the rig with the game's field of view
+  and the camera presets. `level_play::script_camera` applies the script's camera and places the
+  shell and tent roots from its eye and turn and the Puter state's `t`; `pod_dolly` only moves `t`.
+  `tick` hands the Puter state to `LevelWorld::pod_computer_in_use` when it changes (`puter_change`).
+  The "not applied" line is gone.
+- MEASURED, no focus taken (`--qa-capture`, 1280 x 720, `--pod-camera 1 --pod-shell 000027b9
+  --window-16-9 --preview-lighting --qa-hide-ui`; `local-analysis/rscript/stage6/shots/d275-*`):
+  without `--level-scripts`, before (main at D274) and after, with and without `--pod-game-camera`:
+  equal byte for byte (the pair with the flag also equals D272's capture). With `--level-scripts`,
+  with and without `--pod-game-camera`: equal byte for byte. Printed: shell scale 6.0818; with
+  `--pod-open`, in use true and the camera at rest at (0, -300, 900), direction (0, 0.316, -0.949).
+- Eye check (stills at ticks 30, 200, 440, 600, and 600 open; 30 and 600 with the default lighting):
+  at rest the tent and the DualShock are where the capture without scripts has them, and the tent's
+  window shows the Earth near (0.46, 0.48) of the frame, the Moon near 0.56 of the width, the lamp,
+  the table and the wall: the framing of the `--pod-game-camera` capture without scripts, clear
+  where that one is washed out in orange. Tick 30: ceiling only in the window. Tick 200: ceiling and
+  wall, the top of the Earth at the window's lower left. The shell does not cut into the planets
+  or the room and the fog does not swallow the view in any of them. Open: no tent, the DualShock
+  low in the middle, the room from below, the Earth just above the DualShock; this is view 0 under
+  the in-use camera, not the game's menu view.
+- Seen and not fixed: under `--preview-lighting` the tent is shaded differently while the camera is
+  pitched (tick 30 greener than 600): the preview light is not turned with the shell root. The
+  default lighting turns it, and the two stills are shaded alike.
+- INFERRED: the shell's size (far side at half the resting camera's distance to the Earth, P2k's
+  rule). PLACEHOLDER: the Puter key as "pod computer in use"; `t` is the viewer's own dolly.
+- Not done: the shell level's camera in the game, the tent's fade and `PodTransition`, the menu
+  views, the mesh swap (PR 3), the shared viewer session (PR 4). Not seen: motion, the dolly under
+  scripts. Not compared: anything against the game.
+- Tests: `d275_layer_at_keeps_the_shell_projection_under_any_planets_camera`,
+  `the_puter_state_is_handed_to_the_scripts_when_it_changes`. `cargo fmt --all --check` pass; `cargo
+  clippy -q --locked <CI crates> --all-targets -- -D warnings` pass; `cargo test -q --locked <CI
+  crates>` pass; `cargo check -q --locked -p lbp-viewer -p lbp-bevy-viewer --all-targets` pass;
+  `cargo clippy -q -p lbp-bevy-viewer --all-targets -- -D warnings` pass; `python -m unittest
+  discover -s tests` 36 pass; `cargo test -q -p lbp-bevy-viewer` 56 pass, 1 fails
+  (`sackboy_play::tests::input_script_steps`, fails on main).
+**+0 newly viewable / +0 newly Complete (viewer feature).**
+Next: Pod picture PR 3, the pod's mesh swap. `docs/level-scripts.md` part 26.

@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D274
+# Current state (overwrite each milestone) — after D275
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -11,7 +11,39 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D274 Earth and Moon by their own scripts, the fog bias, the video update (2026-10-13)
+## Latest: D275 the Pod shell layer under the script's camera (2026-10-13)
+- "Pod picture" PR 2, viewer only (`docs/level-scripts.md` part 26). With `--pod-camera N --pod-shell
+  HEX` under `--level-scripts` the viewer kept its own Pod camera and said the script's was "not
+  applied". Now the planets level is drawn with the script's camera there too, and the shell and the
+  tent are placed from it.
+- Viewer: `PodRig::layer_at` / `shell_root_at` / `tent_root_at` (`pod_menu.rs`; `layer` calls
+  `layer_at`, same arithmetic). `LevelMode::pod_scripted` (`--level-scripts` with `--pod-camera N`):
+  the planets level under the world Thing's root, Thing map on, with or without the shell; the menu
+  constants of `--pod-game-camera` (`place_menu_planets`, `planets_root(t)`, default per-bone
+  placement) are left out there. The rig has the game's field of view and the camera presets.
+  `level_play::script_camera` places the shell and tent roots from the script camera's eye and turn
+  and the Puter state's `t`; `pod_dolly` only moves `t`; `tick` hands the Puter state to
+  `pod_computer_in_use` when it changes.
+- MEASURED (no focus taken; `local-analysis/rscript/stage6/shots/d275-*`): without `--level-scripts`
+  the shell captures before and after are equal byte for byte, with and without `--pod-game-camera`.
+  With `--level-scripts` the flag `--pod-game-camera` changes nothing (equal byte for byte).
+- Eye check: at rest (tick 600) the tent's window shows the Earth near (0.46, 0.48) of the frame and
+  the Moon near 0.56 of the width, the framing of the `--pod-game-camera` capture without scripts,
+  and clear (fog bias). Ticks 30 and 200: the intro's ceiling and wall in the window. The shell does
+  not cut into the planets and the fog does not swallow the view. `--pod-open`: the camera rests at
+  the in-use preset, the tent is gone; view 0, not the game's menu view. Nothing compared against
+  the game.
+- Seen, not fixed: under `--preview-lighting` the tent's shade changes while the camera is pitched
+  (the preview light is not turned with the shell root; the default lighting turns it).
+- INFERRED: the shell's size rule. PLACEHOLDER: the Puter key as "in use"; `t` is the viewer's dolly.
+- Left out: the shell level's camera in the game, the tent's fade and `PodTransition`, the menu
+  views, the mesh swap (PR 3), the shared viewer session (PR 4).
+- Tests: two new viewer tests (`d275_layer_at_...`, `the_puter_state_is_handed_...`). fmt, CI clippy,
+  CI tests, Python tests, `cargo check` of both viewers and the viewer's clippy pass; the viewer's
+  tests pass but `sackboy_play::tests::input_script_steps` (fails on main).
+- Next: Pod picture PR 3, the pod's mesh swap.
+
+## Before: D274 Earth and Moon by their own scripts, the fog bias, the video update (2026-10-13)
 - "Pod picture" PR 1, after RScript plan stage 6. The planets level's Earth and Moon stayed at their
   stored places (their per-frame function was not called), `--preview-lighting` washed the played
   planets level out, and the place of the pod computer's video call was not known. Natives 255 -> 257.
@@ -62,7 +94,6 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
   `lbp-runtime` 61 unit and 52 world tests (three new `d274_*`); two viewer tests. fmt, CI clippy, CI
   tests, Python tests pass; clippy and `cargo check` on the viewers pass; the viewer's tests pass but
   `sackboy_play::tests::input_script_steps` (fails on main).
-- Next: Pod picture PR 2, the shell layer under the script's camera.
 
 ## Before: D273 the pod computer is entered (2026-10-13)
 - RScript plan stage 6 (the Pod), PR 4. The Pod's world script lets the leader engage the pod computer
@@ -485,22 +516,6 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 ## Before: D249 short legs after a landing (2026-10-12)
 - Two-bone leg solver (`BlendPose::move_chain_end`); `LANDING_SQUASH` and a twelve-tick `LANDING_DIP`,
   within 0.4 of the game on touchdown +3..+8 (one standing jump). `docs/d241-landing-dip.md` (D249).
-
-## Before: D248 crouch spring found, not the landing squash (2026-10-12)
-- `stretch_crouch` spring (EBOOT 0x2011d4) is in `sackboy_anim.rs` (`CrouchSpring`, tested) but unfed; as a
-  landing kick it does not fit. Idle, steady walk and stop match the game within 0.4 deg lean / 0.4 height.
-  No extra in-air body layer in the EBOOT. Vertex dumps log `sackboy pose N`; the stand phase at a script
-  tick varies between viewer runs (+-1 height).
-
-## Before: D246 idle stretch fixed at the cause (2026-10-12)
-- The stretch was scale inheritance, not the clip weight: the stand clip breathes by scaling the spine bones
-  and our skinning passed that scale to every bone below (legs, head, arms). `lbp-preview` skinning has
-  `ScaleRule::Biped` (a `Bip...` bone keeps its parent's scale out of its own shape; its offset still moves),
-  used by the Sackboy play figure only; `STAND_BASE_WEIGHT` is 1 again. Clean D234 captures: standing height
-  per tick 201.1..206.4, ours 200.8..206.1 (RMS 0.34, was 2.5); 6-tick jump heights within 2.3 for ticks
-  1..20, feet within 1. The D243 idle capture used for D242-D244 is not the neutral stand (do not tune
-  against it). Open: landing dip after touchdown (game 195, ours 200), stop/turn
-  poses, lean. `docs/d242-idle-stretch.md` (D246).
 
 ## Measured counts (distinct catalog GUID; Complete = manual, all textures + geometry)
 - Mesh census 01.33 (4,261 GUIDs, after D188-D190): 4,259 viewable, 4,239 all-diffuse by

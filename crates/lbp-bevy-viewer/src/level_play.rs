@@ -67,8 +67,13 @@ struct Play {
     script_frames: u64,
     script_state: ScriptCameraState,
     script_last: Option<(u64, CameraPose)>,
-    /// A script wrote the camera and the viewer kept its own: said once.
-    script_not_applied_printed: bool,
+    /// The Pod's shell layer under the script's camera (part 26): how often the shell
+    /// and tent roots were placed from it, and whether the first placing was printed.
+    shell_placed: u64,
+    shell_placed_printed: bool,
+    /// The Puter state of the viewer's Pod rig that was last handed to the script world
+    /// as "pod computer in use" (part 26).
+    puter_open: Option<bool>,
     /// The matrix the root of a level that hangs under its world Thing was last placed
     /// by ([`follow_world`]), and how often it was placed.
     world_root: Option<[f32; 16]>,
@@ -201,7 +206,9 @@ pub fn install(app: &mut App) -> Result<(), String> {
         script_frames: 0,
         script_state: ScriptCameraState::Out,
         script_last: None,
-        script_not_applied_printed: false,
+        shell_placed: 0,
+        shell_placed_printed: false,
+        puter_open: None,
         world_root: None,
         world_root_placed: 0,
     })
@@ -236,8 +243,18 @@ fn tick(
     mut play: NonSendMut<Play>,
     mut capture: ResMut<crate::CaptureHold>,
     sackboy: Query<(&Position, &lbp_sim::ZSlab), With<SackboyBody>>,
+    puter: Option<Res<crate::pod_menu::PuterState>>,
 ) {
     let p = &mut *play;
+    // Part 26: the Puter key of the viewer's Pod rig is the player at the pod computer.
+    // Handed over when it changes, also while the ticks are held.
+    if let Some(open) = puter_change(&mut p.puter_open, puter.map(|s| s.open)) {
+        p.host.world.pod_computer_in_use = open;
+        println!(
+            "Pod computer at tick {}: in use {open}, from the viewer's Puter state (stand-in for the pod's own script)",
+            p.scripts.ticks
+        );
+    }
     // `--level-scripts-hold-at N`: a capture waits for tick N, and no tick follows it.
     let held = p.hold_at.is_some_and(|n| p.scripts.ticks >= n);
     if capture.0 != (p.hold_at.is_some() && !held) {
@@ -270,6 +287,15 @@ fn tick(
     note(p, &r);
     p.totals.absorb(r);
     print_messages(p);
+}
+
+/// The Puter state to hand to the script world as "pod computer in use": `now` when it
+/// is not the value handed last (`last`, which is updated). A closed Puter that was
+/// never open hands nothing: the world starts not in use. Nothing without a Pod rig.
+fn puter_change(last: &mut Option<bool>, now: Option<bool>) -> Option<bool> {
+    let now = now?;
+    let was = last.replace(now);
+    (was != Some(now) && (now || was.is_some())).then_some(now)
 }
 
 /// Frames a loaded scene is drawn before its light may be built again. MEASURED on the
@@ -513,9 +539,11 @@ fn camera_view(display: Mat4, global: Mat4, clip_from_view: Mat4) -> Option<Came
 /// scripts (`CameraState::view`): `Cam.GetCameraMatrix__` and
 /// `HUD.GetScreenSpacePosition__r` answer from it on the next ticks.
 ///
-/// With the Pod's shell layer (`--pod-shell` with `--pod-camera`) a camera a script
-/// wrote itself is not applied: that layer is placed for the viewer's own Pod camera
-/// (`pod_menu::PodRig`), and the two would not fit. Said once.
+/// With the Pod's shell layer (`--pod-shell` with `--pod-camera`; part 26) the shell and
+/// tent roots are then placed from the camera a script wrote: its eye and turn, and the
+/// opening progress `t` of the viewer's own Puter state (`PodRig::shell_root_at`). A
+/// shell point keeps its place in the frame; the planets behind it are the script's
+/// view. While no script camera is shown the roots stay where they were.
 ///
 /// INFERRED: world +Y is up under the override. Not applied: the near and far planes of
 /// either script camera (the viewer keeps its own, in display units). One line is
@@ -523,9 +551,9 @@ fn camera_view(display: Mat4, global: Mat4, clip_from_view: Mat4) -> Option<Came
 /// without a screenshot.
 fn script_camera(
     mut play: NonSendMut<Play>,
-    v: Res<crate::Viewer>,
     display: Option<Res<crate::sackboy_play::LevelDisplay>>,
     mut cameras: Query<(&mut Transform, &mut Projection), With<Camera3d>>,
+    (rig, puter, mut shell_roots): ShellLayer,
 ) {
     let (Some(display), Ok((mut transform, mut projection))) = (display, cameras.single_mut())
     else {
@@ -540,17 +568,7 @@ fn script_camera(
     let follow_eye = to_level.transform_point3(transform.translation);
     let follow_dir = transform.forward().as_vec3();
     let world = &mut p.host.world;
-    let shell_layer = v.level.shell.is_some() && v.level.pod.is_some();
-    let shown = world
-        .display_camera(follow_eye.to_array(), follow_dir.to_array())
-        .filter(|c| !(shell_layer && c.source == CameraSource::Script));
-    if shell_layer && !p.script_not_applied_printed && world.script_camera().is_some() {
-        p.script_not_applied_printed = true;
-        println!(
-            "Script camera at tick {}: a script writes the camera; not applied, the Pod shell layer is placed for the viewer's own Pod camera",
-            p.scripts.ticks
-        );
-    }
+    let shown = world.display_camera(follow_eye.to_array(), follow_dir.to_array());
     let own_fov = match projection.as_ref() {
         Projection::Perspective(lens) => Some(lens.fov),
         _ => None,
@@ -558,6 +576,30 @@ fn script_camera(
     let wanted_fov = match &shown {
         Some(camera) => {
             *transform = place_camera(display.0, camera);
+            // Part 26: the Pod's shell layer follows the camera a script wrote.
+            if let (CameraSource::Script, Some(rig), Some(puter)) = (camera.source, &rig, &puter) {
+                let (eye, turn, t) = (transform.translation, transform.rotation, puter.t);
+                for (mut root, tent) in &mut shell_roots {
+                    let placed = if tent {
+                        rig.0.tent_root_at(eye, turn, t)
+                    } else {
+                        rig.0.shell_root_at(eye, turn, t)
+                    };
+                    if *root != placed {
+                        *root = placed;
+                        p.shell_placed += 1;
+                    }
+                }
+                if !p.shell_placed_printed && p.shell_placed > 0 {
+                    p.shell_placed_printed = true;
+                    println!(
+                        "Pod shell layer at tick {}: placed from the script's camera (display eye {:.3?}, opening {t:.2}, shell scale {:.4})",
+                        p.scripts.ticks,
+                        eye.to_array(),
+                        rig.0.scale
+                    );
+                }
+            }
             match camera.source {
                 CameraSource::Script => p.script_frames += 1,
                 CameraSource::Override => p.override_frames += 1,
@@ -644,6 +686,19 @@ fn script_camera(
         }
     }
 }
+
+/// The Pod rig, its Puter state and the shell and tent roots, for [`script_camera`]
+/// (part 26). The rig is there only with the shell layer.
+type ShellLayer<'w, 's> = (
+    Option<Res<'w, crate::PodRigRes>>,
+    Option<Res<'w, crate::pod_menu::PuterState>>,
+    Query<
+        'w,
+        's,
+        (&'static mut Transform, Has<crate::PodTentRoot>),
+        (With<crate::PodShellRoot>, Without<Camera3d>),
+    >,
+);
 
 /// Thing numbers named per kind in the line [`follow_things`] prints.
 const MAX_THINGS_NAMED: usize = 8;
@@ -1025,5 +1080,25 @@ mod tests {
         assert_eq!(fog_bias(&world), 0.);
         set(&mut world, f32::NAN);
         assert_eq!(fog_bias(&world), 0.);
+    }
+
+    /// Part 26. The Puter state of the Pod rig goes to the script world when it changes;
+    /// a Puter that starts closed hands nothing, one that starts open hands "in use".
+    #[test]
+    fn the_puter_state_is_handed_to_the_scripts_when_it_changes() {
+        let mut last = None;
+        assert_eq!(puter_change(&mut last, None), None);
+        assert_eq!(last, None);
+        assert_eq!(puter_change(&mut last, Some(false)), None);
+        assert_eq!(puter_change(&mut last, Some(false)), None);
+        assert_eq!(puter_change(&mut last, Some(true)), Some(true));
+        assert_eq!(puter_change(&mut last, Some(true)), None);
+        assert_eq!(puter_change(&mut last, Some(false)), Some(false));
+        assert_eq!(puter_change(&mut last, Some(false)), None);
+        // No rig for a while (another level): the state handed last is kept.
+        assert_eq!(puter_change(&mut last, None), None);
+        assert_eq!(puter_change(&mut last, Some(false)), None);
+        let mut open_at_start = None;
+        assert_eq!(puter_change(&mut open_at_start, Some(true)), Some(true));
     }
 }

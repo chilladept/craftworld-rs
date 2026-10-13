@@ -141,9 +141,17 @@ struct LevelMode {
 impl LevelMode {
     /// P2o: per-bone placement is on with `--per-bone-placement`, and by default under
     /// `--pod-game-camera`, where D185/D203 confirmed it for the Pod Earth
-    /// (`--no-per-bone-placement` turns it off there).
+    /// (`--no-per-bone-placement` turns it off there). D275: not by default where the
+    /// planets' own scripts place them (`pod_scripted`): the per-bone rule puts the
+    /// stored places of the bone Things into the vertices.
     fn per_bone_on(&self) -> bool {
-        self.per_bone || (self.game_camera && !self.no_per_bone)
+        self.per_bone || (self.game_camera && !self.no_per_bone && !self.pod_scripted())
+    }
+    /// D275: the Pod's planets level (`--pod-camera N`) under `--level-scripts`: its
+    /// world script writes the camera and moves the world Thing, and the planets' own
+    /// scripts place them. `--pod-game-camera`'s constants are not used then.
+    fn pod_scripted(&self) -> bool {
+        self.scripts && self.pod.is_some()
     }
 }
 impl LevelMode {
@@ -1117,7 +1125,10 @@ fn load(
         v.context = Some(done.context);
         if let Some(level) = done.level {
             let mut level = level?;
-            let game = v.level.game_camera && level.shell.is_some();
+            // D275: under `--level-scripts` the planets level is placed by its scripts,
+            // with or without the shell layer; the menu constants are left out.
+            let scripted = v.level.pod_scripted();
+            let game = v.level.game_camera && level.shell.is_some() && !scripted;
             let menu_line = match (game, v.level.pod) {
                 (true, Some(globe)) => Some(place_menu_planets(&mut level.scene, globe)?),
                 _ => None,
@@ -1178,15 +1189,14 @@ fn load(
                     globe,
                     shell,
                     v.level.shell_camera,
-                    game,
+                    (game, scripted),
                 )?),
                 _ => None,
             };
             let planets_first = v.scene.len();
-            // D272: the Pod's planets level under `--level-scripts`, without the shell
-            // layer and the game camera, hangs under a root that follows its world Thing.
-            let under_world_thing =
-                v.level.scripts && v.level.pod.is_some() && rig.is_none() && !game;
+            // D272: the Pod's planets level under `--level-scripts` hangs under a root
+            // that follows its world Thing (D275: with the shell layer too).
+            let under_world_thing = scripted;
             // D268: the Pod places its planets by its own rules, so it is not followed.
             // D274: but under that root the planets' own scripts place them, and the
             // Thing map moves each one's model inside the root.
@@ -1226,9 +1236,9 @@ fn load(
                     commands.entity(root).add_child(*entity);
                 }
             } else if under_world_thing {
-                // D272: the Pod's planets level under `--level-scripts`, without the
-                // shell layer: the same root, placed each tick from the world Thing the
-                // level's script moves (`level_play::follow_world`).
+                // D272: the Pod's planets level under `--level-scripts`: the same root,
+                // placed each tick from the world Thing the level's script moves
+                // (`level_play::follow_world`).
                 let root = commands
                     .spawn((
                         Transform::IDENTITY,
@@ -1315,7 +1325,7 @@ fn load(
                 // Home (R) stays the closed view.
                 v.level.home = Some(pod_orbit(&rig, 0.));
                 *orbit = pod_orbit(&rig, t0);
-                commands.insert_resource(PodRigRes(rig));
+                commands.insert_resource(PodRigRes(rig, scripted));
                 commands.insert_resource(pod_menu::PuterState {
                     t: t0,
                     open: t0 >= 1.,
@@ -2391,7 +2401,7 @@ fn pod_shell(
     globe: usize,
     shell: &LevelScene,
     camera: Option<[f32; 6]>,
-    game: bool,
+    (game, scripted): (bool, bool),
 ) -> Result<(pod_menu::PodRig, LevelPlan, String), String> {
     const DUALSHOCK: u32 = 0x0000_42af;
     let display = |m: &Mat4, [a, b]: [[f32; 3]; 2]| {
@@ -2417,7 +2427,9 @@ fn pod_shell(
         (g_centre, g_size.max_element() / 2.),
         (p_centre, p_size.x),
         near,
-        if game {
+        // D275: the game's field of view also whenever the level's scripts run: the
+        // script's camera has it (1.0 rad), and the shell eyes are fitted for the rig's.
+        if game || scripted {
             pod_menu::GAME_FOV
         } else {
             PerspectiveProjection::default().fov
@@ -2454,6 +2466,21 @@ fn pod_shell(
             "; globe expected (16:9, vfov {:.1} deg) {}",
             rig.fov.to_degrees(),
             shown.join(", ")
+        );
+    }
+    if scripted {
+        // D275: the level's script writes the planets camera; the rig's own planets eyes
+        // (the same presets) only give the first frames, Home and the size of the
+        // shell: its far side at half the resting camera's distance to the Earth, at the
+        // place the Earth's script gives it under the closed World transform (INFERRED,
+        // as P2k's rule for the constant placement).
+        let m = plan.normalize;
+        let presets = pod_menu::CAMERA_PRESETS.map(|pair| pair.map(|p| m.transform_point3(p)));
+        let earth = planets_root(m, 0.).transform_point(m.transform_point3(pod_menu::EARTH_MENU.0));
+        rig = rig.with_planets_camera(presets, earth);
+        game_line = format!(
+            "; under --level-scripts the planets camera is the script's (vfov {:.1} deg), the shell and the tent are placed from it",
+            rig.fov.to_degrees()
         );
     }
     if let Some(c) = camera {
@@ -2733,8 +2760,10 @@ fn clear_pod_shell(mut commands: Commands, v: Res<Viewer>, roots: Query<Entity, 
         }
     }
 }
+/// The Pod rig, and (D275) whether the planets level's scripts run: the camera and the
+/// shell and tent roots are then placed by `level_play::script_camera`.
 #[derive(Resource)]
-struct PodRigRes(pod_menu::PodRig);
+struct PodRigRes(pod_menu::PodRig, bool);
 /// Shell, tent and (P2k) planets roots.
 type PodRoots = Or<(With<PodShellRoot>, With<PodPlanetsRoot>)>;
 /// P2b/P2k: the shell and tent roots, the planets root and the camera projection, for
@@ -2827,10 +2856,13 @@ fn pod_dolly(
     let (Some(rig), Some(mut state)) = (rig, state) else {
         return;
     };
+    // D275: under `--level-scripts` the script's camera gives the field of view, the
+    // view and the place of the roots (`level_play::script_camera`); only `t` moves here.
+    let scripted = rig.1;
     // P2k: the camera's field of view follows the rig (the game's under --pod-game-camera).
     for mut projection in &mut layers.2 {
         if let Projection::Perspective(p) = &mut *projection {
-            if p.fov != rig.0.fov {
+            if p.fov != rig.0.fov && !scripted {
                 p.fov = rig.0.fov;
                 println!("Pod camera: vertical FOV {:.1} deg", p.fov.to_degrees());
             }
@@ -2858,6 +2890,9 @@ fn pod_dolly(
     } else {
         (state.t - step).max(0.)
     };
+    if scripted {
+        return;
+    }
     *orbit = pod_orbit(&rig.0, state.t);
     for (mut root, PodPlanetsRoot(normalize)) in &mut layers.1 {
         *root = planets_root(*normalize, state.t);

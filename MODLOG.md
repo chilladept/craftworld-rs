@@ -1,5 +1,14 @@
 # Development log
 
+## 2026-10-13 - D275 the Pod shell layer under the script's camera
+
+Pod picture PR 2, viewer only. `PodRig::layer_at` places the shell and the tent from any planets camera;
+under `--level-scripts` with `--pod-shell` the planets level is drawn with the script's camera under the
+world Thing's root (Thing map on), the Puter key sets `pod_computer_in_use`, and `--pod-game-camera`'s
+menu constants are left out. Stills (ticks 30, 200, 440, 600, open): the planets view is in the tent's
+window, nothing cut. Without `--level-scripts` captures are equal byte for byte. `docs/level-scripts.md`
+part 26.
+
 ## 2026-10-13 - D274 Earth and Moon by their own scripts, the fog bias, the video update
 
 Pod picture PR 1. FOUND (EBOOT 01.33): the engine calls each planet's `Update__rb(point, snap)` before

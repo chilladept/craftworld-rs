@@ -307,6 +307,19 @@ UI (`UpdateUI__`) and photo natives are not planned.
   the tick, the rounding of `ModAngleToWithinPI`. Left out: the planets' entries and
   their turning, depth of field, the shell layer, the mesh swap. Follows: PR 2, the
   shell layer under the script's camera.
+- After stage 6, "Pod picture" PR 2 (D275, part 26): the Pod shell layer under the
+  script's camera, viewer only. `PodRig::layer_at` takes the planets pose
+  (`shell_root_at`, `tent_root_at`); under `--level-scripts` with the shell layer the
+  planets level hangs under the world Thing's root with the Thing map on,
+  `script_camera` applies the script's camera and places the shell and the tent from
+  it and the viewer's own opening progress, the rig has the game's field of view, and
+  the Puter key sets `pod_computer_in_use` (the camera goes to the in-use preset).
+  `--pod-game-camera`'s menu constants are not used under scripts. Stills at ticks 30,
+  200, 440, 600 and open: the planets view is in the tent's window, the shell does not
+  cut into it; at rest the framing is that of the `--pod-game-camera` capture without
+  scripts. Without `--level-scripts` the captures are equal byte for byte. Not
+  compared against the game. Left: the shell's own camera in the game, the mesh swap
+  (PR 3), the shared session (PR 4).
 
 ## Rules
 
