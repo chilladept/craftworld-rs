@@ -259,6 +259,31 @@ UI (`UpdateUI__`) and photo natives are not planned.
   the pod shell layer under the script's camera (with `--pod-shell` the viewer keeps
   its own Pod camera), Earth and Moon by their own scripts, the pod's mesh swap in the
   scene (counted), depth of field and fog. Follows: PR 4 the pod computer is entered.
+- Stage 6, PR 4 (D273, part 24): the pod computer is entered. Read first, in the
+  executable: the six natives of the path and who sets "in use". FOUND:
+  `GetIsInPadZone` is "our Pod, the primary player, in the list of a trigger whose
+  script passes a class test, world z >= -300"; `IsJustClickedByID` takes an action
+  number (8: context mask 0x1001, bit 0x80 of the pad word, newly down), the string is
+  only the prompt's key; `GetPlayerColour` unpacks a stored 32-bit colour of the
+  player; `CurrentLevelIsOurPod` is a byte set when a level is entered from one slot;
+  `PressedStartButton` uses up bit 0x80000 of the first pad that has it;
+  `RequestHostUsePod` only stores and sends the request, and the receiver of the host's
+  message sets "in use" with a start-up or shut-down sound. Runtime: those rules
+  (`pod.rs`, `PadState`, `PlayerRecord::colour`), the request answered at the start of
+  the next tick, and one session for several levels (`LevelWorld::hand_session_to`,
+  `tick_session`: flags, "our Pod", "in use", media requests). Natives 249 -> 255.
+  `level_scripts --with-level` plays the two Pod levels together: flags 3 on round 452,
+  Sackboy in the pad zone from 460, press on 470, request on 470, in use on 471, the
+  change-over 0.05 a tick to 1.0 on 490 where the pod's mesh becomes GUID 145753, the
+  planets camera at rest on its in-use preset (0, -300, 900) on 496. Over 378 levels:
+  Things stopped by a fault 3 / 3 / 3; unbound natives called 41 -> 40 / 73 -> 71 /
+  73 -> 71; unbound calls 61,480 -> 61,419 / 862,986 -> 862,919 / 868,663 -> 868,592.
+  INFERRED: the trigger class is `Trigger_Pod`; one local player is primary, host and
+  owner; the answer comes on the next tick; the pad bit numbering of Start.
+  PLACEHOLDER: the stored colour starts opaque white (the game's value was not found).
+  The tool starts a level as our Pod when it has a pod Thing (a stand-in; the game
+  tests the slot). Left out: the viewer (one level there still), the pod computer's own
+  scripts and menus, the other 98 actions. Stage 6 is done as planned.
 
 ## Rules
 

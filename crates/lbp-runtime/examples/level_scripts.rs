@@ -2,7 +2,8 @@
 //!
 //! level_scripts SNAPSHOT GAME-DIRS LEVEL-PATH NEW-JSON [--entry=NAME]... [--ticks=N]
 //! level_scripts SNAPSHOT GAME-DIRS LEVEL-PATH NEW-JSON --play=TICKS [--flags=MASK,..]
-//!     [--puter-in-use=TICK]
+//!     [--puter-in-use=TICK] [--our-pod] [--enter-pad-zone=TICK] [--press=TICK:MASK,..]
+//!     [--player-colour=AARRGGBB] [--with-level=LEVEL-PATH]
 //! level_scripts SNAPSHOT GAME-DIRS --all NEW-JSON [--play=TICKS] [--strict]
 //!     [--visit-triggers] [--pulse-switches]
 //!
@@ -53,13 +54,25 @@
 //! `Thing.FindThing` and `Thing.GetPodThing` calls and how many found a Thing, the levels
 //! with a pod Thing, and the mesh changes and fade values the Pod's script set; one
 //! level's `pod` also names its named Things.
+//! Part 24, the pod computer: a level is started as our Pod with `--our-pod`, and
+//! without it when the level has a pod Thing (the tool's stand-in for "entered from the
+//! Pod's slot": the game looks at the slot, not at the level). `--enter-pad-zone=TICK`
+//! adds the player's Sackboy on the pod computer's trigger from that tick on (the first
+//! tick is 1). `--press=TICK:MASK,..` gives player 0 a pad whose button word is MASK on
+//! that tick and 0 on the others (0x80 is the engage action, 0x80000 Start).
+//! `--player-colour` sets the players' stored colour. `--with-level=PATH` plays a second
+//! level in the same session (the Pod and its planets level): both tick each round, the
+//! first given first, and share the progression flags, "our Pod", "pod computer in use"
+//! and the media requests; the report is `runs.session`, with the path of events tick by
+//! tick. `play_all.pod` adds the pad-zone, action and player-colour calls.
 //! Names and counts only; no bytecode. Output: a NEW JSON file under
 //! ignored `local-analysis/`. Counting unit: Thing with a PScript part (instances) or
 //! distinct script class (function names).
 use lbp_catalog::{attachment::AttachedSource, LoadControl};
 use lbp_runtime::{
-    instances, BubbleStyle, GlobalSettingsReport, LevelScripts, LevelWorld, MessageKind, Outcome,
-    ReactionReport, Runner, StepReport, GLOBAL_SETTINGS, GLOBAL_SETTING_NAMES,
+    instances, tick_session, BubbleStyle, GlobalSettingsReport, LevelScripts, LevelWorld,
+    MessageKind, Outcome, ReactionReport, Runner, SessionLevel, StepReport, GLOBAL_SETTINGS,
+    GLOBAL_SETTING_NAMES, POD_TRIGGER_CLASS,
 };
 use lbp_script_vm::natives::Bindings;
 use lbp_script_vm::Vm;
@@ -581,6 +594,63 @@ struct PlayOptions {
     strict: bool,
     visit: bool,
     pulse: bool,
+    /// `--our-pod`: the level is started as the player's own Pod whatever is in it.
+    our_pod: bool,
+    /// `--enter-pad-zone`: the tick from which the Sackboy stands on the pod computer's
+    /// trigger.
+    pad_zone_from: Option<u64>,
+    /// `--press`: (tick, button word of player 0's pad on that tick).
+    presses: Vec<(u64, u32)>,
+    /// `--player-colour`: the players' stored colour, 0xAARRGGBB.
+    colour: Option<u32>,
+}
+
+/// The start state of a level world for a play run. A level is started as our Pod when
+/// the caller says so, or when it has a pod Thing: the tool's stand-in for the game's
+/// rule, which is about the slot the level was entered from and not about its content.
+fn start_world(world: &mut LevelWorld, opts: &PlayOptions) {
+    world.progression_flags = opts.flags;
+    world.pod_computer_in_use = opts.in_use_from == Some(0);
+    world.our_pod = opts.our_pod || world.pod_thing(true).is_some();
+    if let Some(colour) = opts.colour {
+        for r in &mut world.player_records {
+            r.colour = colour;
+        }
+    }
+}
+
+/// The input of the tick about to run (`tick` counts from 1): the Sackboy is put on the
+/// pod computer's trigger on the tick `--enter-pad-zone` names, in a level that has such
+/// a trigger, and player 0's pad gets the button word `--press` gives for the tick.
+fn feed_input(world: &mut LevelWorld, tick: u64, opts: &PlayOptions, avatar: &mut Option<u32>) {
+    if opts.pad_zone_from == Some(tick) && avatar.is_none() {
+        let spot = world.things.iter().find_map(|t| {
+            let (g, m) = (t.trigger.as_ref()?, t.world_matrix?);
+            let pod = t.script_classes.iter().any(|c| c == POD_TRIGGER_CLASS);
+            pod.then_some([m[12], m[13], m[14] + g.z_offset])
+        });
+        if let Some(s) = spot {
+            *avatar = Some(world.add_player(s, (s[2] - 1., s[2] + 1.)));
+        }
+    }
+    if !opts.presses.is_empty() {
+        let down = opts.presses.iter().filter(|(t, _)| *t == tick);
+        world.set_pad_buttons(0, down.fold(0, |word, (_, mask)| word | mask));
+    }
+}
+
+/// `--press=TICK:MASK,..`: a mask is decimal, or hexadecimal after `0x`.
+fn parse_presses(text: &str) -> Result<Vec<(u64, u32)>, String> {
+    text.split(',')
+        .map(|item| {
+            let (tick, mask) = item
+                .trim()
+                .split_once(':')
+                .ok_or_else(|| format!("{item:?}: expected TICK:MASK"))?;
+            let tick = tick.parse::<u64>().map_err(|e| format!("{item:?}: {e}"))?;
+            Ok((tick, lbp_runtime::parse_progression_flags(mask)?))
+        })
+        .collect()
 }
 
 /// The switch pass counts. Unit: visited output target; `g<N>` = script resource GUID.
@@ -1140,6 +1210,18 @@ struct PodSums {
     mesh_changes: u64,
     fade_calls: u64,
     host_use_pod_requests: usize,
+    /// Part 24: levels started as our Pod, the calls of the pod computer's natives.
+    levels_our_pod: usize,
+    host_use_pod_refused: u64,
+    in_use_changes: usize,
+    pad_zone_calls: u64,
+    pad_zone_hits: u64,
+    action_click_calls: u64,
+    action_clicks: u64,
+    actions_not_read: u64,
+    action_prompts: u64,
+    player_colour_calls: u64,
+    transition_texture_calls: u64,
 }
 
 impl PodSums {
@@ -1167,6 +1249,17 @@ impl PodSums {
             mesh_changes: p.mesh_changes,
             fade_calls: p.fade_calls,
             host_use_pod_requests: p.host_use_pod_requests.len(),
+            levels_our_pod: usize::from(world.our_pod),
+            host_use_pod_refused: p.host_use_pod_refused,
+            in_use_changes: p.in_use_changes.len(),
+            pad_zone_calls: p.pad_zone_calls,
+            pad_zone_hits: p.pad_zone_hits,
+            action_click_calls: p.action_click_calls,
+            action_clicks: p.action_clicks,
+            actions_not_read: p.actions_not_read.values().sum(),
+            action_prompts: p.action_prompts.values().sum(),
+            player_colour_calls: p.player_colour_calls,
+            transition_texture_calls: p.transition_texture_calls,
         }
     }
 
@@ -1185,6 +1278,17 @@ impl PodSums {
         self.mesh_changes += o.mesh_changes;
         self.fade_calls += o.fade_calls;
         self.host_use_pod_requests += o.host_use_pod_requests;
+        self.levels_our_pod += o.levels_our_pod;
+        self.host_use_pod_refused += o.host_use_pod_refused;
+        self.in_use_changes += o.in_use_changes;
+        self.pad_zone_calls += o.pad_zone_calls;
+        self.pad_zone_hits += o.pad_zone_hits;
+        self.action_click_calls += o.action_click_calls;
+        self.action_clicks += o.action_clicks;
+        self.actions_not_read += o.actions_not_read;
+        self.action_prompts += o.action_prompts;
+        self.player_colour_calls += o.player_colour_calls;
+        self.transition_texture_calls += o.transition_texture_calls;
     }
 
     fn json(&self) -> serde_json::Value {
@@ -1204,6 +1308,17 @@ impl PodSums {
             "render_mesh_mesh_changes": self.mesh_changes,
             "set_fade_pod_decorations_calls": self.fade_calls,
             "host_use_pod_requests": self.host_use_pod_requests,
+            "levels_started_as_our_pod": self.levels_our_pod,
+            "host_use_pod_requests_refused": self.host_use_pod_refused,
+            "pod_computer_in_use_changes": self.in_use_changes,
+            "get_is_in_pad_zone_calls": self.pad_zone_calls,
+            "get_is_in_pad_zone_true": self.pad_zone_hits,
+            "is_just_clicked_by_id_calls": self.action_click_calls,
+            "is_just_clicked_by_id_true": self.action_clicks,
+            "is_just_clicked_by_id_actions_not_read": self.actions_not_read,
+            "is_just_clicked_by_id_prompts": self.action_prompts,
+            "get_player_colour_calls_on_a_yellowhead": self.player_colour_calls,
+            "set_pod_transition_texture_calls": self.transition_texture_calls,
         })
     }
 }
@@ -1429,8 +1544,8 @@ const VISIT_AWAY: f32 = 1.0e7;
 /// Runs the `LevelScripts` schedule on one level whose objects are bound to `vm`.
 fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played {
     world.add_class_defaults(vm);
-    world.progression_flags = opts.flags;
-    world.pod_computer_in_use = opts.in_use_from == Some(0);
+    start_world(&mut world, opts);
+    let mut avatar = None;
     world.messages.log_limit = lbp_runtime::MAX_REQUESTS;
     let mut log = TickLog {
         flags: opts.flags,
@@ -1496,6 +1611,7 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
             camera_before_in_use = Some(camera_json(&host.world.camera));
             host.world.pod_computer_in_use = true;
         }
+        feed_input(&mut host.world, tick + 1, opts, &mut avatar);
         let t = level.tick_level(vm, &mut host, BUDGET_PER_CALL);
         if CAMERA_SAMPLE_TICKS.contains(&level.ticks) || tick + 1 == opts.ticks {
             script_cameras.push(script_camera_json(level.ticks, &host.world));
@@ -1529,7 +1645,10 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
                 Some([m[12], m[13], m[14] + g.z_offset])
             })
             .collect();
-        let player = host.world.add_player([0.; 3], (0., 0.));
+        let player = match avatar {
+            Some(p) => p,
+            None => host.world.add_player([0.; 3], (0., 0.)),
+        };
         for s in spots {
             for dx in [0., 0., VISIT_AWAY] {
                 host.world
@@ -1719,6 +1838,16 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
         "host_use_pod_requests": host.world.pod.host_use_pod_requests.iter().map(|r| {
             serde_json::json!({"in_use": r.in_use, "frame": r.frame})
         }).collect::<Vec<_>>(),
+        "our_pod": host.world.our_pod,
+        "pod_computer_in_use": host.world.pod_computer_in_use,
+        "in_use_changes": host.world.pod.in_use_changes.iter().map(|c| {
+            serde_json::json!({"in_use": c.in_use, "frame": c.frame})
+        }).collect::<Vec<_>>(),
+        "transition_texture": host.world.pod.transition_texture,
+        "actions_not_read": host.world.pod.actions_not_read,
+        "action_prompts": host.world.pod.action_prompts,
+        "sounds_played": host.world.sounds_played,
+        "avatar": avatar,
         "named_things": host.world.things.iter().enumerate().filter_map(|(i, t)| {
             let name = String::from_utf8_lossy(t.script_name.as_ref()?).into_owned();
             // The members scripts read or wrote on the Thing's parts.
@@ -1809,6 +1938,242 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
         sensors_unlike_ternary,
         first_tick,
     }
+}
+
+/// One level of a `--with-level` session while it is played.
+struct SessionSide<'a> {
+    label: &'a str,
+    vm: &'a mut Vm,
+    host: Bindings<LevelWorld>,
+    scripts: LevelScripts,
+    avatar: Option<u32>,
+    engine_faults: usize,
+    faults: usize,
+    first_faults: Vec<String>,
+    /// What the path was last told: requests made, the change-over value, the pod
+    /// Thing's mesh, the sounds asked for, the camera's eye and whether it moved.
+    requests: usize,
+    fade: Option<f32>,
+    mesh: Option<u32>,
+    sounds: BTreeMap<String, u64>,
+    eye: Option<[f32; 3]>,
+    camera_moving: bool,
+    in_zone: bool,
+}
+
+impl<'a> SessionSide<'a> {
+    fn new(label: &'a str, vm: &'a mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Self {
+        world.add_class_defaults(vm);
+        start_world(&mut world, opts);
+        let mut host = Bindings::new(world);
+        host.default_unbound = !opts.strict;
+        let engine_faults = lbp_runtime::add_engine_objects(vm, &mut host, BUDGET_PER_CALL).len();
+        let scripts = LevelScripts::new(vm, &host.world);
+        let mesh = host.world.pod_thing(true);
+        let mesh = mesh.and_then(|t| host.world.things[t as usize].mesh_guid);
+        SessionSide {
+            label,
+            vm,
+            host,
+            scripts,
+            avatar: None,
+            engine_faults,
+            faults: 0,
+            first_faults: Vec::new(),
+            requests: 0,
+            fade: None,
+            mesh,
+            sounds: BTreeMap::new(),
+            eye: None,
+            camera_moving: false,
+            in_zone: false,
+        }
+    }
+
+    fn note_faults(&mut self, r: &StepReport) {
+        self.faults += r.faults.len();
+        for (thing, f) in &r.faults {
+            if self.first_faults.len() < MAX_FAULTS {
+                self.first_faults.push(format!("thing {thing}: {f}"));
+            }
+        }
+    }
+
+    /// What changed in this level on the tick that just ended, for the path.
+    fn events(&mut self, tick: u64, path: &mut Vec<serde_json::Value>) {
+        let level = self.label;
+        let mut say = |event: &str, value: serde_json::Value| {
+            path.push(serde_json::json!({
+                "tick": tick, "level": level, "event": event, "value": value,
+            }));
+        };
+        let w = &self.host.world;
+        let in_zone = self.avatar.is_some_and(|a| w.in_pad_zone(a));
+        if in_zone != self.in_zone {
+            self.in_zone = in_zone;
+            say("player_in_pad_zone", serde_json::json!(in_zone));
+        }
+        for r in w.pod.host_use_pod_requests.iter().skip(self.requests) {
+            say("request_host_use_pod", serde_json::json!(r.in_use));
+        }
+        self.requests = w.pod.host_use_pod_requests.len();
+        if w.pod.fade != self.fade {
+            self.fade = w.pod.fade;
+            // The change-over value the Pod's script hands to the fade each tick; its
+            // rest value on the first tick is not an event.
+            if self.fade != Some(0.) || tick > 1 {
+                say("pod_transition", serde_json::json!(self.fade));
+            }
+        }
+        let mesh = w.pod_thing(true);
+        let mesh = mesh.and_then(|t| w.things[t as usize].mesh_guid);
+        if mesh != self.mesh {
+            self.mesh = mesh;
+            say("pod_mesh_guid", serde_json::json!(mesh));
+        }
+        for (name, n) in &w.sounds_played {
+            if self.sounds.get(name) != Some(n) {
+                say("sound_requested", serde_json::json!(name));
+            }
+        }
+        self.sounds.clone_from(&w.sounds_played);
+        let eye = w.script_camera().map(|c| c.pose.eye);
+        let moving = eye != self.eye;
+        if moving != self.camera_moving && tick > 1 {
+            let event = if moving {
+                "camera_moves_from"
+            } else {
+                "camera_rests_at"
+            };
+            say(event, serde_json::json!(self.eye));
+        }
+        (self.eye, self.camera_moving) = (eye, moving);
+    }
+
+    fn json(&self) -> serde_json::Value {
+        let w = &self.host.world;
+        let mut unbound: Vec<_> = self.host.unbound.iter().collect();
+        unbound.sort_by(|a, b| b.1.cmp(a.1));
+        let pod_thing = w.pod_thing(true);
+        let mut pod = PodSums::of(w).json();
+        pod["at_end"] = serde_json::json!({
+            "our_pod": w.our_pod,
+            "pod_computer_in_use": w.pod_computer_in_use,
+            "pod_thing": pod_thing,
+            "pod_thing_mesh": pod_thing.and_then(|t| w.things[t as usize].mesh_guid),
+            "pod_thing_shape_colour": pod_thing.and_then(|t| w.things[t as usize].shape_colour),
+            "fade": w.pod.fade,
+            "transition_texture": w.pod.transition_texture,
+            "action_prompts": w.pod.action_prompts,
+            "actions_not_read": w.pod.actions_not_read,
+            "avatar": self.avatar,
+        });
+        serde_json::json!({
+            "level": self.label,
+            "instances": self.scripts.instances.len(),
+            "ticks": self.scripts.ticks,
+            "stopped_by_fault": self.scripts.stopped.len(),
+            "faults": self.faults,
+            "first_faults": self.first_faults,
+            "engine_object_faults": self.engine_faults,
+            "threads_running_at_end": self.scripts.threads(),
+            "unbound_natives": unbound
+                .iter()
+                .map(|(k, n)| serde_json::json!({"native": k, "calls": n}))
+                .collect::<Vec<_>>(),
+            "unbound_native_calls": self.host.unbound.values().sum::<u64>(),
+            "pod": pod,
+            "sounds_requested": w.sounds_played,
+            "progression_flags_at_end": w.progression_flags,
+            "video_requests": w.media.video_requests(),
+            "voice_over_requests": w.media.voice_over_requests(),
+            "script_camera_at_end": script_camera_json(self.scripts.ticks, w),
+            "things_inside_triggers_at_end": w.things.iter()
+                .filter_map(|t| t.trigger.as_ref())
+                .map(|g| g.inside.len())
+                .sum::<usize>(),
+        })
+    }
+}
+
+/// `--with-level`: two levels in one session (part 24). Both are created, then each
+/// round feeds the input and ticks the first level, then the second
+/// (`lbp_runtime::tick_session`). The report is the path: every tick on which the
+/// progression flags, the pad zone, a request to use the pod computer, "in use", the
+/// Pod's change-over value, the pod Thing's mesh, a requested sound or the rest of a
+/// script camera changed.
+fn play_session(
+    first: (&str, &mut Vm, LevelWorld),
+    second: (&str, &mut Vm, LevelWorld),
+    opts: &PlayOptions,
+) -> serde_json::Value {
+    let mut a = SessionSide::new(first.0, first.1, first.2, opts);
+    let mut b = SessionSide::new(second.0, second.1, second.2, opts);
+    // One game object: when either level is started as our Pod, the session is.
+    let our_pod = a.host.world.our_pod || b.host.world.our_pod;
+    a.host.world.our_pod = our_pod;
+    a.host.world.hand_session_to(&mut b.host.world);
+    let mut path = Vec::new();
+    let (mut flags, mut in_use) = (opts.flags, a.host.world.pod_computer_in_use);
+    let mut session_events = |tick: u64, world: &LevelWorld, path: &mut Vec<serde_json::Value>| {
+        if world.progression_flags != flags {
+            flags = world.progression_flags;
+            path.push(serde_json::json!({
+                "tick": tick, "event": "progression_flags", "value": flags,
+            }));
+        }
+        if world.pod_computer_in_use != in_use {
+            in_use = world.pod_computer_in_use;
+            path.push(serde_json::json!({
+                "tick": tick, "event": "pod_computer_in_use", "value": in_use,
+            }));
+        }
+    };
+    let created = a.scripts.create(a.vm, &mut a.host, BUDGET_PER_CALL);
+    a.note_faults(&created);
+    a.host.world.hand_session_to(&mut b.host.world);
+    let created = b.scripts.create(b.vm, &mut b.host, BUDGET_PER_CALL);
+    b.note_faults(&created);
+    b.host.world.hand_session_to(&mut a.host.world);
+    session_events(0, &a.host.world, &mut path);
+    for tick in 1..=opts.ticks {
+        for side in [&mut a, &mut b] {
+            feed_input(&mut side.host.world, tick, opts, &mut side.avatar);
+        }
+        let reports = {
+            let mut levels = [
+                SessionLevel {
+                    scripts: &mut a.scripts,
+                    vm: &mut *a.vm,
+                    host: &mut a.host,
+                },
+                SessionLevel {
+                    scripts: &mut b.scripts,
+                    vm: &mut *b.vm,
+                    host: &mut b.host,
+                },
+            ];
+            tick_session(&mut levels, BUDGET_PER_CALL)
+        };
+        a.note_faults(&reports[0]);
+        b.note_faults(&reports[1]);
+        session_events(tick, &a.host.world, &mut path);
+        a.events(tick, &mut path);
+        b.events(tick, &mut path);
+    }
+    serde_json::json!({
+        "unit": "tick: the count of rounds run when the event was seen (the first is 1, 0 is the create step); one round ticks the first level, then the second; an event is a value that differs from the round before",
+        "ticks": opts.ticks,
+        "tick_hz": lbp_runtime::TICK_HZ,
+        "flags_at_start": opts.flags,
+        "enter_pad_zone_tick": opts.pad_zone_from,
+        "presses": opts.presses.iter().map(|(tick, mask)| {
+            serde_json::json!({"tick": tick, "buttons": mask})
+        }).collect::<Vec<_>>(),
+        "player_colour": a.host.world.player_records.first().map(|r| r.colour),
+        "path": path,
+        "levels": [a.json(), b.json()],
+    })
 }
 
 /// `--all --play` sums. Pairs are (count, levels).
@@ -2063,6 +2428,22 @@ fn run() -> Result<(), String> {
         .map(str::parse)
         .transpose()
         .map_err(|e| format!("--puter-in-use: {e}"))?;
+    // Part 24: how the level is started and what the player does.
+    let option = |name: &str| all.iter().find_map(|a| a.strip_prefix(name));
+    let pad_zone_from: Option<u64> = option("--enter-pad-zone=")
+        .map(str::parse)
+        .transpose()
+        .map_err(|e| format!("--enter-pad-zone: {e}"))?;
+    let presses = option("--press=")
+        .map(parse_presses)
+        .transpose()
+        .map_err(|e| format!("--press: {e}"))?
+        .unwrap_or_default();
+    let colour = option("--player-colour=")
+        .map(|c| u32::from_str_radix(c.trim_start_matches("0x"), 16))
+        .transpose()
+        .map_err(|e| format!("--player-colour: {e}"))?;
+    let with_level = option("--with-level=");
     let args: Vec<&String> = all
         .iter()
         .filter(|a| {
@@ -2071,6 +2452,11 @@ fn run() -> Result<(), String> {
                 && !a.starts_with("--play=")
                 && !a.starts_with("--flags=")
                 && !a.starts_with("--puter-in-use=")
+                && !a.starts_with("--enter-pad-zone=")
+                && !a.starts_with("--press=")
+                && !a.starts_with("--player-colour=")
+                && !a.starts_with("--with-level=")
+                && *a != "--our-pod"
                 && *a != "--strict"
                 && *a != "--visit-triggers"
                 && *a != "--pulse-switches"
@@ -2080,7 +2466,9 @@ fn run() -> Result<(), String> {
         return Err(
             "usage: level_scripts SNAPSHOT GAME-DIRS LEVEL-PATH|--all NEW-JSON \
                     [--entry=NAME]... [--ticks=N] [--play=TICKS] [--flags=MASK,..] \
-                    [--puter-in-use=TICK] [--strict] [--visit-triggers] \
+                    [--puter-in-use=TICK] [--our-pod] [--enter-pad-zone=TICK] \
+                    [--press=TICK:MASK,..] [--player-colour=AARRGGBB] \
+                    [--with-level=LEVEL-PATH] [--strict] [--visit-triggers] \
                     [--pulse-switches]"
                 .into(),
         );
@@ -2100,9 +2488,16 @@ fn run() -> Result<(), String> {
         strict: all.iter().any(|a| a == "--strict"),
         visit: all.iter().any(|a| a == "--visit-triggers"),
         pulse: all.iter().any(|a| a == "--pulse-switches"),
+        our_pod: all.iter().any(|a| a == "--our-pod"),
+        pad_zone_from,
+        presses,
+        colour,
     });
     if play.is_some() && !entries.is_empty() {
         return Err("use --play or --entry, not both".into());
+    }
+    if with_level.is_some() && (every || play.is_none()) {
+        return Err("--with-level goes with --play on one level".into());
     }
     let control = LoadControl::default();
     let catalog = lbp_catalog::load(Path::new(args[1]), &control)?;
@@ -2215,6 +2610,24 @@ fn run() -> Result<(), String> {
 
     // Optional run on the single level.
     let mut runs = serde_json::Map::new();
+    let second_level = with_level.and_then(|path| Some((path, last_world.take()?)));
+    if let (Some(opts), Some((path, world))) = (&play_opts, second_level) {
+        // The second level of the session, on a VM of its own (same load order).
+        let (key, label) = lbp_preview::level_scene::resolve_level(&catalog, None, Some(path))?;
+        let bytes = lbp_preview::level_scene::read_level_bytes(&source, &key, &control)?;
+        let report = lbp_level::read(&bytes, lbp_level::Limits::default(), &|| false)
+            .map_err(|e| e.to_string())?;
+        let mut second = LevelWorld::from_things(&report.things);
+        second.translations = translations.clone();
+        let mut second_vm = Vm::default();
+        for (guid, s) in &scripts {
+            second_vm.load(s.clone(), *guid);
+        }
+        second.bind_objects(&mut second_vm);
+        let first = (keys[0].1.as_str(), &mut vm, world);
+        let session = play_session(first, (label.as_str(), &mut second_vm, second), opts);
+        runs.insert("session".into(), session);
+    }
     if let (Some(opts), Some(world), false) = (&play_opts, last_world.take(), every) {
         runs.insert("play".into(), play_level(&mut vm, world, opts).json);
     }
@@ -2360,7 +2773,9 @@ fn run() -> Result<(), String> {
         println!("--all --play={}: {j}", o.ticks);
     }
     for (entry, r) in &runs {
-        if entry != "unbound_natives" && entry != "written" {
+        if entry == "session" {
+            println!("--with-level session path: {}", r["path"]);
+        } else if entry != "unbound_natives" && entry != "written" {
             let flag = if entry == "play" { "--play" } else { "--entry" };
             println!("{flag}={entry}: {r}");
         }

@@ -5121,3 +5121,50 @@ both Pod levels). `docs/level-scripts.md` part 22.
   tests pass but `sackboy_play::tests::input_script_steps` (fails on main).
 **+0 newly viewable / +0 newly Complete (runtime and viewer feature).**
 Next: stage 6 PR 4 (the pod computer is entered). `docs/level-scripts.md` part 23.
+
+## D273 the pod computer is entered (2026-10-13)
+- RScript plan stage 6 (`docs/rscript-plan.md`), PR 4. Full detail: `docs/level-scripts.md` part 24.
+  Natives 249 -> 255: `Native.GetIsInPadZone__Q5Thing`, `Input.IsJustClickedByID__iiQ6String`,
+  `Native.GetPlayerColour__Q5Thing`, `PodComputer.SetPodTransitionTexture__g`,
+  `Game.CurrentLevelIsOurPod__`, `Video.PressedStartButton__`. `PodComputer.RequestHostUsePod__b` is
+  answered now.
+- FOUND in the 01.33 EBOOT (read for this PR): the pad zone (0x13bac0) is "our Pod, the primary
+  player, in the list of a PWorld entry whose script passes a class test and a call by name, world z
+  >= -300"; `IsJustClickedByID` (0x6d2f18 -> 0x3890a0) takes an action number, action 8 = context
+  mask 0x1001 and bit 0x80 of the pad word newly down, the string is the prompt's key;
+  `GetPlayerColour` (0x139308) is a stored ARGB word of the player as (R, G, B, A) / 255; "our Pod"
+  is a byte written at level entry (0x1ab508) from the slot id; `PressedStartButton` (0x756520) uses
+  up bit 0x80000 of the first of seven pads; `RequestHostUsePod` (0x3fa9cc) stores and sends the
+  request in our own Pod, and the receiver of the host's message (0x3fa868 -> 0x18ed30) sets "in use"
+  with `pod/pod_comps_startup` or `pod/pod_comps_shutdown`.
+- Runtime: `LevelWorld::our_pod`, `in_pad_zone`, `request_host_use_pod`, `begin_session_tick`,
+  `hand_session_to`, `tick_session` (`pod.rs`); `PadState::is_just_clicked`, `use_up`, `held_off`,
+  `PlayerRecord::colour`, `colour_vector` (`natives.rs`). `level_scripts`: `--our-pod`,
+  `--enter-pad-zone`, `--press`, `--player-colour`, `--with-level`.
+- MEASURED, `level_scripts gamedata/levels/pod/pod.bin --play=700
+  --with-level=gamedata/lbp2/pod/levels/pod_planets.bin --enter-pad-zone=460 --press=470:0x80
+  --player-colour=ff3366cc` (`local-analysis/d273-pod-session-700.json`): flags 3 on round 452; pad
+  zone from 460; click and request on 470; in use on 471; change-over 0.05 (471) to 1.0 (490); pod
+  mesh GUID 145753 on 490; planets camera rests at (0, -300, 900) on 496; shape colour (0.2, 0.4,
+  0.8, 0); 0 faults, 0 unbound calls in both levels. Planets level first: the same events.
+- MEASURED (378 levels, 13,547 scripted Things, 60 ticks; plain / `--visit-triggers` / with
+  `--pulse-switches`; `local-analysis/d273-play-all-*.json`): Things stopped by a fault 3 / 3 / 3;
+  unbound natives called 40 / 71 / 71 (was 41 / 73 / 73); unbound calls 61,419 / 862,919 / 868,592
+  (was 61,480 / 862,986 / 868,663); native calls 573,134 / 5,365,247 / 5,424,893 (the same);
+  recorded-only calls 12,389 / 91,091 / 97,009. Only pod.bin differs.
+- INFERRED: the trigger class `Trigger_Pod`; the first player record is primary, host and owner; the
+  answer arrives at the start of the next tick; Start's bit numbering. PLACEHOLDER: the stored colour
+  starts opaque white. The tool's stand-in: a level with a pod Thing is started as our Pod.
+- Failed or corrected: the scoping note had the script's `EnterPuterTrigger` sound "while not in
+  use"; the listing says while in use. A first test input held the button over two rounds and got no
+  click, as the rule says.
+- Not done: the viewer (one level there; no change-over drawn); the pod computer's scripts and
+  menus; open on arrival, closed on leaving; the ownership test; the other 98 actions.
+- Tests: `cargo test -q --locked <CI crates>` pass (`lbp-runtime` 61 unit, 49 world; three new
+  `d273_*` world tests, `d273_pod_computer_natives` in `lbp-script-vm`); `cargo clippy -q --locked <CI
+  crates> --all-targets -- -D warnings` pass; `cargo fmt --all --check` pass; `cargo clippy -p
+  lbp-bevy-viewer --all-targets -- -D warnings` pass; `python -m unittest discover -s tests` pass;
+  `cargo test -p lbp-bevy-viewer` 53 pass, 1 fails (`sackboy_play::tests::input_script_steps`, fails
+  on main). Not run: the viewer itself, anything against the game.
+**+0 newly viewable / +0 newly Complete (runtime feature).**
+Next: the shared session and the change-over in the viewer. `docs/level-scripts.md` part 24.

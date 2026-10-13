@@ -4067,6 +4067,7 @@ fn d270_the_pod_thing_follows_the_mesh_and_the_avatar_is_the_sackboy() {
     }
     assert_eq!((w.pod.fade, w.pod.fade_calls), (Some(0.75), 2));
     w.pworld.frame = 9;
+    w.our_pod = true;
     for b in [true, false] {
         let request = pc(&mut w, "RequestHostUsePod__b", Value::Bool(b));
         assert_eq!(request, Ok(Value::Void));
@@ -4078,11 +4079,13 @@ fn d270_the_pod_thing_follows_the_mesh_and_the_avatar_is_the_sackboy() {
         .map(|r| (r.in_use, r.frame))
         .collect();
     assert_eq!(asked, [(true, 9), (false, 9)]);
-    // A request changes nothing else: nobody is at the pod computer.
+    // A request changes nothing else on its tick: nobody is at the pod computer. The
+    // later request replaced the earlier one (part 24).
     let in_use = native(&mut w, "PodComputer", "GetPodComputerInUse__", &[]);
     assert_eq!(in_use, Ok(Value::Bool(false)));
+    assert_eq!(w.pod.host_use_pod_pending, Some(false));
     assert_eq!(w.engine_calls["SetFadePodDecorations"], 2);
-    assert_eq!(w.engine_calls["RequestHostUsePod"], 2);
+    assert!(!w.engine_calls.contains_key("RequestHostUsePod"));
     // The two state queries.
     assert_eq!(game(&mut w, "IsStartMenuOpen__", &[]), Value::Bool(false));
     let photo = [Value::Thing(Some(sackboy))];
@@ -4641,4 +4644,322 @@ fn d272_a_written_camera_stands_for_its_tick_and_the_world_thing_moves_the_level
         LevelWorld::from_things(&self::level()).world_thing_moved(),
         None
     );
+}
+
+/// D273: the pad zone is "our Pod, the primary player, in a pod-computer trigger, not
+/// below z -300"; the engage press is action 8; the colour is the record's.
+#[test]
+fn d273_the_pad_zone_the_engage_press_and_the_players_colour() {
+    use lbp_runtime::POD_TRIGGER_CLASS;
+    use lbp_script_vm::natives::{PLACEHOLDER_PLAYER_COLOUR, START_BUTTON};
+    // Thing 2: a circle trigger at x 100, radius 10 in a space scaled by 2, z 0.
+    let mut vm = Vm::default();
+    let mut host = Bindings::new(LevelWorld::from_things(&trigger_level(0)));
+    let mut level = LevelScripts::new(&vm, &host.world);
+    let zone = |w: &mut LevelWorld, t: Option<u32>| {
+        let args = [Value::Thing(t)];
+        match native(w, "Native", "GetIsInPadZone__Q5Thing", &args) {
+            Ok(Value::Bool(b)) => b,
+            other => panic!("{other:?}"),
+        }
+    };
+    let our_pod = |w: &mut LevelWorld| game(w, "CurrentLevelIsOurPod__", &[]);
+    assert_eq!(our_pod(&mut host.world), Value::Bool(false));
+    let deep = (-400., 1.);
+    let p = host.world.add_player([100., 0., 0.], deep);
+    level.tick_level(&mut vm, &mut host, 1000);
+    let w = &mut host.world;
+    assert_eq!(w.things[2].trigger.as_ref().unwrap().inside, [p]);
+    // In the trigger, but the level was not started as our Pod.
+    assert!(!zone(w, Some(p)));
+    w.our_pod = true;
+    assert_eq!(our_pod(w), Value::Bool(true));
+    // Our Pod, but the trigger's script is not the pod computer's.
+    assert!(!zone(w, Some(p)));
+    w.things[2].script_classes = vec![POD_TRIGGER_CLASS.into(), "Thing".into()];
+    assert!(zone(w, Some(p)));
+    // A null Thing, and a Thing that is no player's Sackboy.
+    assert!(!zone(w, None));
+    assert!(!zone(w, Some(1)));
+    // The z test: at -300 yes, below it no. No distance test: he is where the trigger
+    // last held him.
+    w.move_player(p, [100., 0., -300.], deep);
+    assert!(zone(w, Some(p)));
+    w.move_player(p, [100., 0., -300.5], deep);
+    assert!(!zone(w, Some(p)));
+    // Without a position: false.
+    let matrix = w.things[p as usize].world_matrix.take();
+    assert!(!zone(w, Some(p)));
+    w.things[p as usize].world_matrix = matrix;
+    w.move_player(p, [100., 0., 0.], deep);
+    // A second player in the same trigger is not the primary player.
+    let second = w.add_player([100., 0., 0.], deep);
+    level.tick_level(&mut vm, &mut host, 1000);
+    let w = &mut host.world;
+    assert_eq!(w.things[2].trigger.as_ref().unwrap().inside, [p, second]);
+    assert!(zone(w, Some(p)) && !zone(w, Some(second)));
+    // Out of the trigger: false.
+    w.move_player(p, [900., 0., 0.], deep);
+    level.tick_level(&mut vm, &mut host, 1000);
+    let w = &mut host.world;
+    assert!(!zone(w, Some(p)));
+    assert_eq!((w.pod.pad_zone_calls, w.pod.pad_zone_hits), (10, 3));
+
+    // The engage press: action 8 is bit 0x80 newly down on that player's pad.
+    let click = |w: &mut LevelWorld, player: i32, action: i32, key: Option<&str>| {
+        let key = key.map_or(Value::Object(None), |k| Value::Str(k.into()));
+        let args = [Value::Int(player), Value::Int(action), key];
+        match native(w, "Input", "IsJustClickedByID__iiQ6String", &args) {
+            Ok(Value::Bool(b)) => b,
+            other => panic!("{other:?}"),
+        }
+    };
+    let key = Some("MADE_UP_KEY");
+    // No pad yet: false, and no prompt.
+    assert!(!click(w, 0, 8, key));
+    assert!(w.pod.action_prompts.is_empty());
+    assert!(w.set_pad_buttons(0, 0x80));
+    assert!(click(w, 0, 8, key));
+    // The string does not change the answer; a null string asks for no prompt.
+    assert!(click(w, 0, 8, None));
+    assert!(click(w, 0, 8, Some("ANOTHER_KEY")));
+    // Player 1 has no pad, player 5 no record.
+    assert!(!click(w, 1, 8, key) && !click(w, 5, 8, key));
+    // Another action number was not read: false, and counted.
+    assert!(!click(w, 0, 3, key) && !click(w, 0, 3, key) && !click(w, 0, 0x80, key));
+    assert_eq!(w.pod.actions_not_read, [(3, 2), (0x80, 1)].into());
+    // Held over the next frame: no longer a click. Released and pressed: a click again.
+    level.tick_level(&mut vm, &mut host, 1000);
+    let w = &mut host.world;
+    assert!(!click(w, 0, 8, key));
+    w.set_pad_buttons(0, 0);
+    level.tick_level(&mut vm, &mut host, 1000);
+    let w = &mut host.world;
+    w.set_pad_buttons(0, 0x80 | 0x40);
+    assert!(click(w, 0, 8, key));
+    // Another button alone is not the action.
+    w.set_pad_buttons(0, 0);
+    level.tick_level(&mut vm, &mut host, 1000);
+    let w = &mut host.world;
+    w.set_pad_buttons(0, 0x40);
+    assert!(!click(w, 0, 8, key));
+    assert_eq!(
+        w.pod.action_prompts,
+        [("ANOTHER_KEY".to_owned(), 1), ("MADE_UP_KEY".to_owned(), 4)].into()
+    );
+    assert_eq!((w.pod.action_click_calls, w.pod.action_clicks), (12, 4));
+
+    // Start: the press is used up and stays used while the button is held.
+    let start = |w: &mut LevelWorld| native(w, "Video", "PressedStartButton__", &[]);
+    assert_eq!(start(w), Ok(Value::Bool(false)));
+    w.set_pad_buttons(0, START_BUTTON | 0x40);
+    assert_eq!(start(w), Ok(Value::Bool(true)));
+    assert_eq!(start(w), Ok(Value::Bool(false)));
+    assert_eq!(w.player_records[0].pad.unwrap().now, 0x40);
+    w.set_pad_buttons(0, START_BUTTON);
+    assert_eq!(start(w), Ok(Value::Bool(false)), "still held");
+    w.set_pad_buttons(0, 0);
+    w.set_pad_buttons(0, START_BUTTON);
+    assert_eq!(start(w), Ok(Value::Bool(true)));
+
+    // The colour: the record's word as (R, G, B, A) / 255; the placeholder until set.
+    let colour = |w: &mut LevelWorld, t: Option<u32>| {
+        let args = [Value::Thing(t)];
+        match native(w, "Native", "GetPlayerColour__Q5Thing", &args) {
+            Ok(Value::Vec4(v)) => v,
+            other => panic!("{other:?}"),
+        }
+    };
+    assert_eq!(w.player_records[0].colour, PLACEHOLDER_PLAYER_COLOUR);
+    assert_eq!(colour(w, Some(p)), [1.; 4]);
+    w.player_records[0].colour = 0x8040_2010;
+    w.player_records[1].colour = 0xff00_00ff;
+    assert_eq!(
+        colour(w, Some(p)),
+        [0x40, 0x20, 0x10, 0x80].map(|b| b as f32 / 255.)
+    );
+    assert_eq!(colour(w, Some(second)), [0., 0., 1., 1.]);
+    // A null Thing and a Thing without a PYellowHead: the zero vector.
+    assert_eq!(colour(w, None), [0.; 4]);
+    assert_eq!(colour(w, Some(1)), [0.; 4]);
+    assert_eq!(w.pod.player_colour_calls, 3);
+
+    // The change-over texture is kept and nothing else.
+    let texture = [Value::Int(132243)];
+    let set = native(w, "PodComputer", "SetPodTransitionTexture__g", &texture);
+    assert_eq!(set, Ok(Value::Void));
+    assert_eq!(
+        (w.pod.transition_texture, w.pod.transition_texture_calls),
+        (Some(132243), 1)
+    );
+    assert!(host.unbound.is_empty());
+}
+
+/// D273: a request to use the pod computer is answered at the start of the next tick,
+/// only in our Pod, with the start-up and shut-down sounds counted.
+#[test]
+fn d273_the_host_answers_a_pod_computer_request_on_the_next_tick() {
+    use lbp_runtime::{InUseChange, POD_COMPUTER_SHUTDOWN_SOUND, POD_COMPUTER_STARTUP_SOUND};
+    let mut vm = Vm::default();
+    let mut host = Bindings::new(LevelWorld::from_things(&level()));
+    let mut level = LevelScripts::new(&vm, &host.world);
+    let request = |w: &mut LevelWorld, b: bool| {
+        let r = native(w, "PodComputer", "RequestHostUsePod__b", &[Value::Bool(b)]);
+        assert_eq!(r, Ok(Value::Void));
+    };
+    let in_use = |w: &mut LevelWorld| {
+        native(w, "PodComputer", "GetPodComputerInUse__", &[]) == Ok(Value::Bool(true))
+    };
+    // Not our Pod: the request is dropped.
+    request(&mut host.world, true);
+    level.tick_level(&mut vm, &mut host, 1000);
+    assert!(!in_use(&mut host.world));
+    assert_eq!(host.world.pod.host_use_pod_refused, 1);
+    assert!(host.world.pod.host_use_pod_requests.is_empty());
+    // Our Pod: nothing on the tick of the request, in use from the start of the next.
+    host.world.our_pod = true;
+    host.world.add_player([0.; 3], (-1., 1.));
+    let frame = host.world.pworld.frame;
+    request(&mut host.world, true);
+    assert!(!in_use(&mut host.world));
+    assert_eq!(host.world.pod.host_use_pod_pending, Some(true));
+    host.world.begin_session_tick();
+    assert!(in_use(&mut host.world));
+    assert_eq!(host.world.pod.host_use_pod_pending, None);
+    assert_eq!(host.world.sounds_played[POD_COMPUTER_STARTUP_SOUND], 1);
+    // The same through a tick, and back off.
+    request(&mut host.world, false);
+    assert!(in_use(&mut host.world));
+    level.tick_level(&mut vm, &mut host, 1000);
+    assert!(!in_use(&mut host.world));
+    assert_eq!(host.world.sounds_played[POD_COMPUTER_SHUTDOWN_SOUND], 1);
+    // An answer that changes nothing makes no sound.
+    request(&mut host.world, false);
+    level.tick_level(&mut vm, &mut host, 1000);
+    assert!(!in_use(&mut host.world));
+    assert_eq!(host.world.sounds_played[POD_COMPUTER_SHUTDOWN_SOUND], 1);
+    assert_eq!(
+        host.world.pod.in_use_changes,
+        [
+            InUseChange {
+                in_use: true,
+                frame
+            },
+            InUseChange {
+                in_use: false,
+                frame
+            }
+        ]
+    );
+    assert_eq!(host.world.pod.host_use_pod_requests.len(), 3);
+    assert_eq!(host.world.pod.host_use_pod_refused, 1);
+    // Without the primary player's avatar the change makes no sound.
+    let mut w = LevelWorld::from_things(&self::level());
+    w.our_pod = true;
+    request(&mut w, true);
+    w.begin_session_tick();
+    assert!(w.pod_computer_in_use && w.sounds_played.is_empty());
+}
+
+/// D273: two levels in one session share the flags, "our Pod", "in use" and the media
+/// requests; the rest stays the level's own.
+#[test]
+fn d273_two_levels_share_the_session_state() {
+    use lbp_runtime::{tick_session, SessionLevel, POD_COMPUTER_STARTUP_SOUND};
+    use lbp_script_vm::natives::START_BUTTON;
+    let (mut vm_a, mut vm_b) = (Vm::default(), Vm::default());
+    // A stands for the planets level, B for the Pod with the player's Sackboy.
+    let mut a = Bindings::new(LevelWorld::from_things(&level()));
+    let mut b = Bindings::new(LevelWorld::from_things(&trigger_level(0)));
+    let mut scripts_a = LevelScripts::new(&vm_a, &a.world);
+    let mut scripts_b = LevelScripts::new(&vm_b, &b.world);
+    b.world.our_pod = true;
+    b.world.player_records[0].colour = 0x1122_3344;
+    b.world.add_player([0.; 3], (-1., 1.));
+    b.world.hand_session_to(&mut a.world);
+    assert!(a.world.our_pod);
+    assert_eq!(a.world.player_records[0].colour, 0x1122_3344);
+    macro_rules! round {
+        () => {{
+            let mut levels = [
+                SessionLevel {
+                    scripts: &mut scripts_a,
+                    vm: &mut vm_a,
+                    host: &mut a,
+                },
+                SessionLevel {
+                    scripts: &mut scripts_b,
+                    vm: &mut vm_b,
+                    host: &mut b,
+                },
+            ];
+            let reports = tick_session(&mut levels, 1000);
+            assert_eq!(reports.len(), 2);
+        }};
+    }
+    // A flag set in the first level reaches the second on the same round. What changes
+    // between two rounds (here, by hand) is handed over by the caller.
+    let set = "SetLBP2GameProgressionFlag__i";
+    native(&mut a.world, "Profile", set, &[Value::Int(3)]).unwrap();
+    assert_eq!(b.world.progression_flags, 0);
+    round!();
+    assert_eq!(b.world.progression_flags, 3);
+    native(&mut b.world, "Profile", set, &[Value::Int(8)]).unwrap();
+    b.world.hand_session_to(&mut a.world);
+    round!();
+    assert_eq!(a.world.progression_flags, 11);
+    // A media request made in one level is in the other's list too.
+    let line = [
+        Value::Str("made_up_line".into()),
+        Value::Bool(true),
+        Value::Bool(true),
+    ];
+    native(
+        &mut b.world,
+        "Audio",
+        "RequestVoiceOver__Q7StringAbb",
+        &line,
+    )
+    .unwrap();
+    b.world.hand_session_to(&mut a.world);
+    round!();
+    assert_eq!(b.world.media.voice_over_requests(), 1);
+    assert_eq!(a.world.media.voice_over_requests(), 1);
+    // The request is made in the Pod; a round later both levels have the computer in
+    // use, and the sound is counted where the avatar is.
+    let request = [Value::Bool(true)];
+    native(
+        &mut b.world,
+        "PodComputer",
+        "RequestHostUsePod__b",
+        &request,
+    )
+    .unwrap();
+    b.world.hand_session_to(&mut a.world);
+    assert!(!a.world.pod_computer_in_use && !b.world.pod_computer_in_use);
+    assert_eq!(a.world.pod.host_use_pod_pending, Some(true));
+    round!();
+    assert!(a.world.pod_computer_in_use && b.world.pod_computer_in_use);
+    assert_eq!(a.world.pod.host_use_pod_pending, None);
+    assert_eq!(b.world.pod.host_use_pod_pending, None);
+    assert!(a.world.sounds_played.is_empty());
+    assert_eq!(b.world.sounds_played[POD_COMPUTER_STARTUP_SOUND], 1);
+    // A Start press used up in one level is used up in the other.
+    for w in [&mut a.world, &mut b.world] {
+        assert!(w.set_pad_buttons(0, START_BUTTON));
+    }
+    let start = "PressedStartButton__";
+    assert_eq!(
+        native(&mut a.world, "Video", start, &[]),
+        Ok(Value::Bool(true))
+    );
+    a.world.hand_session_to(&mut b.world);
+    assert_eq!(
+        native(&mut b.world, "Video", start, &[]),
+        Ok(Value::Bool(false))
+    );
+    // The level's own state is not handed over.
+    assert_eq!(a.world.players.len(), 0);
+    assert_eq!(b.world.players.len(), 1);
+    assert_eq!(a.world.things.len(), 3);
 }

@@ -43,7 +43,7 @@ pub struct CameraFromToUp {
 /// a record is found by its player number. The fields below are the ones the score and
 /// player natives read and write (record offsets +0x30 score, +0x38 counter, +0x3c timer,
 /// +0x40 source, +0x60 visible, +0xdc number, +0xe0 team).
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PlayerRecord {
     /// `Game.EPlayerNumber` (an s32).
     pub number: i32,
@@ -59,7 +59,61 @@ pub struct PlayerRecord {
     /// The record's pad object (record +0x6a0, a pointer); `None` = no pad, for which
     /// every `Pad` query is false.
     pub pad: Option<PadState>,
+    /// The player's colour, 0xAARRGGBB: what `Native.GetPlayerColour__Q5Thing` unpacks.
+    /// FOUND (01.33, 0x139308, 0x15894c): the first of four 32-bit colours of an object
+    /// the record points at (record +0x16c, object +0x4c). INFERRED: that object is the
+    /// player's profile. Who writes the colour and what a new profile holds were not
+    /// read, so the start value here is [`PLACEHOLDER_PLAYER_COLOUR`].
+    pub colour: u32,
 }
+
+/// PLACEHOLDER, not a game value: the colour a [`PlayerRecord`] starts with (opaque
+/// white). The game's stored colour and its default per player were not established.
+pub const PLACEHOLDER_PLAYER_COLOUR: u32 = 0xffff_ffff;
+
+impl Default for PlayerRecord {
+    fn default() -> Self {
+        Self {
+            number: 0,
+            team: 0,
+            score: 0.,
+            multiplier_counter: 0,
+            multiplier_timer: 0,
+            multiplier_source: None,
+            multiplier_visible: false,
+            pad: None,
+            colour: PLACEHOLDER_PLAYER_COLOUR,
+        }
+    }
+}
+
+/// A 32-bit colour whose bytes are A, R, G, B from the top as the vector (R, G, B, A),
+/// each byte divided by 255. FOUND (01.33, 0x6d88b0): how `Native.GetPlayerColour`
+/// turns the stored word into its answer.
+pub fn colour_vector(argb: u32) -> [f32; 4] {
+    let byte = |shift: u32| ((argb >> shift) & 0xff) as f32 / 255.;
+    [byte(16), byte(8), byte(0), byte(24)]
+}
+
+/// The action number the Pod's world script passes to `Input.IsJustClickedByID` to
+/// engage the pod computer. FOUND (01.33, 0x6d2f18, 0x3890a0): the "button" of that
+/// native is a number of an action enumeration of 99 entries, not a pad mask.
+pub const ACTION_ENGAGE_POD: i32 = 8;
+/// The context mask of action 8. FOUND (01.33, table of 0x38677c): the only action with
+/// this mask. INFERRED: bit 0x1 is gameplay (the mode 1 the level scripts pass to the
+/// `Pad` natives) and bit 0x1000 the Pod.
+pub const ACTION_ENGAGE_POD_CONTEXT: u32 = 0x1001;
+/// The bit of the pad's button word that is action 8 on an ordinary pad. FOUND (01.33,
+/// 0x38760c, case 8). The name of the button is not established. Left out: the same
+/// case reads other words of the pad block when one of two bytes of it is set (INFERRED
+/// other input devices); here those bytes are 0.
+pub const ACTION_ENGAGE_POD_BUTTON: u32 = 0x80;
+/// The bit `Video.PressedStartButton__` looks for. FOUND (01.33, 0x756520): bit 0x80000
+/// of a word of the low-level pad records. INFERRED: the same numbering as the button
+/// word of [`PadState`] (a script passes 0x80000 to a `Pad` native for Start).
+pub const START_BUTTON: u32 = 0x80000;
+/// How many pads `Video.PressedStartButton__` looks at (FOUND, 0x756520).
+pub const START_BUTTON_PADS: i32 = 7;
 
 /// A player's pad as the `Pad` natives read it. FOUND in the 01.33 executable (readers
 /// 0x388358, 0x389400, 0x388e2c): two mode masks (pad +0x1c, +0x20), the button word of
@@ -77,9 +131,43 @@ pub struct PadState {
     pub mask_b: u32,
     pub now: u32,
     pub old: u32,
+    /// Buttons a consumer used up: they stay out of `now` until they are released.
+    /// FOUND (01.33, 0x687c6c) that the use-up call of `Video.PressedStartButton__`
+    /// takes the mask out of three words of the low-level pad record and ORs it into a
+    /// fourth; INFERRED that the fourth means "ignore until released".
+    pub held_off: u32,
 }
 
 impl PadState {
+    /// The buttons of a new frame: a held-off button that is no longer down is free
+    /// again, one that is still down stays out of the word.
+    pub fn set_buttons(&mut self, buttons: u32) {
+        self.held_off &= buttons;
+        self.now = buttons & !self.held_off;
+    }
+    /// Uses a press up: the buttons leave this frame's word and stay out until released.
+    pub fn use_up(&mut self, buttons: u32) {
+        self.now &= !buttons;
+        self.held_off |= buttons;
+    }
+    /// `Input.IsJustClickedByID` for one action: the action's context mask has a bit in
+    /// both mode masks, the action is down now and was not down the frame before. FOUND
+    /// (01.33, 0x3890a0). `None` for an action whose context and test are not read here
+    /// (every action but [`ACTION_ENGAGE_POD`]).
+    pub fn is_just_clicked(&self, action: i32) -> Option<bool> {
+        (action == ACTION_ENGAGE_POD).then(|| {
+            self.shows_prompt(action) == Some(true)
+                && ACTION_ENGAGE_POD_CONTEXT & self.mask_b != 0
+                && self.now & ACTION_ENGAGE_POD_BUTTON != 0
+                && self.old & ACTION_ENGAGE_POD_BUTTON == 0
+        })
+    }
+    /// Whether `Input.IsJustClickedByID` asks for its on-screen prompt: the action's
+    /// context mask has a bit in the first mode mask (FOUND, 0x3890a0). `None` as
+    /// [`PadState::is_just_clicked`].
+    pub fn shows_prompt(&self, action: i32) -> Option<bool> {
+        (action == ACTION_ENGAGE_POD).then_some(ACTION_ENGAGE_POD_CONTEXT & self.mask_a != 0)
+    }
     /// `Pad.IsPressed`: the mode is in the first mask and every bit of `buttons` is down.
     pub fn is_pressed(&self, mode: u32, buttons: u32) -> bool {
         mode & self.mask_a != 0 && buttons & self.now == buttons
@@ -131,6 +219,10 @@ pub const POD_PLATFORM_MESH: u32 = 0x23959;
 /// 0x67c620). The pod computer's scripts keep the answer as their video handle and take
 /// any other value as "a video is playing".
 pub const NO_VIDEO: i32 = -1;
+
+/// The lowest world z at which `Native.GetIsInPadZone__Q5Thing` is true. FOUND (01.33,
+/// 0x13bcec): the Sackboy's world position z is compared "greater or equal" with -300.
+pub const PAD_ZONE_MIN_Z: f32 = -300.;
 
 /// What `PodComputer.GetPlanetsBackgroundGUID__` answers while the planets level is not
 /// loaded (FOUND, 01.33, 0x3fcbb4: the constant returned without that level).
@@ -439,6 +531,34 @@ pub trait World {
     /// `Profile.SetLBP2GameProgressionFlag__i`: sets the bits of `mask` in that word.
     fn set_progression_flags(&mut self, _mask: u32) -> Result<(), String> {
         Err(not_available("the profile"))
+    }
+    /// `Native.GetIsInPadZone__Q5Thing` for a Thing that is not null: the level is our
+    /// Pod, the Thing is the primary player's Sackboy, a pod-computer trigger holds him
+    /// and his world z is at least [`PAD_ZONE_MIN_Z`].
+    fn in_pad_zone(&mut self, _thing: u32) -> Result<bool, String> {
+        Err(not_available("the pad zone"))
+    }
+    /// `Input.IsJustClickedByID__iiQ6String`: [`PadState::is_just_clicked`] on the pad
+    /// of the player with that number; false without the player or his pad. `prompt` is
+    /// the key of the on-screen hint and never changes the answer.
+    fn action_just_clicked(
+        &mut self,
+        _player: i32,
+        _action: i32,
+        _prompt: Option<&str>,
+    ) -> Result<bool, String> {
+        Err(not_available("pads"))
+    }
+    /// `Native.GetPlayerColour__Q5Thing` for a Thing that is not null: the stored
+    /// colour (0xAARRGGBB) of the Thing's player, `None` for a Thing without a
+    /// PYellowHead.
+    fn player_colour(&mut self, _thing: u32) -> Result<Option<u32>, String> {
+        Err(not_available("players"))
+    }
+    /// `PodComputer.RequestHostUsePod__b`: asks the host to let the player use the pod
+    /// computer (true) or to stop (false). "In use" changes when the host answers.
+    fn request_host_use_pod(&mut self, _in_use: bool) -> Result<(), String> {
+        Err(not_available("the pod computer"))
     }
     /// Is a player using the pod computer (`PodComputer.GetPodComputerInUse__`)?
     fn pod_computer_in_use(&mut self) -> Result<bool, String> {
@@ -2566,10 +2686,74 @@ const TABLE: &[(&str, &str, NativeFn)] = &[
     // on PodComputer. The Pod's world script calls it with true when the leader presses
     // the button in the pod computer's zone. Only in the player's own Pod: the core
     // stores the request (use or stop) and the time and sends a message to the host. It
-    // does not set "in use" itself. Network and game flow.
+    // does not set "in use" itself: the receiver of that message does (0x3fa868 ->
+    // 0x18ed30). The world answers the request (D273).
     ("PodComputer", "RequestHostUsePod__b", |w, c| {
-        boolean(param(c, 0)?)?;
-        recorded(w, "RequestHostUsePod", None, c.params)
+        w.request_host_use_pod(boolean(param(c, 0)?)?)?;
+        Ok(Value::Void)
+    }),
+    // ---- D273: the pod computer is entered (docs/level-scripts.md part 24) ----
+    // FOUND (01.33, 0x64a52c -> 0x6d426c -> 0x13bac0). Declared `bool GetIsInPadZone(Thing)`
+    // on Native. The Pod's world script asks it about the leader's avatar before it lets
+    // him engage the pod computer. False for a null Thing; the rule is the world's.
+    ("Native", "GetIsInPadZone__Q5Thing", |w, c| {
+        Ok(Value::Bool(match thing(param(c, 0)?)? {
+            Some(t) => w.in_pad_zone(t)?,
+            None => false,
+        }))
+    }),
+    // FOUND (01.33, 0x629e18 -> 0x6d2f18 -> 0x3890a0). Declared static
+    // `bool IsJustClickedByID(s32 player, s32 action, String prompt)` on Input. The
+    // second argument is an action number; the string is the key of the on-screen hint.
+    // The wrapper passes an action on unchanged when it is in a list filled at run time
+    // and 0 when it is not; INFERRED that 8 is in the list (the list was not read).
+    ("Input", "IsJustClickedByID__iiQ6String", |w, c| {
+        let (player, action) = (int(param(c, 0)?)?, int(param(c, 1)?)?);
+        let prompt = opt_text(param(c, 2)?)?;
+        Ok(Value::Bool(w.action_just_clicked(player, action, prompt)?))
+    }),
+    // FOUND (01.33, 0x64a4dc -> 0x6d88b0 -> 0x139308). Declared `v4 GetPlayerColour(Thing)`
+    // on Native: the zero vector for a null Thing or one without a PYellowHead; else the
+    // player's stored 32-bit colour as (R, G, B, A) / 255. The Pod's world script tints
+    // the pod with it and writes its own w.
+    ("Native", "GetPlayerColour__Q5Thing", |w, c| {
+        let colour = match thing(param(c, 0)?)? {
+            Some(t) => w.player_colour(t)?,
+            None => None,
+        };
+        Ok(Value::Vec4(colour.map_or([0.; 4], colour_vector)))
+    }),
+    // FOUND (01.33, 0x617428 -> 0x4015e8). Declared static
+    // `void SetPodTransitionTexture(guid)` on PodComputer. The Pod's world script passes
+    // the texture of the planets' backdrop each tick. Once that texture is loaded the
+    // core sets it on three engine resources (GUIDs 12138, 12250, 119116; INFERRED the
+    // materials of the pod's change-over). Nothing a script can read back. Display state.
+    ("PodComputer", "SetPodTransitionTexture__g", |w, c| {
+        guid(param(c, 0)?)?;
+        recorded(w, "SetPodTransitionTexture", None, c.params)
+    }),
+    // FOUND (01.33, 0x5f8b38 -> 0x5e8024). Declared static `bool CurrentLevelIsOurPod()`
+    // on Game: one byte of the game object, written in one place, when a level becomes
+    // the current one (0x1ab508): the slot being entered is the Pod's slot. A state
+    // query: the world is told how its level was started.
+    ("Game", "CurrentLevelIsOurPod__", |w, _| {
+        bool_query(w, "Game.CurrentLevelIsOurPod__")
+    }),
+    // FOUND (01.33, 0x5f61a4 -> 0x756520). Declared static `bool PressedStartButton()`
+    // on Video: over seven low-level pad records in order, the first with bit 0x80000 in
+    // one of its words has the press used up (0x687c6c) and the answer is true; none:
+    // false. INFERRED: those records are the players' pads in the order of the player
+    // records, and the word is the pad's button word ([`START_BUTTON`]).
+    ("Video", "PressedStartButton__", |w, _| {
+        for i in 0..w.num_players()?.min(START_BUTTON_PADS) {
+            let number = w.player_number(i)?;
+            let pad = w.player(number)?.and_then(|r| r.pad.as_mut());
+            if let Some(pad) = pad.filter(|p| p.now & START_BUTTON != 0) {
+                pad.use_up(START_BUTTON);
+                return Ok(Value::Bool(true));
+            }
+        }
+        Ok(Value::Bool(false))
     }),
     // ---- D271: video, voice-over and progression flags (docs/level-scripts.md part 22) ----
     // Nothing here plays a video or a sound. A request is kept by the world with its
@@ -2711,7 +2895,7 @@ const TABLE: &[(&str, &str, NativeFn)] = &[
 ];
 
 /// The natives bound through [`World::state_query`], with their return type.
-pub const STATE_QUERIES: [(&str, &str); 29] = [
+pub const STATE_QUERIES: [(&str, &str); 30] = [
     ("Game.IsNonInteractive__", "bool"),
     ("Game.GetNumPendingLinks__", "s32"),
     ("Game.GetNumAvatars__", "s32"),
@@ -2750,6 +2934,7 @@ pub const STATE_QUERIES: [(&str, &str); 29] = [
     ("Audio.IsVoiceOverPlaying__", "bool"),
     ("Profile.HasPlayedLBP1AndUnlockedPod__", "bool"),
     ("Profile.HasPlayedLBP1AndUnlockedMoon__", "bool"),
+    ("Game.CurrentLevelIsOurPod__", "bool"),
 ];
 
 /// Bound natives that return nothing and whose whole effect here is a record in the world
@@ -2779,7 +2964,7 @@ pub const RECORDED_ONLY: [(&str, &str); 24] = [
     ("Gooey", "SetStylesheetScalingFactor__f"),
     ("Game", "SetGlobalSettingsAudioTo__ifffffffffff"),
     ("PodComputer", "SetFadePodDecorations__f"),
-    ("PodComputer", "RequestHostUsePod__b"),
+    ("PodComputer", "SetPodTransitionTexture__g"),
     ("Video", "StopVideo__i"),
 ];
 
@@ -2930,6 +3115,7 @@ mod tests {
             mask_b: 1,
             now: 0b0110,
             old: 0b0100,
+            held_off: 0,
         };
         assert!(pad.is_pressed(1, 0b0110) && pad.is_pressed(1, 0b0010));
         assert!(!pad.is_pressed(1, 0b0111) && !pad.is_pressed(2, 0b0010));
@@ -3126,6 +3312,10 @@ mod tests {
                 self.0.push(format!("{name} {thing:?} {args:?}"));
                 Ok(())
             }
+            fn request_host_use_pod(&mut self, in_use: bool) -> Result<(), String> {
+                self.0.push(format!("request {in_use}"));
+                Ok(())
+            }
         }
         let mut w = Pod::default();
         let mut go =
@@ -3190,9 +3380,205 @@ mod tests {
                 "query Game.IsStartMenuOpen__",
                 "query Pod.IsTakingPhoto__Q5Thing",
                 "SetFadePodDecorations None [Float(0.5)]",
-                "RequestHostUsePod None [Bool(true)]",
+                "request true",
             ]
         );
+    }
+
+    #[test]
+    fn d273_pod_computer_natives() {
+        // The stored colour's bytes are A, R, G, B from the top; the vector is
+        // (R, G, B, A) / 255.
+        assert_eq!(colour_vector(0xff00_0000), [0., 0., 0., 1.]);
+        assert_eq!(colour_vector(0x00ff_0000), [1., 0., 0., 0.]);
+        assert_eq!(colour_vector(0x0000_ff00), [0., 1., 0., 0.]);
+        assert_eq!(colour_vector(0x0000_00ff), [0., 0., 1., 0.]);
+        assert_eq!(colour_vector(0x3366_99cc)[0], 0x66 as f32 / 255.);
+        assert_eq!(
+            PlayerRecord::default().colour,
+            PLACEHOLDER_PLAYER_COLOUR,
+            "a record starts with the placeholder"
+        );
+
+        // Action 8: bit 0x80 newly down, its context in both masks.
+        let pad = PadState {
+            mask_a: 1,
+            mask_b: 1,
+            now: 0x80,
+            ..Default::default()
+        };
+        assert_eq!(pad.is_just_clicked(ACTION_ENGAGE_POD), Some(true));
+        let held = PadState { old: 0x80, ..pad };
+        assert_eq!(
+            held.is_just_clicked(8),
+            Some(false),
+            "down the frame before"
+        );
+        let other = PadState { now: 0x40, ..pad };
+        assert_eq!(other.is_just_clicked(8), Some(false), "another button");
+        // The context mask is 0x1001: either bit in a mode mask will do, and each mask
+        // needs one.
+        let pod_mode = PadState {
+            mask_a: 0x1000,
+            mask_b: 0x1000,
+            ..pad
+        };
+        assert_eq!(pod_mode.is_just_clicked(8), Some(true));
+        for (mask_a, mask_b) in [(0, 1), (1, 0), (2, 2), (1, 0x800)] {
+            let p = PadState {
+                mask_a,
+                mask_b,
+                ..pad
+            };
+            assert_eq!(p.is_just_clicked(8), Some(false), "{mask_a:#x} {mask_b:#x}");
+            assert_eq!(p.shows_prompt(8), Some(mask_a & 0x1001 != 0));
+        }
+        // No other action was read: no answer, no made-up button.
+        for action in [0, 7, 9, 98, 99, -1] {
+            assert_eq!(pad.is_just_clicked(action), None, "{action}");
+            assert_eq!(pad.shows_prompt(action), None, "{action}");
+        }
+        // A press that was used up stays out of the word until the button is released.
+        let mut start = PadState::default();
+        start.set_buttons(START_BUTTON | 0x80);
+        start.use_up(START_BUTTON);
+        assert_eq!((start.now, start.held_off), (0x80, START_BUTTON));
+        start.set_buttons(START_BUTTON);
+        assert_eq!(start.now, 0, "still down: still held off");
+        start.set_buttons(0);
+        start.set_buttons(START_BUTTON);
+        assert_eq!((start.now, start.held_off), (START_BUTTON, 0));
+
+        // A world without the state says so; a null Thing needs none.
+        let null = [Value::Thing(None)];
+        let some = [Value::Thing(Some(1))];
+        let zone = "GetIsInPadZone__Q5Thing";
+        let colour = "GetPlayerColour__Q5Thing";
+        assert_eq!(call("Native", zone, &null), Ok(Value::Bool(false)));
+        assert!(call("Native", zone, &some).is_err());
+        assert_eq!(call("Native", colour, &null), Ok(Value::Vec4([0.; 4])));
+        assert!(call("Native", colour, &some).is_err());
+        assert!(call("Native", zone, &[Value::Int(1)]).is_err());
+        let click = "IsJustClickedByID__iiQ6String";
+        let engage = |s: Value| [Value::Int(0), Value::Int(8), s];
+        assert!(call("Input", click, &engage(Value::Str("KEY".into()))).is_err());
+        assert!(call("Game", "CurrentLevelIsOurPod__", &[]).is_err());
+        assert!(call("Video", "PressedStartButton__", &[]).is_err());
+        let texture = "SetPodTransitionTexture__g";
+        assert!(call("PodComputer", texture, &[Value::Int(132243)]).is_err());
+
+        /// Players 0, 1 and 2 with a pad each (player 1 has none), Thing 5 with a
+        /// PYellowHead, Thing 6 in the pad zone.
+        struct Players(Vec<PlayerRecord>, Vec<String>);
+        impl World for Players {
+            fn num_players(&mut self) -> Result<i32, String> {
+                Ok(self.0.len() as i32)
+            }
+            fn player_number(&mut self, index: i32) -> Result<i32, String> {
+                Ok(self.0.get(index as usize).map_or(-1, |r| r.number))
+            }
+            fn player(&mut self, number: i32) -> Result<Option<&mut PlayerRecord>, String> {
+                Ok(self.0.iter_mut().find(|r| r.number == number))
+            }
+            fn in_pad_zone(&mut self, thing: u32) -> Result<bool, String> {
+                Ok(thing == 6)
+            }
+            fn player_colour(&mut self, thing: u32) -> Result<Option<u32>, String> {
+                Ok((thing == 5).then_some(0x8040_2010))
+            }
+            fn action_just_clicked(
+                &mut self,
+                player: i32,
+                action: i32,
+                prompt: Option<&str>,
+            ) -> Result<bool, String> {
+                self.1.push(format!("click {player} {action} {prompt:?}"));
+                Ok(action == 8)
+            }
+            fn state_query(&mut self, native: &str) -> Result<Value, String> {
+                self.1.push(format!("query {native}"));
+                Ok(Value::Bool(true))
+            }
+            fn engine_call(
+                &mut self,
+                name: &'static str,
+                thing: Option<u32>,
+                args: &[Value],
+            ) -> Result<(), String> {
+                self.1.push(format!("{name} {thing:?} {args:?}"));
+                Ok(())
+            }
+        }
+        let with_pad = |number, now| PlayerRecord {
+            number,
+            pad: Some(PadState {
+                mask_a: 1,
+                mask_b: 1,
+                now,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let no_pad = PlayerRecord {
+            number: 1,
+            ..Default::default()
+        };
+        let records = vec![with_pad(0, 0x80), no_pad, with_pad(2, START_BUTTON | 1)];
+        let mut w = Players(records, Vec::new());
+        let mut go =
+            |class: &str, m: &str, args: &[Value]| dispatch(&mut w, class, m, args).unwrap();
+        let thing = |t| [Value::Thing(Some(t))];
+        assert_eq!(go("Native", zone, &thing(6)), Ok(Value::Bool(true)));
+        assert_eq!(go("Native", zone, &thing(5)), Ok(Value::Bool(false)));
+        // (R, G, B, A) of 0x80402010.
+        let v = [0x40, 0x20, 0x10, 0x80].map(|b| b as f32 / 255.);
+        assert_eq!(go("Native", colour, &thing(5)), Ok(Value::Vec4(v)));
+        // A Thing without a PYellowHead: the zero vector.
+        assert_eq!(go("Native", colour, &thing(6)), Ok(Value::Vec4([0.; 4])));
+        // The string is handed on and may be null; the other arguments are checked.
+        let key = Value::Str("KEY".into());
+        assert_eq!(go("Input", click, &engage(key)), Ok(Value::Bool(true)));
+        let args = [Value::Int(2), Value::Int(9), Value::Object(None)];
+        assert_eq!(go("Input", click, &args), Ok(Value::Bool(false)));
+        assert!(go("Input", click, &engage(Value::Int(1))).is_err());
+        assert_eq!(
+            go("Game", "CurrentLevelIsOurPod__", &[]),
+            Ok(Value::Bool(true))
+        );
+        assert_eq!(
+            go("PodComputer", texture, &[Value::Int(132243)]),
+            Ok(Value::Void)
+        );
+        assert!(go("PodComputer", texture, &[Value::Bool(true)]).is_err());
+        // Start: the first pad with the bit, in record order, has the press used up.
+        let start = "PressedStartButton__";
+        assert_eq!(go("Video", start, &[]), Ok(Value::Bool(true)));
+        assert_eq!(go("Video", start, &[]), Ok(Value::Bool(false)), "used up");
+        assert_eq!(
+            w.1,
+            [
+                "click 0 8 Some(\"KEY\")",
+                "click 2 9 None",
+                "query Game.CurrentLevelIsOurPod__",
+                "SetPodTransitionTexture None [Int(132243)]",
+            ]
+        );
+        let pad = w.0[2].pad.unwrap();
+        assert_eq!((pad.now, pad.held_off), (1, START_BUTTON));
+        assert_eq!(
+            w.0[0].pad.unwrap().now,
+            0x80,
+            "the other pads are not touched"
+        );
+        // Only the first seven records are looked at.
+        let mut many: Vec<_> = (0..7).map(|n| with_pad(n, 0)).collect();
+        many.push(with_pad(7, START_BUTTON));
+        let mut w = Players(many, Vec::new());
+        let pressed = dispatch(&mut w, "Video", start, &[]).unwrap();
+        assert_eq!(pressed, Ok(Value::Bool(false)));
+        assert_eq!(w.0[7].pad.unwrap().now, START_BUTTON);
+        // The table: 249 natives before these six.
+        assert_eq!(bound().count(), 255);
     }
 
     #[test]
@@ -3317,8 +3703,8 @@ mod tests {
             ]
         );
         assert_eq!(w.0, 3);
-        // The table: 238 natives before these eleven.
-        assert_eq!(bound().count(), 249);
+        // The table: 238 natives before these eleven; D273 added six.
+        assert_eq!(bound().count(), 255);
     }
 
     #[test]

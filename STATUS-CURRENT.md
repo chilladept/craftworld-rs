@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D272
+# Current state (overwrite each milestone) — after D273
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -11,7 +11,58 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D272 the Pod's camera and its moving world (2026-10-13)
+## Latest: D273 the pod computer is entered (2026-10-13)
+- RScript plan stage 6 (the Pod), PR 4. The Pod's world script lets the leader engage the pod computer
+  (flags, pad zone, button), asks the host for it, and then runs its change-over. Five natives of that
+  path were unbound, the request was only recorded and the two Pod levels could not be played together.
+  Natives 249 -> 255.
+- FOUND in the EBOOT (read for this PR; `docs/level-scripts.md` part 24 has the table):
+  `Native.GetIsInPadZone` (0x13bac0): our Pod, the primary player's head, the Thing in the list of a
+  PWorld entry whose script passes a class test and a call by name, world z >= -300.
+  `Input.IsJustClickedByID` (0x3890a0): an action number, not a pad mask; action 8 has context mask
+  0x1001 and is bit 0x80 of the pad's button word, newly down; the string is the prompt's key only.
+  `Native.GetPlayerColour` (0x139308): a stored 32-bit colour of the player as (R, G, B, A) / 255.
+  `Game.CurrentLevelIsOurPod`: a byte written when a level is entered (0x1ab508), true for one slot id.
+  `Video.PressedStartButton` (0x756520): bit 0x80000 of the first of seven pads, used up.
+  `PodComputer.RequestHostUsePod` (0x3fa9cc): only in our own Pod; stores and sends the request. "In
+  use" is set by the receiver of the host's message (0x3fa868 -> 0x18ed30), with a start-up or
+  shut-down sound. `SetPodTransitionTexture` (0x4015e8) sets a texture on three engine resources.
+- Runtime (`lbp-runtime/src/pod.rs`, `lbp-script-vm/src/natives.rs`): `LevelWorld::our_pod`,
+  `in_pad_zone`, `request_host_use_pod`, `begin_session_tick` (the answer, first step of `tick_level`),
+  `hand_session_to` and `tick_session` (several levels in one session: progression flags, "our Pod",
+  "in use" and a waiting request, media requests, per player the colour and used-up buttons);
+  `PadState::is_just_clicked`, `use_up`, `held_off`; `PlayerRecord::colour`, `colour_vector`.
+  `RequestHostUsePod` left the recorded-only list; `SetPodTransitionTexture` joined it.
+- `level_scripts`: `--our-pod` (else a level with a pod Thing is started as our Pod: the tool's
+  stand-in, the game tests the slot), `--enter-pad-zone=TICK`, `--press=TICK:MASK,..`,
+  `--player-colour=AARRGGBB`, `--with-level=PATH` (a second level in the session; `runs.session` has
+  the path of events).
+- MEASURED, pod.bin and pod_planets.bin in one session, 700 rounds, fresh profile
+  (`local-analysis/d273-pod-session-700.json`): flags 3 on round 452; the Sackboy in the pad zone from
+  460; the press and `RequestHostUsePod(true)` on 470; in use on 471 (start-up sound counted); the
+  change-over 0.05 on 471 to 1.0 on 490, where the pod's mesh becomes GUID 145753; the planets camera
+  leaves (0, -250, 1130) on 471 and rests at (0, -300, 900) on 496. No fault and no unbound call in
+  either level. The other level order gives the same events on the same rounds.
+- MEASURED (378 levels, 60 ticks; plain / trigger visit / pulsed; `d273-play-all-*.json`): Things
+  stopped by a fault 3 / 3 / 3; unbound natives called 41 -> 40 / 73 -> 71 / 73 -> 71; unbound calls
+  61,480 -> 61,419 / 862,986 -> 862,919 / 868,663 -> 868,592; native calls the same. Only pod.bin
+  differs. In the visit runs one Thing fewer has a shape colour unlike the file (the pod's, by the
+  placeholder colour).
+- INFERRED: the pad zone's list is the PTriggers and its class `Trigger_Pod` (the call by name is not
+  made); the first player record is the primary player, the host and the Pod's owner; the host's
+  answer comes at the start of the next tick; Start has the pad word's bit numbering; context bit 0x1
+  is gameplay. PLACEHOLDER: a player's stored colour starts opaque white (the game's value and who
+  writes it were not found).
+- Left out: the viewer (`--level-scripts` still plays one level; nothing draws the change-over or feeds
+  the viewer's Sackboy and pad in); the pod computer's own scripts and menus; the computer open on
+  arrival and closed on leaving; the ownership test; the other 98 actions; one VM for both levels.
+- Tests: `lbp-script-vm` `d273_pod_computer_natives`; `lbp-runtime` 61 unit and 49 world tests (three
+  new `d273_*`). fmt, CI clippy, CI tests, Python tests pass; clippy on the Bevy viewer passes and its
+  tests pass but `sackboy_play::tests::input_script_steps` (fails on main); its sources did not change.
+  Nothing run in the viewer; nothing compared against the game.
+- Next: the shared session and the change-over in the viewer, or the pod computer's own scripts.
+
+## Before: D272 the Pod's camera and its moving world (2026-10-13)
 - RScript plan stage 6 (the Pod), PR 3. The planets level's world script writes the camera itself each
   tick (`Cam.SetCameraFromToUp`) and moves its world Thing each tick. The runtime kept both and nothing
   drew by them. No native is new (249).

@@ -1,5 +1,20 @@
 # Development log
 
+## 2026-10-13 - D273 the pod computer is entered
+
+RScript plan stage 6 (the Pod), PR 4. FOUND (EBOOT 01.33, read for this PR): the pad zone is "our Pod, the
+primary player, in a pod-computer trigger, world z >= -300"; `IsJustClickedByID` takes an action number (8 =
+bit 0x80 newly down, context mask 0x1001); `GetPlayerColour` unpacks a stored ARGB word; "our Pod" is set
+when a level is entered from one slot; `RequestHostUsePod` only sends a request and the host's answer sets
+"in use" with a sound. Runtime: those rules (`pod.rs`, `PadState`, `PlayerRecord::colour`), the answer at
+the start of the next tick, one session for several levels (`hand_session_to`, `tick_session`). Natives
+249 -> 255. `level_scripts --with-level/--enter-pad-zone/--press/--player-colour/--our-pod`. MEASURED, the
+two Pod levels together: flags 3 on round 452, press and request on 470, in use on 471, change-over to 1.0
+and pod mesh GUID 145753 on 490, planets camera on its in-use preset on 496. 378 levels: Things stopped by
+a fault 3 / 3 / 3, unbound natives called 40 / 71 / 71, unbound calls 61,419 / 862,919 / 868,592.
+INFERRED: trigger class `Trigger_Pod`, one local player is primary, host and owner. PLACEHOLDER: the stored
+colour (opaque white). Left out: the viewer, the pod computer's menus. `docs/level-scripts.md` part 24.
+
 ## 2026-10-13 - D272 the Pod's camera and its moving world
 
 RScript plan stage 6 (the Pod), PR 3. The planets level's world script writes the camera itself each tick

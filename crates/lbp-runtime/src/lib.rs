@@ -328,8 +328,16 @@ pub struct LevelWorld {
     /// The video and voice-over requests of the scripts ([`MediaState`]). Nothing plays.
     pub media: MediaState,
     /// `PodComputer.GetPodComputerInUse__`: a player is at the pod computer ("PuterInUse").
-    /// False by default (INFERRED: nobody at the computer when the Pod loads).
+    /// False by default (INFERRED: nobody at the computer when the Pod loads). It follows
+    /// the answer to `PodComputer.RequestHostUsePod__b`
+    /// ([`LevelWorld::begin_session_tick`]).
     pub pod_computer_in_use: bool,
+    /// `Game.CurrentLevelIsOurPod__`: the level was started as the player's own Pod.
+    /// FOUND (01.33, 0x1ab508): the game sets its byte when a level becomes the current
+    /// one, true when the slot being entered is the Pod's slot; the level's content is
+    /// not looked at. The value of that slot id was not read, so the caller says how
+    /// the level was started. False unless the caller sets it.
+    pub our_pod: bool,
     /// The Planets object `PodComputer.GetPlanets__` returns.
     pub planets: Option<ObjectId>,
     /// Planet objects by `GetCrafteroid__i` index - 1, with their Thing.
@@ -1265,7 +1273,7 @@ impl LevelWorld {
             mask_b: 1,
             ..Default::default()
         });
-        pad.now = buttons;
+        pad.set_buttons(buttons);
         true
     }
 
@@ -2034,13 +2042,13 @@ impl World for LevelWorld {
                 self.pod.fade = Some(*f);
                 self.pod.fade_calls += 1;
             }
-            ("RequestHostUsePod", Some(Value::Bool(b)))
-                if self.pod.host_use_pod_requests.len() < MAX_HOST_USE_POD_REQUESTS =>
-            {
-                self.pod.host_use_pod_requests.push(HostUsePodRequest {
-                    in_use: *b,
-                    frame: self.pworld.frame,
-                });
+            ("SetPodTransitionTexture", Some(v)) => {
+                self.pod.transition_texture = match v {
+                    Value::Int(i) => Some(*i as u32),
+                    Value::Raw(u) | Value::Ref(u) => Some(*u),
+                    _ => None,
+                };
+                self.pod.transition_texture_calls += 1;
             }
             _ => {}
         }
@@ -2217,6 +2225,7 @@ impl World for LevelWorld {
             | "Profile.HasPlayedLBP1AndUnlockedMoon__" => Value::Bool(false),
             "Game.IsVcrPaused__" | "Game.IsPSNDemoBuild__" => Value::Bool(false),
             "Game.IsTutorialLevel__" => Value::Bool(self.tutorial_level),
+            "Game.CurrentLevelIsOurPod__" => Value::Bool(self.our_pod),
             "Game.GetPartyLeadersPlayerNumber__" => {
                 Value::Int(self.player_records.first().map_or(-1, |r| r.number))
             }
@@ -2252,6 +2261,64 @@ impl World for LevelWorld {
     /// [`LevelWorld::pod_computer_in_use`].
     fn pod_computer_in_use(&mut self) -> Result<bool, String> {
         Ok(self.pod_computer_in_use)
+    }
+    /// [`LevelWorld::in_pad_zone`], counted.
+    fn in_pad_zone(&mut self, thing: u32) -> Result<bool, String> {
+        self.state(thing)?;
+        let inside = LevelWorld::in_pad_zone(self, thing);
+        self.pod.pad_zone_calls += 1;
+        self.pod.pad_zone_hits += u64::from(inside);
+        Ok(inside)
+    }
+    /// FOUND (01.33, 0x6d2f18): false when no player record has the number; else the
+    /// record's pad is tested. Here a record without a pad is false too. An action
+    /// other than [`lbp_script_vm::natives::ACTION_ENGAGE_POD`] was not read: false, and
+    /// counted in [`PodState::actions_not_read`]. A prompt the game would show is
+    /// counted by its key in [`PodState::action_prompts`]; nothing draws it.
+    fn action_just_clicked(
+        &mut self,
+        player: i32,
+        action: i32,
+        prompt: Option<&str>,
+    ) -> Result<bool, String> {
+        self.pod.action_click_calls += 1;
+        let Some(record) = self.player_records.iter().find(|r| r.number == player) else {
+            return Ok(false);
+        };
+        let pad = record.pad.unwrap_or_default();
+        let Some(clicked) = pad.is_just_clicked(action) else {
+            *self.pod.actions_not_read.entry(action).or_default() += 1;
+            return Ok(false);
+        };
+        if let (Some(key), Some(true)) = (prompt, pad.shows_prompt(action)) {
+            *self.pod.action_prompts.entry(key.to_owned()).or_default() += 1;
+        }
+        self.pod.action_clicks += u64::from(clicked);
+        Ok(clicked)
+    }
+    /// FOUND (01.33, 0x139308): the colour of the record with the head's player number;
+    /// without that record, the first record's. Here the Sackboys
+    /// [`LevelWorld::add_player`] made have a number; any other Thing with a PYellowHead
+    /// gets the first record's colour. No record at all: the game reads a word that was
+    /// not read; here [`lbp_script_vm::natives::PLACEHOLDER_PLAYER_COLOUR`].
+    fn player_colour(&mut self, thing: u32) -> Result<Option<u32>, String> {
+        if !self.state(thing)?.parts.contains(&"YELLOWHEAD") {
+            return Ok(None);
+        }
+        self.pod.player_colour_calls += 1;
+        let number = self.players.iter().find(|p| p.thing == thing);
+        let record = number
+            .and_then(|p| self.player_records.iter().find(|r| r.number == p.number))
+            .or(self.player_records.first());
+        Ok(Some(record.map_or(
+            lbp_script_vm::natives::PLACEHOLDER_PLAYER_COLOUR,
+            |r| r.colour,
+        )))
+    }
+    /// [`LevelWorld::request_host_use_pod`].
+    fn request_host_use_pod(&mut self, in_use: bool) -> Result<(), String> {
+        LevelWorld::request_host_use_pod(self, in_use);
+        Ok(())
     }
     /// No crash zoom in the PC run (INFERRED default).
     fn crash_zoom(&mut self) -> Result<bool, String> {
@@ -3095,7 +3162,22 @@ impl LevelScripts {
     /// found (the one engine function that calls a script function of that name by its
     /// name object, 0x625780, is reached from a single game-state object outside the
     /// world update, 0x3f8d24).
+    ///
+    /// Before anything else the world takes the host's answer to a pod computer request
+    /// of the tick before ([`LevelWorld::begin_session_tick`]).
     pub fn tick_level(
+        &mut self,
+        vm: &mut Vm,
+        host: &mut Bindings<LevelWorld>,
+        budget: u64,
+    ) -> StepReport {
+        host.world.begin_session_tick();
+        self.tick_level_in_session(vm, host, budget)
+    }
+
+    /// [`LevelScripts::tick_level`] without the start of the session's tick: for a
+    /// level that is played with others in one session ([`tick_session`]).
+    pub fn tick_level_in_session(
         &mut self,
         vm: &mut Vm,
         host: &mut Bindings<LevelWorld>,
