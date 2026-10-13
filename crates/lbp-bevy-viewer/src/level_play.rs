@@ -6,7 +6,9 @@
 //! `Leave` scripts run as he walks. A small window shows the counts. Of what the scripts
 //! change, the open messages are drawn (part 17, `speech_overlay.rs`): speech bubbles at
 //! their Things and the subtitle; and the level is lit again when a script changes the
-//! global lighting or darkness (part 18). The rest is the clock and the counts.
+//! global lighting or darkness (part 18); and the Things' own models follow what the
+//! scripts hide, tint and move (part 19, `thing_view.rs`). The rest is the clock and the
+//! counts.
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts, EguiPrimaryContextPass};
 use lbp_catalog::{attachment::AttachedSource, LoadControl};
@@ -41,6 +43,10 @@ struct Play {
     /// The (lighting, darkness) pair the scene's light shows, once the level is drawn
     /// with a light that follows the PWorld lighting.
     light: Option<LightFollower>,
+    /// The scene whose draw entities were last set from the script world
+    /// (`thing_view::LevelThings::scene`), and what was done to them since the start.
+    things_scene: Option<u64>,
+    followed: crate::thing_view::Followed,
 }
 
 fn value(all: &[String], flag: &str) -> Option<String> {
@@ -141,9 +147,11 @@ pub fn install(app: &mut App) -> Result<(), String> {
         player: None,
         messages_printed: (0, 0),
         light: None,
+        things_scene: None,
+        followed: Default::default(),
     })
     .insert_resource(Time::<Fixed>::from_hz(f64::from(TICK_HZ)))
-    .add_systems(FixedUpdate, (tick, relight).chain())
+    .add_systems(FixedUpdate, (tick, relight, follow_things).chain())
     .add_systems(EguiPrimaryContextPass, (speech, window));
     Ok(())
 }
@@ -230,6 +238,85 @@ fn relight(mut play: NonSendMut<Play>, mut v: ResMut<crate::Viewer>) {
     v.lighting.light = light;
     v.lighting.dirty = true;
 }
+
+/// Sets the level's draw entities from the script world (part 19): the Things on the
+/// world's dirty list each tick, and for a scene that was just spawned every mapped
+/// Thing that is hidden or unlike the level file (scripts tick while the scene loads).
+/// Like [`relight`], nothing until the scene has been drawn for
+/// [`RELIGHT_AFTER_FRAMES`]: the same guard, since a first tint makes a new material.
+/// One line per tick on which the scene changed: the check that needs no screenshot.
+fn follow_things(
+    mut play: NonSendMut<Play>,
+    mut v: ResMut<crate::Viewer>,
+    things: Option<Res<crate::thing_view::LevelThings>>,
+    mut entities: Query<crate::thing_view::Parts>,
+    mut materials: ResMut<Assets<crate::ViewerMaterial>>,
+) {
+    let p = &mut *play;
+    let Some(things) = things else {
+        return;
+    };
+    if v.ready_frames < RELIGHT_AFTER_FRAMES {
+        p.things_scene = None;
+        return;
+    }
+    let world = &mut p.host.world;
+    let first = p.things_scene != Some(things.scene);
+    let list = if first {
+        p.things_scene = Some(things.scene);
+        world.take_display_dirty();
+        crate::thing_view::first_list(world, &things)
+    } else {
+        world.take_display_dirty()
+    };
+    if list.is_empty() {
+        return;
+    }
+    let done = crate::thing_view::apply(
+        world,
+        &list,
+        &things,
+        &mut entities,
+        &mut materials,
+        &mut v.scene,
+    );
+    p.followed.absorb(&done);
+    if first || done.any() {
+        // The first few Things by what the list says of them, to find them in the scene.
+        let some = |keep: &dyn Fn(u32, &lbp_runtime::ThingDisplay) -> bool| -> Vec<u32> {
+            let kept = list.iter().filter(|(thing, _)| {
+                things.entities.contains_key(thing)
+                    && world
+                        .thing_display(*thing)
+                        .is_some_and(|d| keep(*thing, &d))
+            });
+            kept.map(|(thing, _)| *thing)
+                .take(MAX_THINGS_NAMED)
+                .collect()
+        };
+        let hidden = some(&|_, d| d.mesh_hidden());
+        let by_script = some(&|t, d| {
+            d.mesh_hidden()
+                && !world
+                    .display_at_load(t)
+                    .is_some_and(|was| was.mesh_hidden())
+        });
+        // A tint with its colour (red, green, blue, alpha).
+        let tinted: Vec<(u32, [f32; 4])> = some(&|_, d| d.mesh_tint.is_some())
+            .into_iter()
+            .filter_map(|t| Some((t, world.thing_display(t)?.mesh_tint?)))
+            .collect();
+        println!(
+            "Things at tick {}{}: {}; first Things hidden {hidden:?} (of them by a script {by_script:?}), tinted {tinted:?}",
+            p.scripts.ticks,
+            if first { " (new scene)" } else { "" },
+            done.line()
+        );
+    }
+}
+
+/// Thing numbers named per kind in the line [`follow_things`] prints.
+const MAX_THINGS_NAMED: usize = 8;
 
 /// One line per tick on which a message entered the list or was closed: the check of the
 /// message display that needs no screenshot.
@@ -342,6 +429,10 @@ fn window(mut contexts: EguiContexts, play: NonSend<Play>) -> Result {
                 "  not applied: colour correction {correction:.3}, fog {fog:.3}, fog tint {fog_tint:.3}, gravity {:.3}, water level {:.3}",
                 now.gravity, now.water_level
             ));
+            ui.label(match play.things_scene {
+                Some(_) => format!("Things: {}", play.followed.line()),
+                None => "Things: the scene does not follow them (yet)".into(),
+            });
             let mut unbound: Vec<_> = play.host.unbound.iter().collect();
             unbound.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
             if !unbound.is_empty() {

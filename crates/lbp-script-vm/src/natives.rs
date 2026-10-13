@@ -246,10 +246,32 @@ pub trait World {
     fn set_shape_editor_colour(&mut self, _thing: u32, _colour: [f32; 4]) -> Result<(), String> {
         Err(not_available("shape colours"))
     }
+    /// Tint of a Thing's shape (`SetShapeEditorColourTint`). Nothing for a Thing without
+    /// a PShape.
+    fn set_shape_tint(&mut self, _thing: u32, _colour: [f32; 4]) -> Result<(), String> {
+        Err(not_available("shape colours"))
+    }
     /// Tint of a Thing's render mesh in the editor colour (`SetRenderMeshEditorColourTint`,
-    /// called next to `SetShapeEditorColour` with a colour vector).
+    /// called next to `SetShapeEditorColour` with a colour vector). Nothing for a Thing
+    /// without a PRenderMesh.
     fn set_render_mesh_tint(&mut self, _thing: u32, _colour: [f32; 4]) -> Result<(), String> {
         Err(not_available("render mesh tints"))
+    }
+    /// Editor colour of a Thing's render mesh (`SetRenderMeshEditorColour`). Nothing for
+    /// a Thing without a PRenderMesh.
+    fn set_render_mesh_colour(&mut self, _thing: u32, _colour: [f32; 4]) -> Result<(), String> {
+        Err(not_available("render mesh colours"))
+    }
+    /// Whether a Thing's render mesh is visible in play mode
+    /// (`PostItNote.IsVisibleInPlayMode`); false without a PRenderMesh.
+    fn render_mesh_visible_in_play_mode(&mut self, _thing: u32) -> Result<bool, String> {
+        Err(not_available("render mesh visibility"))
+    }
+    /// Shows or hides a Thing's render mesh and those of the children the game's call
+    /// goes on to (`Thing.ShowRenderMesh`, `Thing.HideRenderMesh`). Nothing for a Thing
+    /// without a PRenderMesh.
+    fn set_render_mesh_visible(&mut self, _thing: u32, _visible: bool) -> Result<(), String> {
+        Err(not_available("render mesh visibility"))
     }
     /// Playback rate of a Thing's animation (`Native.SetAnimSpeed`; scripts pass 0 to stop
     /// and 1 to run, INFERRED multiplier of the normal rate).
@@ -1296,15 +1318,39 @@ const TABLE: &[(&str, &str, NativeFn)] = &[
     ("Thing", "GetShapeEditorColour__Q5Thing", |w, c| {
         Ok(Value::Vec4(w.shape_editor_colour(subject(c)?)?))
     }),
+    // FOUND (01.33, 0x642a20 -> 0x75495c). Declared static
+    // `void SetShapeEditorColour(Thing, v4)`: nothing for a null Thing or one without a
+    // PShape; else the colour is packed to 32 bits and stored in the PShape.
     ("Thing", "SetShapeEditorColour__Q5Thingr", |w, c| {
-        w.set_shape_editor_colour(subject(c)?, vec4(param(c, 1)?)?)?;
+        let colour = vec4(param(c, 1)?)?;
+        if let Some(t) = thing(param(c, 0)?)? {
+            w.set_shape_editor_colour(t, colour)?;
+        }
         Ok(Value::Void)
     }),
+    // FOUND (01.33, 0x6429cc -> 0x753a9c). Declared static
+    // `void SetShapeEditorColourTint(Thing, v4)`: as `SetShapeEditorColour`, into the
+    // PShape word before the colour's. Scripts of four classes call it (the race gates,
+    // the scoreboard, the burning object); the measuring runs do not reach those calls.
+    ("Thing", "SetShapeEditorColourTint__Q5Thingr", |w, c| {
+        let colour = vec4(param(c, 1)?)?;
+        if let Some(t) = thing(param(c, 0)?)? {
+            w.set_shape_tint(t, colour)?;
+        }
+        Ok(Value::Void)
+    }),
+    // FOUND (01.33, 0x642978 -> 0x7549c8). Declared static
+    // `void SetRenderMeshEditorColourTint(Thing, v4)`: nothing for a null Thing or one
+    // without a PRenderMesh; else the colour is packed to 32 bits and stored in the
+    // PRenderMesh, in a word of its own after the editor colour's two.
     (
         "Thing",
         "SetRenderMeshEditorColourTint__Q5Thingr",
         |w, c| {
-            w.set_render_mesh_tint(subject(c)?, vec4(param(c, 1)?)?)?;
+            let colour = vec4(param(c, 1)?)?;
+            if let Some(t) = thing(param(c, 0)?)? {
+                w.set_render_mesh_tint(t, colour)?;
+            }
             Ok(Value::Void)
         },
     ),
@@ -1773,10 +1819,37 @@ const TABLE: &[(&str, &str, NativeFn)] = &[
     ("Thing", "UpdateScale__", |w, c| {
         recorded(w, "UpdateScale", receiver(c)?, c.params)
     }),
-    // FOUND (0x642cd4 -> 0x754aac). Declared static `void HideRenderMesh(Thing)`: nothing
-    // for a null Thing; else a visibility call on its PRenderMesh. Display state.
+    // FOUND (0x642cd4 -> 0x754aac -> 0xebf98). Declared static `void HideRenderMesh(Thing)`:
+    // nothing for a null Thing or one without a PRenderMesh; else the visibility call with
+    // "off" and the mask 3: both bits are cleared in the PRenderMesh's visibility byte, and
+    // the same is done down the Thing's children that have a PRenderMesh and no PShape
+    // (not below a Thing with a PShape or with one of two globe meshes). The level-link
+    // script hides its lock mesh with it.
     ("Thing", "HideRenderMesh__Q5Thing", |w, c| {
-        recorded(w, "HideRenderMesh", thing(param(c, 0)?)?, &[])
+        if let Some(t) = thing(param(c, 0)?)? {
+            w.set_render_mesh_visible(t, false)?;
+        }
+        Ok(Value::Void)
+    }),
+    // FOUND (0x644d7c -> 0x5e9260). Declared `bool IsVisibleInPlayMode()` on PostItNote:
+    // bit 0 of the visibility byte of the Thing's PRenderMesh; false for a null Thing or
+    // one without a PRenderMesh. This names the bit: a mesh without it is not visible
+    // while a level is played. The note's script asks it once; the measuring runs do not
+    // reach that call.
+    ("PostItNote", "IsVisibleInPlayMode__", |w, c| {
+        Ok(Value::Bool(match receiver(c)? {
+            Some(t) => w.render_mesh_visible_in_play_mode(t)?,
+            None => false,
+        }))
+    }),
+    // FOUND (0x642c94 -> 0x753e3c -> 0xebf98). Declared static `void ShowRenderMesh(Thing)`:
+    // as `HideRenderMesh` with "on": both bits are set. One script calls it (the level
+    // link, when it shows its lock again); the measuring runs do not reach that call.
+    ("Thing", "ShowRenderMesh__Q5Thing", |w, c| {
+        if let Some(t) = thing(param(c, 0)?)? {
+            w.set_render_mesh_visible(t, true)?;
+        }
+        Ok(Value::Void)
     }),
     // FOUND (0x6428ac -> 0x753e88). Declared static
     // `void SetRenderMeshEditorTexture(Thing, Resource)`: nothing for a null Thing; else
@@ -1790,12 +1863,15 @@ const TABLE: &[(&str, &str, NativeFn)] = &[
         },
     ),
     // FOUND (0x642924 -> 0x753ed4 -> 0xecac4). Declared static
-    // `void SetRenderMeshEditorColour(Thing, v4)`: nothing for a null Thing; else the
-    // colour of its PRenderMesh. Display state.
+    // `void SetRenderMeshEditorColour(Thing, v4)`: nothing for a null Thing or one without
+    // a PRenderMesh; else the colour is packed to 32 bits and stored in two words of the
+    // PRenderMesh. INFERRED: those are the editor colour a level file stores.
     ("Thing", "SetRenderMeshEditorColour__Q5Thingr", |w, c| {
-        let t = thing(param(c, 0)?)?;
-        vec4(param(c, 1)?)?;
-        recorded(w, "SetRenderMeshEditorColour", t, &c.params[1..])
+        let colour = vec4(param(c, 1)?)?;
+        if let Some(t) = thing(param(c, 0)?)? {
+            w.set_render_mesh_colour(t, colour)?;
+        }
+        Ok(Value::Void)
     }),
     // FOUND (0x642ac4 -> 0x7538dc). Declared `void RemoveFromAnimatingDivergentList()`:
     // takes the Thing off a PWorld list used for network divergence.
@@ -2319,16 +2395,14 @@ pub const STATE_QUERIES: [(&str, &str); 24] = [
 /// ([`World::engine_call`], or a counter for the audio ones): the engine would draw, play
 /// or send something that nothing models yet. Reports count calls to them apart from the
 /// other bound natives.
-pub const RECORDED_ONLY: [(&str, &str); 23] = [
+pub const RECORDED_ONLY: [(&str, &str); 21] = [
     ("Audio", "PlaySound__Q5ThingQ7StringA"),
     ("Audio", "SetInteractiveMusic__ggffiQ5Thing"),
     ("Audio", "SetInteractiveMusicStereoPairVolume__giff"),
     ("Audio", "StopInteractiveMusic__"),
     ("World", "SetPieChartMultiplier__i"),
     ("Thing", "UpdateScale__"),
-    ("Thing", "HideRenderMesh__Q5Thing"),
     ("Thing", "SetRenderMeshEditorTexture__Q5ThingQ8Resource"),
-    ("Thing", "SetRenderMeshEditorColour__Q5Thingr"),
     ("Thing", "RemoveFromAnimatingDivergentList__"),
     ("Trigger_Speech_Bubble", "NotifyNpcsOfMouthEnd__"),
     ("NoJoinMarker", "SetGameNoJoin__"),
@@ -2442,7 +2516,29 @@ mod tests {
         assert!(call("Game", "IsVcrPaused__", &[]).is_err());
         assert!(call("Game", "GetLevelSlotID__", &[]).is_err());
         assert!(call("Thing", "UpdateScale__", &[Value::Thing(Some(1))]).is_err());
-        assert!(call("Thing", "HideRenderMesh__Q5Thing", &[Value::Thing(None)]).is_err());
+        // The display natives do nothing for a null Thing and need a world for any other.
+        let colour = Value::Vec4([1.; 4]);
+        for name in ["HideRenderMesh__Q5Thing", "ShowRenderMesh__Q5Thing"] {
+            assert_eq!(call("Thing", name, &[Value::Thing(None)]), Ok(Value::Void));
+            assert!(
+                call("Thing", name, &[Value::Thing(Some(1))]).is_err(),
+                "{name}"
+            );
+        }
+        for name in [
+            "SetRenderMeshEditorColour__Q5Thingr",
+            "SetRenderMeshEditorColourTint__Q5Thingr",
+            "SetShapeEditorColour__Q5Thingr",
+            "SetShapeEditorColourTint__Q5Thingr",
+        ] {
+            let null = [Value::Thing(None), colour.clone()];
+            assert_eq!(call("Thing", name, &null), Ok(Value::Void), "{name}");
+            let some = [Value::Thing(Some(1)), colour.clone()];
+            assert!(call("Thing", name, &some).is_err(), "{name}");
+            // The colour is still checked for a null Thing.
+            let bad = [Value::Thing(None), Value::Int(1)];
+            assert!(call("Thing", name, &bad).is_err(), "{name}");
+        }
     }
 
     #[test]

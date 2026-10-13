@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D267
+# Current state (overwrite each milestone) — after D268
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -11,7 +11,39 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D267 script global settings take effect (2026-10-13)
+## Latest: D268 hidden, tinted and moved Things (2026-10-13)
+- RScript plan stage 5, PR 4. FOUND in the EBOOT: `Thing.HideRenderMesh` / `ShowRenderMesh` clear and
+  set two bits (mask 3) of the PRenderMesh's visibility byte, the stored `visibilityFlags`, and go down
+  the Thing's children that have a mesh and no shape (0xebf98); bit 0 is "visible in play mode"
+  (`PostItNote.IsVisibleInPlayMode__`, 0x5e9260); the mesh colour, mesh tint, shape colour and shape tint
+  setters store packed colours and do nothing for a null Thing or a missing part.
+- Runtime: `lbp-runtime/src/display.rs`. `LevelWorld::take_display_dirty` lists the Things whose
+  visibility byte, colours or world matrix changed (`DisplayChange`); `thing_display` and
+  `display_at_load` give the values (`ThingDisplay`, with `mesh_hidden` and `moved_from`);
+  `display_changed`, `display_summary`. Natives 216 -> 219 (`ShowRenderMesh`, `SetShapeEditorColourTint`,
+  `IsVisibleInPlayMode`); hide and the mesh colour are real bindings (`RECORDED_ONLY` 23 -> 21).
+- Viewer: `--level-scripts` tags the draw entities of each Thing's own model (render mesh, decorations)
+  and keeps a Thing-to-entity map (`thing_view.rs`). Each tick it hides a mesh whose play-mode bit is
+  clear, gives a tinted mesh a material of its own (red, green and blue multiply the surface colour) and
+  moves a Thing's entities by the change of its world matrix. A new scene starts with every mesh hidden
+  that the level file stores as not visible in play mode. It prints `Things at tick N`.
+- Not followed: shapes (merged into shared meshes per material and colour: a recoloured or moved shape
+  keeps the file's look and place), an editor colour set by a script (built into the material at load),
+  the tint's alpha, the Pod, per-item skinned meshes.
+- MEASURED (378 levels, 60 ticks, the three runs alike): 68,618 render meshes, 12,106 in 218 levels
+  stored as not visible in play mode (byte 2: 11,573, byte 0: 533); visibility bytes changed by scripts
+  0 (the 113 hide calls are on meshes already stored hidden); mesh colour unlike the file 10 Things / 1
+  level; mesh tint 102 / 101 (101 white with an alpha, 1 with a colour); shape colour 102 / 101; world
+  matrix unlike in any bit 4,545 / 32, beyond rounding 1 Thing (no mesh). Things stopped by a fault
+  4 -> 4; unbound natives unchanged.
+- INFERRED: a mesh without bit 0 is not drawn in play and its decorations stay; the tint as a multiply
+  before lighting; the two colour words are the stored `editorColor`; the packed channel order.
+- Checked in the window without taking focus (side_rts_tutorial, unlit): the level link's padlock and
+  the scoreboard's two corner markers are gone with the scripts. On ghost_train the one tint with a colour (0.70, 1.0, 0.15 on the scoreboard's mesh) turns the scoreboard's frame yellow-green. Not seen: a change while the
+  scene is up (covered by the `thing_view` test). Next: PR 5, camera and screen natives.
+  `docs/level-scripts.md` part 19.
+
+## Before: D267 script global settings take effect (2026-10-13)
 - RScript plan stage 5, PR 3. FOUND in the EBOOT: the PWorld's per-frame function (0xd5e84, after the
   switch pass in the world update) calls `ApplyGlobalSettings__` on the scripted Thing of each
   global-settings slot and clears a slot whose Thing is gone. The script steps its blend factor there,

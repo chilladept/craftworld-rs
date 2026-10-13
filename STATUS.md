@@ -4741,3 +4741,83 @@ game's bubble placement and art.
 **+0 newly viewable / +0 newly Complete (runtime and viewer feature).**
 Next: stage 5 PR 4, hidden, moved and tinted Things; then the camera. Open: fog, fog tint and colour
 correction; gravity for the physics; the engine's `Update__` call; the device loss on an early light.
+
+## D268 hidden, tinted and moved Things (2026-10-13)
+- RScript plan stage 5, PR 4 (`docs/rscript-plan.md`). Scripts hide a render mesh, colour or tint it
+  and move Things; the viewer drew none of it. The runtime now lists what changed and the Bevy viewer
+  sets its draw entities from that list.
+- FOUND (EBOOT 01.33, read-only through the Ghidra bridge; script listings):
+  - `Thing.HideRenderMesh` (0x642cd4 -> 0x754aac) and `ShowRenderMesh` (0x642c94 -> 0x753e3c) make one
+    visibility call (0xebf98) with the mask 3: the bits are cleared in the PRenderMesh's visibility
+    byte and, to show, set again; then the same for each child with a PRenderMesh and no PShape, and
+    down from it, unless the Thing has a PShape or one of two globe meshes (0x27bd, 0x3e6e). Nothing
+    for a null Thing or one without a PRenderMesh. A new PRenderMesh has the byte 3.
+  - `PostItNote.IsVisibleInPlayMode__` (0x644d7c -> 0x5e9260) answers with bit 0 of that byte. The byte
+    is the `visibilityFlags` a level file stores.
+  - `SetRenderMeshEditorColour` (0x642924 -> 0x753ed4 -> 0xecac4): a packed colour into two words of
+    the PRenderMesh; `SetRenderMeshEditorColourTint` (0x642978 -> 0x7549c8) into a third.
+    `SetShapeEditorColour` (0x642a20 -> 0x75495c) and `SetShapeEditorColourTint` (0x6429cc -> 0x753a9c):
+    two words of the PShape. Nothing for a null Thing or a missing part.
+  - Who calls them: hide and show the level link (its lock mesh); the mesh colour the global-settings
+    tweaker (its own Thing); the tints and the shape colour the scoreboard, the race gates and the
+    burning object.
+- Runtime (`lbp-runtime`):
+  - New `display.rs`: `DisplayChange`, `ThingDisplay` (`mesh_hidden`, `unlike`, `moved_from`,
+    `moved_far`), `DisplayState` (`LevelWorld::display`), `DisplaySummary`, `pack_colour`, and on
+    `LevelWorld`: `take_display_dirty`, `display_dirty_len`, `thing_display`, `display_at_load`,
+    `display_changed`, `display_summary`.
+  - `ThingState::render_mesh_visibility` (the stored byte) replaces `render_mesh_hidden`;
+    `render_mesh_colour` starts as the file's colour; new `shape_tint`. The tint and the colours are
+    kept only on a Thing with the part.
+  - The transform natives, the Things moved along with a parent and a write of `PPos.WorldPosition`
+    mark the list; a player the caller moves does not.
+  - Natives 216 -> 219: `Thing.ShowRenderMesh__Q5Thing`, `Thing.SetShapeEditorColourTint__Q5Thingr`,
+    `PostItNote.IsVisibleInPlayMode__`. `HideRenderMesh` and `SetRenderMeshEditorColour` are real
+    bindings (`RECORDED_ONLY` 23 -> 21). `SetShapeEditorColour` and the mesh tint do nothing for a null
+    Thing (they faulted) or a missing part.
+- `level_scripts`: `play_all.display` (and for a level played alone): Things unlike the level file and
+  their levels by kind, changes marked, render meshes by stored visibility byte, tints by kind.
+- `lbp-preview`: `SceneItem::decoration` tells a decoration's item from the Thing's render mesh.
+- Viewer (`lbp-bevy-viewer --level-scripts`, not the Pod):
+  - `thing_view.rs`: a `LevelThing` component on every draw entity of a Thing's own model and the
+    `LevelThings` map, built in `spawn_level`; `apply` sets the entities; `first_list` for a scene
+    that was just spawned. `level_play.rs` runs it after each tick, 60 drawn frames after a spawn.
+  - Hidden: a mesh whose play-mode bit is clear, in the level file or by a script, is not drawn; the
+    Thing's decorations stay.
+  - Tint: the mesh gets a material of its own; red, green and blue multiply the surface colour
+    (`dual::set_thing_tint`). The alpha is not used.
+  - Place: all of the Thing's entities move by the change of its world matrix.
+  - Not followed, and counted: shapes (the scene merges the shapes of one material and colour into
+    shared meshes, so a recoloured or moved shape keeps the file's look and place), an editor colour
+    set by a script (built into the material when the level loads), per-item skinned meshes.
+- MEASURED (378 levels, 13,547 scripted Things, 60 ticks; plain, `--visit-triggers` and with
+  `--pulse-switches` give the same counts):
+  - Render meshes 68,618; stored visibility byte 3 / 2 / 0: 56,512 / 11,573 / 533. Not visible in
+    play mode in the file: 12,106 Things in 218 levels.
+  - Visibility bytes unlike the file after the run: 0. The 113 hide calls (103 levels) are on meshes
+    already stored that way.
+  - Mesh editor colour unlike: 10 Things in 1 level (1,180 calls in 135 levels set the stored colour).
+  - Mesh tint unlike: 102 Things in 101 levels; 101 of them white with the alpha 0.498 (the
+    scoreboards), 1 with a colour. Shape colour unlike: 102 in 101. Shape tint: 0.
+  - World matrix unlike in any bit: 4,545 Things in 32 levels; by more than the counting threshold:
+    1 Thing in 1 level, without a mesh or a shape. No drawn Thing moves.
+  - Things stopped by a fault 4 -> 4 in all three runs, fault kinds 2 (the Pod's fault is one
+    instruction further on); unbound natives 51 / 87 / 87 and native calls unchanged; messages, global
+    settings, trigger events and switch reactions equal to D267.
+  - Viewer, release, side_rts_tutorial, 1280 x 720, shown without taking focus: 200 Things mapped to
+    759 draw entities; a new scene hides 23 Things. Two pairs of frames without the viewer's fog
+    under ignored `local-analysis/`: the level link's padlock is gone with the scripts, and two white
+    markers at the scoreboard. On ghost_train the one tint with a colour (0.70, 1.0, 0.15 on the scoreboard's mesh) turns the scoreboard's frame yellow-green.
+- INFERRED: a mesh without bit 0 is not drawn while a level is played, and its decorations stay; bit 1
+  is the editor's; the tint multiplies the surface colour before lighting; the two colour words are
+  the stored `editorColor`; the channel order and rounding of a packed colour.
+- Tests: 3 unit tests in `display.rs` and the world test
+  `d268_hidden_coloured_and_moved_things_are_listed_for_a_display` (`lbp-runtime`: 52 unit, 38 world);
+  the display natives without a world in `lbp-script-vm`; `thing_view` in the viewer. fmt, the CI
+  clippy line, the CI test set, the Python tests and `cargo check` of both viewers pass; clippy on the
+  Bevy viewer passes; its tests pass but the one that fails on main.
+- Not tested: a hide, tint or move in the window while the scene is up; any picture against the game
+  in RPCS3.
+**+0 newly viewable / +0 newly Complete (runtime and viewer feature).**
+Next: stage 5 PR 5, camera and screen natives. Open: shapes that scripts recolour or move, the editor
+colour a script sets, the tint's alpha, the animation position per Thing.

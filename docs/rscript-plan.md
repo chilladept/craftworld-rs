@@ -166,6 +166,22 @@ UI (`UpdateUI__`) and photo natives are not planned.
   place after `Update__` (the engine's `Update__` call was not found). Not applied:
   fog, fog tint, colour correction, gravity, water. Follows: PR 4 hidden, moved and
   tinted Things, PR 5 camera and screen natives.
+- Stage 5, PR 4 (D268, part 19): hidden, tinted and moved Things. FOUND: hide and show
+  clear and set two bits of the PRenderMesh's visibility byte, down the Thing's children
+  with a mesh and no shape; bit 0 is "visible in play mode" (the game's own native of
+  that name reads it); the colour setters store packed colours and do nothing for a
+  null Thing or a missing part. `lbp-runtime/src/display.rs` keeps a dirty list
+  (`take_display_dirty`: visibility, colour, world matrix) with the values now and at
+  load. Natives 216 -> 219 (show, shape tint, the play-mode question); hide and the
+  mesh colour are no longer recorded only. The viewer maps each Thing to the draw
+  entities of its own model (`thing_view.rs`) and hides, tints and places them; a mesh
+  that is not visible in play mode is hidden. Shapes are merged into shared meshes and
+  are not followed. Over 378 levels: 12,106 meshes in 218 levels are stored as not
+  visible in play mode; the scripts change no visibility byte, one mesh colour in 10
+  Things, tints in 102 (101 of them white with an alpha, not drawn), shape colours in
+  102, and no drawn Thing moves. Things stopped by a fault stay at 4. INFERRED: that a
+  mesh without bit 0 is not drawn, the tint as a multiply. Follows: PR 5 camera and
+  screen natives.
 
 ## Rules
 

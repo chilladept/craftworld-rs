@@ -1,5 +1,41 @@
 # Development log
 
+## 2026-10-13 - D268 hidden, tinted and moved Things in the viewer
+
+RScript plan stage 5, PR 4. FOUND (EBOOT 01.33, through the Ghidra bridge): `Thing.HideRenderMesh` (0x642cd4)
+and `ShowRenderMesh` (0x642c94) reach one visibility call (0xebf98) with the mask 3: it clears, and to show
+sets, two bits of the PRenderMesh's visibility byte (the stored `visibilityFlags`; a new PRenderMesh has 3)
+and goes down the Thing's children that have a PRenderMesh and no PShape, not below a Thing with a PShape or
+one of two globe meshes. `PostItNote.IsVisibleInPlayMode__` (0x644d7c -> 0x5e9260) answers with bit 0 of that
+byte, which names the bit. `SetRenderMeshEditorColour` (0x642924) stores a packed colour in two words of the
+PRenderMesh, `SetRenderMeshEditorColourTint` (0x642978) in a third; `SetShapeEditorColour` (0x642a20) and
+`SetShapeEditorColourTint` (0x6429cc) in two words of the PShape; all do nothing for a null Thing or a
+missing part. New `lbp-runtime/src/display.rs`: `LevelWorld::take_display_dirty` (Things whose visibility
+byte, colours or world matrix changed, with a `DisplayChange`), `thing_display` / `display_at_load`
+(`ThingDisplay`: `mesh_hidden`, `unlike`, `moved_from`, `moved_far`), `display_changed`, `display_summary`,
+`pack_colour`; `ThingState::render_mesh_visibility` and `shape_tint`, `render_mesh_colour` starts as the
+file's. Natives 216 -> 219 (`Thing.ShowRenderMesh__Q5Thing`, `Thing.SetShapeEditorColourTint__Q5Thingr`,
+`PostItNote.IsVisibleInPlayMode__`); hide and the mesh colour are real bindings (`RECORDED_ONLY` 23 -> 21);
+the shape colour and the mesh tint no longer fault on a null Thing. `level_scripts` reports
+`play_all.display`. `lbp-preview`: `SceneItem::decoration`. Viewer: `thing_view.rs` (`LevelThing` on the
+draw entities of a Thing's own model, the `LevelThings` map built in `spawn_level`, `apply`), a
+`follow_things` system after the tick, a tint uniform in the material (`dual::set_thing_tint`). Under
+`--level-scripts` a mesh whose play-mode bit is clear is hidden (from the level file or by a script), a tint
+multiplies the surface colour, a moved Thing's entities follow. Shapes are merged into shared meshes and are
+not followed; a script's editor colour, the tint's alpha and the Pod are not followed either. MEASURED, 378
+levels, 60 ticks, the three runs alike: 68,618 render meshes, visibility byte 3 / 2 / 0 = 56,512 / 11,573 /
+533, so 12,106 meshes in 218 levels are stored as not visible in play mode; scripts change 0 visibility
+bytes (113 hide calls on meshes already stored hidden), the mesh colour of 10 Things in 1 level (1,180
+calls), the tint of 102 Things in 101 levels (101 white with an alpha, 1 with a colour), the shape colour of
+102 in 101; 4,545 world matrices differ in some bit, 1 beyond rounding (a Thing without a mesh). Things
+stopped by a fault 4 -> 4 in all three (the Pod's fault moved one instruction on); unbound natives and
+native calls unchanged. INFERRED: a mesh without bit 0 is not drawn in play, the tint as a multiply, the
+colour words as the stored `editorColor`, the packed channel order. Viewer seen without taking focus on
+side_rts_tutorial, unlit: the level link's padlock and two markers at the scoreboard are gone with the
+scripts. On ghost_train the one tint with a colour (0.70, 1.0, 0.15 on the scoreboard's mesh) turns the scoreboard's frame yellow-green. Tests: 3 unit tests and one world test in `lbp-runtime`, the natives without a world in
+`lbp-script-vm`, one `thing_view` test in the viewer. +0 viewable, +0 Complete. `docs/level-scripts.md`
+part 19.
+
 ## 2026-10-13 - D267 script global settings take effect
 
 RScript plan stage 5, PR 3. FOUND (EBOOT 01.33, through the Ghidra bridge): the PWorld's per-frame function

@@ -310,6 +310,7 @@ fn class_defaults_inherited_natives_and_parts() {
 fn part4_anim_speed_tint_camera_tweak_and_player_numbers() {
     let mut things = level();
     things[1].parts.push("CAMERA_TWEAK");
+    things[2].data.render_mesh = render_mesh(1);
     let mut world = LevelWorld::from_things(&things);
     assert_eq!(world.has_part(1, "PCameraTweak"), Ok(true));
     assert_eq!(world.has_part(2, "PCameraTweak"), Ok(false));
@@ -2096,12 +2097,9 @@ fn stage4_recorded_calls_are_counted_and_change_nothing_else() {
     let mut w = LevelWorld::from_things(&level());
     let me = Value::Thing(Some(1));
     let null = Value::Thing(None);
-    let colour = Value::Vec4([0.5, 0.25, 1., 1.]);
-    let calls: [(&str, &str, Vec<Value>); 12] = [
+    let calls: [(&str, &str, Vec<Value>); 9] = [
         ("World", "SetPieChartMultiplier__i", vec![Value::Int(3)]),
         ("Thing", "UpdateScale__", vec![me.clone()]),
-        ("Thing", "HideRenderMesh__Q5Thing", vec![me.clone()]),
-        ("Thing", "HideRenderMesh__Q5Thing", vec![null.clone()]),
         (
             "Thing",
             "SetRenderMeshEditorTexture__Q5ThingQ8Resource",
@@ -2109,13 +2107,8 @@ fn stage4_recorded_calls_are_counted_and_change_nothing_else() {
         ),
         (
             "Thing",
-            "SetRenderMeshEditorColour__Q5Thingr",
-            vec![me.clone(), colour.clone()],
-        ),
-        (
-            "Thing",
-            "SetRenderMeshEditorColour__Q5Thingr",
-            vec![null.clone(), colour],
+            "SetRenderMeshEditorTexture__Q5ThingQ8Resource",
+            vec![null.clone(), Value::Ref(900)],
         ),
         (
             "Thing",
@@ -2140,25 +2133,30 @@ fn stage4_recorded_calls_are_counted_and_change_nothing_else() {
         counted,
         [
             ("GotoScoreboard", 2),
-            ("HideRenderMesh", 2),
             ("NotifyNpcsOfMouthEnd", 1),
             ("RemoveFromAnimatingDivergentList", 1),
             ("SetGameNoJoin", 1),
             ("SetPieChartMultiplier", 1),
-            ("SetRenderMeshEditorColour", 2),
-            ("SetRenderMeshEditorTexture", 1),
+            ("SetRenderMeshEditorTexture", 2),
             ("UpdateScale", 1),
         ]
     );
-    // The display calls are kept on their Thing; the scoreboard request with its flag.
-    assert!(w.things[1].render_mesh_hidden);
-    assert_eq!(w.things[1].render_mesh_colour, Some([0.5, 0.25, 1., 1.]));
+    // The texture is kept on its Thing; the scoreboard request with its flag.
     assert_eq!(w.things[1].render_mesh_texture, Some(Value::Ref(900)));
     assert_eq!(w.scoreboard_requests, [true, false]);
-    assert!(!w.things[2].render_mesh_hidden && w.things[2].render_mesh_colour.is_none());
+    assert!(w.things[2].render_mesh_texture.is_none());
     // A wrong argument is still an error.
-    let bad = [me, Value::Int(1)];
-    assert!(native(&mut w, "Thing", "SetRenderMeshEditorColour__Q5Thingr", &bad).is_err());
+    let bad = [Value::Int(1), Value::Ref(900)];
+    let texture = "SetRenderMeshEditorTexture__Q5ThingQ8Resource";
+    assert!(native(&mut w, "Thing", texture, &bad).is_err());
+    // Hiding a mesh and colouring it are no longer recorded only (part 19).
+    for name in [
+        "HideRenderMesh__Q5Thing",
+        "SetRenderMeshEditorColour__Q5Thingr",
+    ] {
+        assert!(!RECORDED_ONLY.contains(&("Thing", name)), "{name}");
+        assert!(bound().any(|b| b == ("Thing", name)), "{name}");
+    }
     // Every recorded-only native is in the table.
     for entry in RECORDED_ONLY {
         assert!(bound().any(|b| b == entry), "{entry:?}");
@@ -2686,8 +2684,9 @@ fn d263_recorded_calls_keep_their_arguments_for_a_later_stage() {
             "{name}"
         );
     }
-    // With the 13 of stage 4 these are all the recorded-only and messaging natives.
-    assert_eq!(calls.len() + 13, RECORDED_ONLY.len() + MESSAGING.len());
+    // With the 11 of stage 4 that are still recorded only, these are all the
+    // recorded-only and messaging natives.
+    assert_eq!(calls.len() + 11, RECORDED_ONLY.len() + MESSAGING.len());
     // Every call is counted once by name.
     assert_eq!(w.engine_calls.len(), calls.len());
     assert!(w.engine_calls.values().all(|n| *n == 1));
@@ -3295,4 +3294,275 @@ fn d267_the_slot_holders_apply_their_global_settings_each_tick() {
     let mut bare = LevelWorld::from_things(&[ThingRecord::default()]);
     assert_eq!(bare.global_settings_holder(5), SlotHolder::Empty);
     assert_eq!(bare.settings_unlike_load(), [false; 8]);
+}
+
+/// A level for the display natives. Thing 1 (POS, mesh) has the children 2 (POS, mesh),
+/// 3 (mesh and a shape), 5 (no mesh) and 7 (a globe mesh); 4 (mesh) is under 2, 6 (mesh)
+/// under 5 and 8 (mesh) under 7.
+fn display_level() -> Vec<ThingRecord> {
+    let mut t: Vec<ThingRecord> = (0..9)
+        .map(|index| ThingRecord {
+            index,
+            parent: (index > 0).then_some([0, 0, 1, 1, 2, 1, 5, 1, 7][index]),
+            ..Default::default()
+        })
+        .collect();
+    t[0].data.world = Some(WorldPart::default());
+    for (n, guid) in [
+        (1, 0x10),
+        (2, 0x11),
+        (3, 0x12),
+        (4, 0x13),
+        (6, 0x14),
+        (7, 0x27bd),
+        (8, 0x15),
+    ] {
+        t[n].data.render_mesh = render_mesh(guid).map(|mut m| {
+            m.visibility_flags = 3;
+            m.editor_color = 0xffff_ffff;
+            m
+        });
+        t[n].parts.push("RENDER_MESH");
+    }
+    t[3].parts.push("SHAPE");
+    for (n, x) in [(1, 10.), (2, 14.), (4, 15.)] {
+        let mut world = lbp_runtime::transform::IDENTITY;
+        world[12] = x;
+        t[n].data.pos = Some(Pos {
+            bone_of: None,
+            anim_hash: 0,
+            world,
+        });
+        t[n].parts.push("POS");
+    }
+    t
+}
+
+#[test]
+fn d268_hidden_coloured_and_moved_things_are_listed_for_a_display() {
+    use lbp_runtime::{pack_colour, DisplayChange, DisplaySummary, MESH_VISIBILITY_MASK};
+    let mut w = LevelWorld::from_things(&display_level());
+    w.derive_local_matrices();
+    w.things[3].shape_colour = Some([0., 1., 0., 1.]);
+    let thing = |n: u32| Value::Thing(Some(n));
+    let null = Value::Thing(None);
+    let at_load: Vec<_> = (0..9).map(|n| w.thing_display(n).unwrap()).collect();
+    assert_eq!(at_load[1].mesh_visibility, Some(3));
+    assert_eq!(at_load[1].mesh_colour, Some([1.; 4]));
+    assert_eq!(
+        (at_load[5].mesh_visibility, at_load[5].mesh_colour),
+        (None, None)
+    );
+    assert!(w.take_display_dirty().is_empty() && w.display_changed().is_empty());
+
+    // Hide: the Thing, and down its children with a mesh and no shape. Thing 3 has a
+    // shape, Thing 6 hangs under a Thing without a mesh, Thing 8 under a globe mesh.
+    let hide = |w: &mut LevelWorld, t: &Value| {
+        native(
+            w,
+            "Thing",
+            "HideRenderMesh__Q5Thing",
+            std::slice::from_ref(t),
+        )
+    };
+    assert_eq!(hide(&mut w, &thing(1)), Ok(Value::Void));
+    let hidden = |w: &LevelWorld| -> Vec<u32> {
+        (0..9)
+            .filter(|&n| w.thing_display(n).unwrap().mesh_hidden())
+            .collect()
+    };
+    assert_eq!(hidden(&w), [1, 2, 4, 7]);
+    let visibility = |things: &[u32]| -> Vec<(u32, DisplayChange)> {
+        things
+            .iter()
+            .map(|&t| (t, DisplayChange::VISIBILITY))
+            .collect()
+    };
+    assert_eq!(w.display_dirty_len(), 4);
+    assert_eq!(w.take_display_dirty(), visibility(&[1, 2, 4, 7]));
+    // Taken once; hiding again changes nothing; a null Thing and one without a mesh do
+    // nothing.
+    assert!(w.take_display_dirty().is_empty());
+    for t in [thing(1), null.clone(), thing(5), thing(0)] {
+        assert_eq!(hide(&mut w, &t), Ok(Value::Void));
+    }
+    assert!(w.take_display_dirty().is_empty());
+    assert_eq!(w.display_changed(), visibility(&[1, 2, 4, 7]));
+    // A Thing with a shape is hidden when it is the one named, and nothing below it.
+    assert_eq!(hide(&mut w, &thing(3)), Ok(Value::Void));
+    assert_eq!(hide(&mut w, &thing(7)), Ok(Value::Void));
+    assert_eq!(w.take_display_dirty(), visibility(&[3]));
+    // Only the two bits of the mask change.
+    w.things[8].render_mesh_visibility = Some(0xf4 | MESH_VISIBILITY_MASK);
+    assert_eq!(hide(&mut w, &thing(8)), Ok(Value::Void));
+    assert_eq!(w.things[8].render_mesh_visibility, Some(0xf4));
+    // The note's own question reads the play-mode bit; false without a mesh.
+    let in_play = |w: &mut LevelWorld, t: u32| {
+        let me = [Value::Thing(Some(t))];
+        native(w, "PostItNote", "IsVisibleInPlayMode__", &me)
+    };
+    assert_eq!(in_play(&mut w, 1), Ok(Value::Bool(false)));
+    assert_eq!(in_play(&mut w, 6), Ok(Value::Bool(true)));
+    assert_eq!(in_play(&mut w, 5), Ok(Value::Bool(false)));
+    // Show sets them again, down the same children.
+    let show = [thing(1)];
+    assert_eq!(
+        native(&mut w, "Thing", "ShowRenderMesh__Q5Thing", &show),
+        Ok(Value::Void)
+    );
+    assert_eq!(hidden(&w), [3, 8]);
+    assert_eq!(w.things[2].render_mesh_visibility, Some(3));
+    assert_eq!(w.take_display_dirty(), visibility(&[1, 2, 4, 7, 8]));
+    // Back at the file's values, Things 1, 2, 4 and 7 are no longer unlike it.
+    assert_eq!(w.display_changed(), visibility(&[3, 8]));
+
+    // Colours: the mesh colour and tint need a PRenderMesh, the shape's a PShape.
+    let red = Value::Vec4([1., 0., 0., 1.]);
+    let colour = |w: &mut LevelWorld, name: &str, t: &Value, c: &Value| {
+        native(w, "Thing", name, &[t.clone(), c.clone()])
+    };
+    for name in [
+        "SetRenderMeshEditorColour__Q5Thingr",
+        "SetRenderMeshEditorColourTint__Q5Thingr",
+        "SetShapeEditorColour__Q5Thingr",
+        "SetShapeEditorColourTint__Q5Thingr",
+    ] {
+        assert_eq!(colour(&mut w, name, &null, &red), Ok(Value::Void), "{name}");
+        assert_eq!(colour(&mut w, name, &thing(5), &red), Ok(Value::Void));
+        assert!(colour(&mut w, name, &thing(1), &Value::Int(1)).is_err());
+        assert!(colour(&mut w, name, &thing(99), &red).is_err(), "{name}");
+    }
+    assert!(w.take_display_dirty().is_empty());
+    assert_eq!(
+        colour(
+            &mut w,
+            "SetRenderMeshEditorColour__Q5Thingr",
+            &thing(1),
+            &red
+        ),
+        Ok(Value::Void)
+    );
+    assert_eq!(
+        colour(
+            &mut w,
+            "SetRenderMeshEditorColourTint__Q5Thingr",
+            &thing(2),
+            &red
+        ),
+        Ok(Value::Void)
+    );
+    for name in [
+        "SetShapeEditorColour__Q5Thingr",
+        "SetShapeEditorColourTint__Q5Thingr",
+    ] {
+        assert_eq!(colour(&mut w, name, &thing(3), &red), Ok(Value::Void));
+        // Thing 1 has no shape.
+        assert_eq!(colour(&mut w, name, &thing(1), &red), Ok(Value::Void));
+    }
+    assert_eq!(w.things[1].render_mesh_colour, Some([1., 0., 0., 1.]));
+    assert_eq!(w.things[2].render_mesh_tint, Some([1., 0., 0., 1.]));
+    assert_eq!(w.things[2].render_mesh_colour, Some([1.; 4]));
+    assert_eq!(w.things[3].shape_colour, Some([1., 0., 0., 1.]));
+    assert_eq!(w.things[3].shape_tint, Some([1., 0., 0., 1.]));
+    assert_eq!(w.things[1].shape_colour, None);
+    assert_eq!(
+        w.take_display_dirty(),
+        [1, 2, 3].map(|t| (t, DisplayChange::COLOUR))
+    );
+    // The file's colour set again, and a white tint on a mesh never tinted: no change.
+    let white = Value::Vec4([1.; 4]);
+    assert_eq!(
+        colour(
+            &mut w,
+            "SetRenderMeshEditorColour__Q5Thingr",
+            &thing(4),
+            &white
+        ),
+        Ok(Value::Void)
+    );
+    assert_eq!(
+        colour(
+            &mut w,
+            "SetRenderMeshEditorColourTint__Q5Thingr",
+            &thing(4),
+            &white
+        ),
+        Ok(Value::Void)
+    );
+    assert!(w.take_display_dirty().is_empty());
+    assert_eq!(
+        pack_colour(w.things[1].render_mesh_colour.unwrap()),
+        0xffff_0000
+    );
+
+    // Moving Thing 1 moves its descendants with a PPos: 2 and 4.
+    let mut to = lbp_runtime::transform::IDENTITY;
+    to[12..15].copy_from_slice(&[20., 5., 0.]);
+    w.set_world_transform(1, to).unwrap();
+    assert_eq!(
+        w.take_display_dirty(),
+        [1, 2, 4].map(|t| (t, DisplayChange::TRANSFORM))
+    );
+    let now = w.thing_display(4).unwrap();
+    assert_eq!(&now.world.unwrap()[12..15], &[25., 5., 0.]);
+    assert_eq!(w.display_at_load(4).unwrap().world, at_load[4].world);
+    let by = now.moved_from(&w.display_at_load(4).unwrap()).unwrap();
+    assert_eq!(&by[12..15], &[10., 5., 0.]);
+    assert!(now.moved_far(&at_load[4]));
+    // The same matrix again is no change; the local form and the member mark too.
+    w.set_world_transform(1, to).unwrap();
+    assert!(w.take_display_dirty().is_empty());
+    let mut local = lbp_runtime::transform::IDENTITY;
+    local[12] = 2.;
+    w.set_local_transform(4, local).unwrap();
+    assert_eq!(w.take_display_dirty(), [(4, DisplayChange::TRANSFORM)]);
+    let ppos = part(&mut w, 2, "Pos");
+    let member = Value::Mat44(lbp_runtime::transform::IDENTITY);
+    w.set_member(MemberKind::RefPtr, &ppos, "PPos", "WorldPosition", member)
+        .unwrap();
+    assert_eq!(w.take_display_dirty(), [(2, DisplayChange::TRANSFORM)]);
+    // A player the caller moves is not a change of the level's Things.
+    let player = w.add_player([0.; 3], (0., 0.));
+    w.move_player(player, [5., 5., 0.], (0., 0.));
+    assert!(w.take_display_dirty().is_empty());
+
+    // Several changes of one Thing are one entry.
+    hide(&mut w, &thing(4)).unwrap();
+    colour(
+        &mut w,
+        "SetRenderMeshEditorColour__Q5Thingr",
+        &thing(4),
+        &red,
+    )
+    .unwrap();
+    w.set_local_transform(4, lbp_runtime::transform::IDENTITY)
+        .unwrap();
+    let all = DisplayChange {
+        visibility: true,
+        colour: true,
+        transform: true,
+    };
+    assert_eq!(w.take_display_dirty(), [(4, all)]);
+
+    // The summary counts the Things unlike the file.
+    let s = w.display_summary();
+    assert_eq!(s.changed, w.display_changed().len());
+    let want = DisplaySummary {
+        changed: s.changed,
+        mesh_hidden: 3,
+        mesh_visibility: 3,
+        mesh_colour: 2,
+        mesh_tint: 1,
+        shape_colour: 1,
+        shape_tint: 1,
+        moved: s.moved,
+        moved_far: s.moved_far,
+        moved_far_with_mesh: s.moved_far,
+        moved_far_with_shape: 0,
+        ..Default::default()
+    };
+    assert_eq!(s, want);
+    assert!(s.moved >= 2 && s.moved_far >= 2 && s.moved_far <= s.moved);
+    assert!(w.display.marks.iter().all(|n| *n > 0));
+    assert!(w.thing_display(99).is_none() && w.display_at_load(99).is_none());
 }

@@ -26,12 +26,14 @@ use lbp_script_vm::{ClassId, Host, MemberKind, ObjectId, Step, Task, Value, Vm};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+mod display;
 mod global_settings;
 mod message_view;
 mod messages;
 mod sensors;
 mod switches;
 pub mod transform;
+pub use display::*;
 pub use global_settings::*;
 pub use message_view::*;
 pub use messages::*;
@@ -59,6 +61,8 @@ pub struct ThingState {
     pub members: Option<BTreeMap<String, Value>>,
     /// PShape colour as a colour vector (`GetShapeEditorColour`).
     pub shape_colour: Option<[f32; 4]>,
+    /// PShape colour tint a script set (`SetShapeEditorColourTint`); nothing draws it.
+    pub shape_tint: Option<[f32; 4]>,
     /// Render-mesh editor colour tint a script set (`SetRenderMeshEditorColourTint`).
     pub render_mesh_tint: Option<[f32; 4]>,
     /// Animation playback rate a script set (`Native.SetAnimSpeed`, INFERRED multiplier).
@@ -82,9 +86,12 @@ pub struct ThingState {
     pub circuit_board: Option<u32>,
     /// GUID of the mesh the Thing's PRenderMesh shows, when it has one with a GUID.
     pub mesh_guid: Option<u32>,
-    /// A script hid the render mesh (`Thing.HideRenderMesh`); nothing draws by it yet.
-    pub render_mesh_hidden: bool,
-    /// Render-mesh editor colour a script set (`SetRenderMeshEditorColour`).
+    /// The PRenderMesh's visibility byte, when the Thing has a PRenderMesh: the level
+    /// file's until `Thing.HideRenderMesh` or `ShowRenderMesh` changes it
+    /// ([`ThingDisplay::mesh_hidden`]).
+    pub render_mesh_visibility: Option<u8>,
+    /// The PRenderMesh's editor colour as a colour vector, when the Thing has a
+    /// PRenderMesh: the level file's until `SetRenderMeshEditorColour` sets one.
     pub render_mesh_colour: Option<[f32; 4]>,
     /// Render-mesh editor texture a script set (`SetRenderMeshEditorTexture`), as passed
     /// (a resource handle, or null).
@@ -400,6 +407,9 @@ pub struct LevelWorld {
     /// Whether the first global-settings pass has run
     /// ([`LevelWorld::global_settings_holder`]).
     pub global_settings_started: bool,
+    /// The Things whose visibility, colours or world matrix changed, for a display
+    /// ([`LevelWorld::take_display_dirty`]).
+    pub display: DisplayState,
     /// The names of the level's tags and tag sensors; a [`TagKey`] holds an index.
     pub tag_names: Vec<String>,
     /// The world's tag map as the last switch pass left it
@@ -729,6 +739,16 @@ impl LevelWorld {
                         .render_mesh
                         .as_ref()
                         .and_then(|m| m.mesh.as_ref()?.guid),
+                    render_mesh_visibility: t
+                        .data
+                        .render_mesh
+                        .as_ref()
+                        .map(|m| m.visibility_flags as u8),
+                    render_mesh_colour: t
+                        .data
+                        .render_mesh
+                        .as_ref()
+                        .map(|m| unpack_colour(m.editor_color)),
                     switch_key: t
                         .data
                         .switch_key
@@ -1190,7 +1210,8 @@ impl LevelWorld {
             };
             let (sibling, local) = (state.next_sibling, state.local_matrix);
             if let (Some(parent), Some(local)) = (self.parent_world(t), local) {
-                self.things[t as usize].world_matrix = Some(transform::mul(&parent, &local));
+                let world = transform::mul(&parent, &local);
+                self.change_display(t, |s| s.world_matrix = Some(world));
             }
             stack.extend(sibling);
             stack.extend(first(self, t));
@@ -1376,6 +1397,11 @@ impl LevelWorld {
         value: &Value,
     ) -> Result<bool, String> {
         let bad = || format!("{part} member {field} set to {value:?}");
+        if let ("POS", "WorldPosition", Value::Mat44(m)) = (part, field, value) {
+            self.state(thing)?;
+            self.change_display(thing, |t| t.world_matrix = Some(*m));
+            return Ok(true);
+        }
         let pworld = &mut self.pworld;
         let t = self
             .things
@@ -1385,7 +1411,6 @@ impl LevelWorld {
             ("WORLD", "GameMode", Value::Int(i)) => pworld.game_mode = *i,
             ("WORLD", "Frame", Value::Int(i)) => pworld.frame = *i,
             ("WORLD", "WaterLevel", Value::Float(f)) => pworld.water_level = *f,
-            ("POS", "WorldPosition", Value::Mat44(m)) => t.world_matrix = Some(*m),
             ("TRIGGER", "RadiusMultiplier" | "HysteresisMultiplier" | "AllZLayers", v) => {
                 let g = t
                     .trigger
@@ -1503,8 +1528,9 @@ impl World for LevelWorld {
         let world = self
             .parent_world(thing)
             .map_or(m, |p| transform::mul(&p, &m));
-        let t = self.thing_mut(thing)?;
-        (t.local_matrix, t.world_matrix) = (Some(m), Some(world));
+        self.change_display(thing, |t| {
+            (t.local_matrix, t.world_matrix) = (Some(m), Some(world));
+        });
         self.move_descendants(thing);
         Ok(())
     }
@@ -1829,21 +1855,44 @@ impl World for LevelWorld {
             .shape_colour
             .ok_or_else(|| format!("thing {thing} has no shape"))
     }
+    /// FOUND (01.33): nothing for a Thing without a PShape.
     fn set_shape_editor_colour(&mut self, thing: u32, colour: [f32; 4]) -> Result<(), String> {
-        let t = self
-            .things
-            .get_mut(thing as usize)
-            .ok_or_else(|| format!("no thing {thing}"))?;
-        if t.shape_colour.is_none() {
-            return Err(format!("thing {thing} has no shape"));
+        if self.state(thing)?.shape_colour.is_some() {
+            self.change_display(thing, |t| t.shape_colour = Some(colour));
         }
-        t.shape_colour = Some(colour);
         Ok(())
     }
-    /// Recorded on the Thing; nothing draws it yet. Any Thing may be tinted (scripts call
-    /// it on their own Thing without a `HasPRenderMesh` check).
+    /// FOUND (01.33): nothing for a Thing without a PShape. Kept; nothing draws it.
+    fn set_shape_tint(&mut self, thing: u32, colour: [f32; 4]) -> Result<(), String> {
+        if self.state(thing)?.shape_colour.is_some() {
+            self.change_display(thing, |t| t.shape_tint = Some(colour));
+        }
+        Ok(())
+    }
+    /// FOUND (01.33): nothing for a Thing without a PRenderMesh.
     fn set_render_mesh_tint(&mut self, thing: u32, colour: [f32; 4]) -> Result<(), String> {
-        self.thing_mut(thing)?.render_mesh_tint = Some(colour);
+        if self.state(thing)?.render_mesh_visibility.is_some() {
+            self.change_display(thing, |t| t.render_mesh_tint = Some(colour));
+        }
+        Ok(())
+    }
+    /// FOUND (01.33): nothing for a Thing without a PRenderMesh.
+    fn set_render_mesh_colour(&mut self, thing: u32, colour: [f32; 4]) -> Result<(), String> {
+        if self.state(thing)?.render_mesh_visibility.is_some() {
+            self.change_display(thing, |t| t.render_mesh_colour = Some(colour));
+        }
+        Ok(())
+    }
+    /// FOUND (01.33): the play-mode bit of the PRenderMesh's visibility byte; false for
+    /// a Thing without a PRenderMesh.
+    fn render_mesh_visible_in_play_mode(&mut self, thing: u32) -> Result<bool, String> {
+        let byte = self.state(thing)?.render_mesh_visibility;
+        Ok(byte.is_some_and(|v| v & MESH_VISIBLE_IN_PLAY_MODE != 0))
+    }
+    /// See [`LevelWorld::show_render_mesh`].
+    fn set_render_mesh_visible(&mut self, thing: u32, visible: bool) -> Result<(), String> {
+        self.state(thing)?;
+        self.show_render_mesh(thing, visible);
         Ok(())
     }
     /// Recorded on the Thing; nothing animates by it yet.
@@ -1941,8 +1990,8 @@ impl World for LevelWorld {
         }
         Ok(None)
     }
-    /// Counted by name in [`LevelWorld::engine_calls`]. The render-mesh calls are also
-    /// kept on their Thing (nothing draws by them yet) and a scoreboard request in
+    /// Counted by name in [`LevelWorld::engine_calls`]. The render-mesh texture is also
+    /// kept on its Thing (nothing draws by it yet) and a scoreboard request in
     /// [`LevelWorld::scoreboard_requests`]. A null Thing is counted and nothing more, as
     /// the game does nothing for it. The calls of [`KEPT_REQUESTS`] are kept with their
     /// arguments in [`LevelWorld::requests`], and `SetAnimLoop` on its Thing. The
@@ -1973,8 +2022,6 @@ impl World for LevelWorld {
         let Some(thing) = thing else { return Ok(()) };
         let t = self.thing_mut(thing)?;
         match (name, args.first()) {
-            ("HideRenderMesh", _) => t.render_mesh_hidden = true,
-            ("SetRenderMeshEditorColour", Some(Value::Vec4(c))) => t.render_mesh_colour = Some(*c),
             ("SetRenderMeshEditorTexture", Some(v)) => t.render_mesh_texture = Some(v.clone()),
             ("SetAnimLoop", Some(Value::Bool(b))) => t.anim_loop = Some(*b),
             _ => {}
@@ -1996,8 +2043,9 @@ impl World for LevelWorld {
             .parent_world(thing)
             .and_then(|p| transform::inverse(&p))
             .map_or(m, |inv| transform::mul(&inv, &m));
-        let t = self.thing_mut(thing)?;
-        (t.local_matrix, t.world_matrix) = (Some(local), Some(m));
+        self.change_display(thing, |t| {
+            (t.local_matrix, t.world_matrix) = (Some(local), Some(m));
+        });
         self.move_descendants(thing);
         Ok(())
     }

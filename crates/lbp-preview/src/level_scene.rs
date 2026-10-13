@@ -216,6 +216,8 @@ pub struct SceneItem {
     pub uid: Option<i32>,
     /// Shape Things merged into this item (0 for a model item).
     pub shapes: usize,
+    /// The item draws an entry of `thing`'s DECORATIONS part, not its RENDER_MESH part.
+    pub decoration: bool,
 }
 
 /// Merged world-space shape geometry for one gfx material (D114 extrusions).
@@ -1345,6 +1347,7 @@ pub fn build_scene_with_colors<T>(
             thing: t.index,
             uid: t.uid,
             shapes: 0,
+            decoration: false,
         });
     }
     scene
@@ -1522,6 +1525,7 @@ fn add_decorations<T>(
             thing: t.index,
             uid: t.uid,
             shapes: 0,
+            decoration: true,
         });
     }
 }
@@ -1685,6 +1689,7 @@ pub fn add_shapes_with<T>(
                 thing: first,
                 uid: None,
                 shapes: newly,
+                decoration: false,
             });
         }
     }
@@ -1916,6 +1921,7 @@ pub fn add_sticker_decals<T>(
                 thing: first,
                 uid: None,
                 shapes: 0,
+                decoration: false,
             });
         }
     }
@@ -3485,6 +3491,7 @@ mod tests {
                 thing: 0,
                 uid: None,
                 shapes: 0,
+                decoration: false,
             })
             .is_err());
         scene.meshes.push(SceneMesh {
@@ -3500,6 +3507,7 @@ mod tests {
                 thing: 0,
                 uid: None,
                 shapes: 0,
+                decoration: false,
             })
             .unwrap();
         assert_eq!(scene.bounds(), None);

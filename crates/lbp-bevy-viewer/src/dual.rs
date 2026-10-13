@@ -99,6 +99,9 @@ pub struct SecondTexture {
     /// P3k: x = bakedAOScale, y = bakedAOBias, z = 1 when a lightmap is bound and lit.
     #[uniform(131)]
     ao_params: Vec4,
+    /// D268: a tint a level script gave the Thing's render mesh (rgb), w = 1 when set.
+    #[uniform(132)]
+    thing_tint: Vec4,
     /// D121: generated normals passed `adapter::normal_trust`; otherwise stays unlit.
     pub normals_trusted: bool,
 }
@@ -298,6 +301,14 @@ pub fn set_lighting(
 pub fn enable_lightmap(material: &mut ViewerMaterial, image: Handle<Image>) {
     material.extension.lightmap = Some(image);
 }
+/// D268: multiplies the surface colour by a script's render-mesh tint before lighting
+/// (`None`: no tint). INFERRED: how the game's shader uses the tint was not read.
+pub fn set_thing_tint(material: &mut ViewerMaterial, tint: Option<[f32; 3]>) {
+    material.extension.thing_tint = match tint {
+        Some([r, g, b]) => Vec4::new(r, g, b, 1.),
+        None => Vec4::ZERO,
+    };
+}
 pub struct DualPlugin;
 impl Plugin for DualPlugin {
     fn build(&self, app: &mut App) {
@@ -357,6 +368,7 @@ struct BumpInput {
 @group(#{MATERIAL_BIND_GROUP}) @binding(129) var lightmap_image: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(130) var lightmap_sampler: sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(131) var<uniform> ao_params: vec4<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(132) var<uniform> thing_tint: vec4<f32>;
 // D189 graph texture k at uv with explicit gradients (non-uniform control flow).
 fn graph_texture(k: u32, uv: vec2<f32>, gx: vec2<f32>, gy: vec2<f32>) -> vec4<f32> {
     switch k {
@@ -568,6 +580,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> FragmentOut
         discard;
     }
     var rgb = color.rgb;
+    // D268: a level script's render-mesh tint (INFERRED: a multiply before lighting).
+    if thing_tint.w > 0.5 {
+        rgb *= thing_tint.rgb;
+    }
     if light_dir.w > 0.5 {
         // P2s: mode 3 (untrusted smooth normals) shades with the face normal.
         let shading = select(in.world_normal, face, light_dir.w > 2.5);

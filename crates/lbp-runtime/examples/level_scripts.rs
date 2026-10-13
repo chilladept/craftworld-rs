@@ -44,7 +44,9 @@
 //! names, anchors, messages closed and those open at the end. `play_all.global_settings`
 //! counts the per-tick `ApplyGlobalSettings__` calls by setting type, the slots cleared,
 //! and by type the levels and ticks on which the setting in force was not the one in force
-//! when the level was read.
+//! when the level was read. `play_all.display` counts the Things whose render-mesh
+//! visibility, colours or world matrix are unlike the level file's after the last tick,
+//! the levels with such a Thing, and the changes marked for a display on the way.
 //! Names and counts only; no bytecode. Output: a NEW JSON file under
 //! ignored `local-analysis/`. Counting unit: Thing with a PScript part (instances) or
 //! distinct script class (function names).
@@ -880,6 +882,126 @@ impl SettingsSums {
     }
 }
 
+/// The Things whose display values (render-mesh visibility, colours, world matrix) are
+/// unlike the level file's after the last tick, and the levels that have such a Thing,
+/// by the rows of `DisplaySummary`; and the changes marked on the way, by kind. For one
+/// level the level counts are 0 or 1.
+#[derive(Default, Clone)]
+struct DisplaySums {
+    things: lbp_runtime::DisplaySummary,
+    levels: [usize; 12],
+    /// Changes of visibility, colour and world matrix marked for a display (a Thing
+    /// changed on two ticks counts twice).
+    marks: [u64; 3],
+    /// Things with a PRenderMesh by the visibility byte the level file stores; those the
+    /// file stores as not visible in play mode, and their levels; and the Things hidden
+    /// after the last tick.
+    meshes_by_stored_visibility: BTreeMap<u8, usize>,
+    hidden_in_file: (usize, usize),
+    hidden_at_end: (usize, usize),
+    /// Render-mesh tints set by a script after the last tick, by whether their red,
+    /// green and blue are white and whether their alpha is full: (Things, levels).
+    tints: BTreeMap<&'static str, (usize, usize)>,
+}
+
+impl DisplaySums {
+    fn of(world: &LevelWorld) -> Self {
+        let things = world.display_summary();
+        let mut by_byte = BTreeMap::<u8, usize>::new();
+        let (mut in_file, mut at_end) = (0usize, 0usize);
+        let mut tints = BTreeMap::<&'static str, (usize, usize)>::new();
+        for thing in 0..world.things.len() as u32 {
+            let (Some(was), Some(now)) = (world.display_at_load(thing), world.thing_display(thing))
+            else {
+                continue;
+            };
+            if let Some(byte) = was.mesh_visibility {
+                *by_byte.entry(byte).or_default() += 1;
+            }
+            in_file += usize::from(was.mesh_hidden());
+            at_end += usize::from(now.mesh_hidden());
+            if let Some(tint) = now.mesh_tint {
+                let packed = lbp_runtime::pack_colour(tint);
+                let kind = match (packed & 0xff_ffff == 0xff_ffff, packed >> 24 == 0xff) {
+                    (true, true) => "white",
+                    (true, false) => "white_with_an_alpha",
+                    (false, true) => "coloured",
+                    (false, false) => "coloured_with_an_alpha",
+                };
+                *tints.entry(kind).or_default() = (tints.get(kind).map_or(0, |t| t.0) + 1, 1);
+            }
+        }
+        DisplaySums {
+            things,
+            levels: things.rows().map(|(_, n)| usize::from(n > 0)),
+            marks: world.display.marks,
+            meshes_by_stored_visibility: by_byte,
+            hidden_in_file: (in_file, usize::from(in_file > 0)),
+            hidden_at_end: (at_end, usize::from(at_end > 0)),
+            tints,
+        }
+    }
+
+    fn add(&mut self, o: &DisplaySums) {
+        self.things.absorb(&o.things);
+        for (sum, n) in self.levels.iter_mut().zip(o.levels) {
+            *sum += n;
+        }
+        for (sum, n) in self.marks.iter_mut().zip(o.marks) {
+            *sum += n;
+        }
+        for (byte, n) in &o.meshes_by_stored_visibility {
+            *self.meshes_by_stored_visibility.entry(*byte).or_default() += n;
+        }
+        for (kind, n) in &o.tints {
+            let sum = self.tints.entry(kind).or_default();
+            sum.0 += n.0;
+            sum.1 += n.1;
+        }
+        for (sum, n) in [
+            (&mut self.hidden_in_file, o.hidden_in_file),
+            (&mut self.hidden_at_end, o.hidden_at_end),
+        ] {
+            sum.0 += n.0;
+            sum.1 += n.1;
+        }
+    }
+
+    fn json(&self) -> serde_json::Value {
+        let rows: BTreeMap<_, _> = self
+            .things
+            .rows()
+            .iter()
+            .zip(self.levels)
+            .map(|((name, things), levels)| {
+                (
+                    *name,
+                    serde_json::json!({"things": things, "levels": levels}),
+                )
+            })
+            .collect();
+        serde_json::json!({
+            "unit": "Thing; level. Unlike the level file after the last tick: mesh_hidden = render mesh hidden now and not in the file (mesh_shown the reverse), mesh_visibility = visibility byte unlike, colours compared as packed 32-bit colours (a tint never set = white), moved = world matrix unlike in any bit, moved_far = an element off by more than the counting threshold (ThingDisplay::moved_far). Hidden = the play-mode bit of the visibility byte clear",
+            "unlike_the_level_file": rows,
+            "render_meshes_by_stored_visibility_byte": self.meshes_by_stored_visibility,
+            "render_meshes_hidden_in_the_level_file": {
+                "things": self.hidden_in_file.0, "levels": self.hidden_in_file.1,
+            },
+            "render_meshes_hidden_at_end": {
+                "things": self.hidden_at_end.0, "levels": self.hidden_at_end.1,
+            },
+            "render_mesh_tints_set": self.tints.iter().map(|(kind, n)| {
+                (*kind, serde_json::json!({"things": n.0, "levels": n.1}))
+            }).collect::<BTreeMap<_, _>>(),
+            "changes_marked": {
+                "visibility": self.marks[0],
+                "colour": self.marks[1],
+                "transform": self.marks[2],
+            },
+        })
+    }
+}
+
 /// One level played: the report and what `--all` adds up.
 struct Played {
     json: serde_json::Value,
@@ -902,6 +1024,7 @@ struct Played {
     requests: BTreeMap<&'static str, u64>,
     messages: MessageSums,
     settings: SettingsSums,
+    display: DisplaySums,
     /// Global-settings slots that hold a Thing UID at the end.
     global_settings_held: usize,
     /// Switch outputs whose signal at the end differs from the stored one, by switch type.
@@ -1212,6 +1335,8 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
     sum.absorb(pulse);
     settings.finish(&host.world, &sum.global_settings);
     json["global_settings"] = settings.json();
+    let display = DisplaySums::of(&host.world);
+    json["display"] = display.json();
     json["lighting_in_force_at_load"] = serde_json::json!(host.world.settings_at_load.lighting);
     json["lighting_stored_current"] = serde_json::json!(host.world.pworld.lighting_stored);
     Played {
@@ -1236,6 +1361,7 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
         requests,
         messages,
         settings,
+        display,
         global_settings_held: host
             .world
             .pworld
@@ -1278,6 +1404,7 @@ struct PlayTotals {
     levels_with_message_requests: usize,
     levels_with_messages: usize,
     settings: SettingsSums,
+    display: DisplaySums,
     global_settings_held: usize,
     faults: BTreeMap<String, (u64, usize)>,
     thread_faults: BTreeMap<String, (u64, usize)>,
@@ -1332,6 +1459,7 @@ impl PlayTotals {
         self.levels_with_message_requests += usize::from(!p.messages.by_type.is_empty());
         self.levels_with_messages += usize::from(p.messages.entered() > 0);
         self.settings.add(&p.settings);
+        self.display.add(&p.display);
         self.global_settings_held += p.global_settings_held;
         if let Some(f) = &p.first_tick {
             self.first_reactions.absorb(f.reactions.clone());
@@ -1445,6 +1573,7 @@ impl PlayTotals {
             serde_json::json!(self.levels_with_message_requests);
         doc["messages"]["levels_with_a_message"] = serde_json::json!(self.levels_with_messages);
         doc["global_settings"] = self.settings.json();
+        doc["display"] = self.display.json();
         doc
     }
 }
@@ -1604,6 +1733,14 @@ fn run() -> Result<(), String> {
                 "instances": p.instances,
                 "stopped_by_fault": p.stopped,
                 "unbound_native_calls": p.unbound.values().sum::<u64>(),
+                // Display values unlike the level file, the kinds with a Thing only.
+                "display_unlike_the_level_file": p.display.things.rows().iter()
+                    .filter(|(_, n)| *n > 0)
+                    .copied()
+                    .collect::<BTreeMap<_, _>>(),
+                "render_mesh_tints_set": p.display.tints.iter()
+                    .map(|(kind, n)| (*kind, n.0))
+                    .collect::<BTreeMap<_, _>>(),
             });
             levels.push(row);
             continue;

@@ -293,6 +293,7 @@ pub fn add_backdrop_mesh<T>(
                 thing,
                 uid: None,
                 shapes: 0,
+                decoration: false,
             });
         }
     }
@@ -369,6 +370,7 @@ pub fn add_backdrop_plan<T>(
             thing,
             uid: item.uid,
             shapes: 0,
+            decoration: false,
         });
     }
 }
