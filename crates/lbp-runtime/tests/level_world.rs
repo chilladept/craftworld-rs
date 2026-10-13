@@ -4061,9 +4061,12 @@ fn d270_the_pod_thing_follows_the_mesh_and_the_avatar_is_the_sackboy() {
     assert_eq!(background, Ok(Value::Int(0x20493)));
     let pc = |w: &mut LevelWorld, name: &str, v: Value| native(w, "PodComputer", name, &[v]);
     assert_eq!(w.pod.fade, None);
+    // D277: the change-over value a host reads is the last value of that call.
+    assert_eq!(w.pod_transition(), None);
     for f in [0.25, 0.75] {
         let fade = pc(&mut w, "SetFadePodDecorations__f", Value::Float(f));
         assert_eq!(fade, Ok(Value::Void));
+        assert_eq!(w.pod_transition(), Some(f));
     }
     assert_eq!((w.pod.fade, w.pod.fade_calls), (Some(0.75), 2));
     w.pworld.frame = 9;

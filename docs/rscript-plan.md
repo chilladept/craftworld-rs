@@ -331,6 +331,21 @@ UI (`UpdateUI__`) and photo natives are not planned.
   shows the platform in the tent's place. Not drawn: the fade; two small pieces at the
   tent's sides stay in mid-air. Without `--level-scripts` the captures are equal byte
   for byte. Not compared against the game. Left: the shared session (PR 4).
+- After stage 6, "Pod picture" PR 4a (D277, part 28): both Pod levels in one viewer
+  session. With the shell layer under `--level-scripts` pod.bin has a script world and
+  a VM of its own and the two levels tick through `tick_session`, the shell first;
+  "in use" (the Puter key, `--pod-open`, `--level-scripts-in-use-at`) is set on both
+  worlds; the shell has its own Thing map (`thing_view::ShellThings`) and loads the
+  swapped pair, so the pod's mesh swap shows in the Pod picture; the opening progress
+  is written from the change-over value (`LevelWorld::pod_transition`; PLACEHOLDER:
+  nothing read ties the shell's opening to it). `level_scripts --with-level` honours
+  `--puter-in-use=N`. Session run, in use from 600: 0.05 on 601, 1.0 and mesh 145753
+  on 620, no fault, no unbound call. Stills: closed equal byte for byte to part 26's;
+  at 640 the tent is gone and the platform disc is under the DualShock. FOUND for the
+  next PR: the tent goes by a dissolve from the top down through a mask texture and the
+  pod's alpha; the two orange pieces are string joints (Things 13, 14) that nothing
+  hides. Left: the dissolve, the Sackboy and pad as input (PR 4b), the player's Pod
+  decorations.
 
 ## Rules
 

@@ -1,5 +1,14 @@
 # Development log
 
+## 2026-10-13 - D277 both Pod levels in one viewer session
+
+Pod picture PR 4a. Under `--level-scripts` with the shell layer pod.bin has its own script world and the two
+levels tick through `tick_session`; "in use" is set on both worlds; the shell has its own Thing map and the
+swapped pair, so the mesh swap shows in the Pod picture; the opening progress is the script's change-over
+value (`LevelWorld::pod_transition`, PLACEHOLDER as the shell's opening). In use from 600: swap on 620, the
+tent gone and the platform under the DualShock at 640. Captures on one level and without scripts are equal
+byte for byte. Left: the tent's dissolve, the Sackboy as input. `docs/level-scripts.md` part 28.
+
 ## 2026-10-13 - D276 the pod's mesh swap in the scene
 
 Pod picture PR 3. The scene of a level played by `--level-scripts` loads both meshes of the pair the Pod's

@@ -89,6 +89,13 @@ impl LevelThings {
     }
 }
 
+/// D277 (part 28): the Thing-to-entity map of the Pod's shell layer, when the shell
+/// level has a script world of its own. A resource type of its own beside the played
+/// level's [`LevelThings`]: [`apply`] reaches entities through the map it is given, so
+/// the same Thing number in both levels does not collide and the tag needs no level.
+#[derive(Resource)]
+pub struct ShellThings(pub LevelThings);
+
 /// What [`apply`] did. Units: Thing, except `entities`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Followed {
@@ -671,5 +678,97 @@ mod tests {
             ..Default::default()
         });
         assert_eq!((sum.mesh_not_drawn, sum.mesh_swapped), (1, 2));
+    }
+
+    /// D277. Two levels drawn at once, each with its own map and script world, and the
+    /// same Thing number (1) in both: a change in one world reaches the entities of its
+    /// own map only, placed by that map's display matrix.
+    #[test]
+    fn d277_two_maps_keep_two_levels_apart() {
+        let (mut level_world, mut shell_world) = (level(), level());
+        let mut app = App::new();
+        app.insert_resource(Assets::<ViewerMaterial>::default());
+        let shared = app
+            .world_mut()
+            .resource_mut::<Assets<ViewerMaterial>>()
+            .add(dual::material(StandardMaterial::default()));
+        let item = Item {
+            thing: 1,
+            decoration: false,
+            world: Mat4::from_translation(Vec3::new(10., 0., 0.)),
+            mesh: None,
+            alternate: false,
+        };
+        // The level's display units are half its level units, the shell's a quarter.
+        let mut maps =
+            [0.5, 0.25].map(|scale| LevelThings::new(Mat4::from_scale(Vec3::splat(scale))));
+        assert_ne!(maps[0].scene, maps[1].scene);
+        let mut spawned = Vec::new();
+        for (row, map) in maps.iter_mut().enumerate() {
+            let tag = LevelThing {
+                item,
+                scene_row: row,
+                own_material: false,
+            };
+            let parts = (
+                Transform::from_matrix(map.normalize * item.world),
+                Visibility::default(),
+                MeshMaterial3d(shared.clone()),
+                tag,
+            );
+            let entity = app.world_mut().spawn(parts).id();
+            map.add(1, entity);
+            spawned.push(entity);
+        }
+        let [level_map, shell_map] = maps;
+        let shell_map = ShellThings(shell_map);
+        let mut scene: Vec<crate::OwnedScene> = spawned
+            .iter()
+            .map(|&e| (e, Handle::default(), shared.clone(), None))
+            .collect();
+        let mut step = |app: &mut App, world: &mut LevelWorld, map: &LevelThings| {
+            let list = world.take_display_dirty();
+            let mut state: bevy::ecs::system::SystemState<(
+                Query<Parts<'static>>,
+                ResMut<Assets<ViewerMaterial>>,
+            )> = bevy::ecs::system::SystemState::new(app.world_mut());
+            let (mut entities, mut materials) = state.get_mut(app.world_mut()).unwrap();
+            apply(world, &list, map, &mut entities, &mut materials, &mut scene)
+        };
+        let seen = |app: &App| -> Vec<(Visibility, f32)> {
+            let world = app.world();
+            let one = |e: &Entity| {
+                let x = world.get::<Transform>(*e).unwrap().translation.x;
+                (*world.get::<Visibility>(*e).unwrap(), x)
+            };
+            spawned.iter().map(one).collect()
+        };
+        assert_eq!(
+            seen(&app),
+            [(Visibility::Inherited, 5.), (Visibility::Inherited, 2.5)]
+        );
+
+        // The shell's script hides its Thing 1 and moves it 4 level units.
+        let mut to = Mat4::IDENTITY.to_cols_array();
+        to[12] = 14.;
+        shell_world.set_render_mesh_visible(1, false).unwrap();
+        shell_world.set_world_transform(1, to).unwrap();
+        let done = step(&mut app, &mut shell_world, &shell_map.0);
+        assert_eq!((done.hidden, done.placed, done.entities), (1, 1, 1));
+        assert_eq!(
+            seen(&app),
+            [(Visibility::Inherited, 5.), (Visibility::Hidden, 3.5)]
+        );
+        // The level's world has nothing to say, and its map leaves the shell alone.
+        let done = step(&mut app, &mut level_world, &level_map);
+        assert_eq!((done.listed, done.entities), (0, 0));
+        // The other way round: the level's Thing 1 moves, the shell's stays.
+        level_world.set_world_transform(1, to).unwrap();
+        let done = step(&mut app, &mut level_world, &level_map);
+        assert_eq!((done.hidden, done.placed, done.entities), (0, 1, 1));
+        assert_eq!(
+            seen(&app),
+            [(Visibility::Inherited, 7.), (Visibility::Hidden, 3.5)]
+        );
     }
 }

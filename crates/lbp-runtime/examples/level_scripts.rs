@@ -65,6 +65,8 @@
 //! first given first, and share the progression flags, "our Pod", "pod computer in use"
 //! and the media requests; the report is `runs.session`, with the path of events tick by
 //! tick. `play_all.pod` adds the pad-zone, action and player-colour calls.
+//! Part 28: in a `--with-level` session `--puter-in-use=TICK` sets "in use" on both
+//! levels when TICK rounds have run (the stand-in the viewer's Puter key uses).
 //! Part 25: `play_all.pod` adds the planets' per-frame calls, those that answered
 //! "arrived", the levels with such a call and the pod computer's per-frame video calls;
 //! one level's `planets` lists each planet after ticks 1, 226, 452 and the last.
@@ -2203,6 +2205,12 @@ fn play_session(
     session_events(0, &a.host.world, &mut path);
     for tick in 1..=opts.ticks {
         for side in [&mut a, &mut b] {
+            // Part 28, `--puter-in-use=N`: in use when N rounds have run, set on both
+            // worlds (a value set on one is written over by the first level's
+            // hand-over). 0 is `start_world`'s.
+            if opts.in_use_from.is_some_and(|t| t > 0 && t + 1 == tick) {
+                side.host.world.pod_computer_in_use = true;
+            }
             feed_input(&mut side.host.world, tick, opts, &mut side.avatar);
         }
         let reports = {
@@ -2231,6 +2239,7 @@ fn play_session(
         "ticks": opts.ticks,
         "tick_hz": lbp_runtime::TICK_HZ,
         "flags_at_start": opts.flags,
+        "puter_in_use_from": opts.in_use_from,
         "enter_pad_zone_tick": opts.pad_zone_from,
         "presses": opts.presses.iter().map(|(tick, mask)| {
             serde_json::json!({"tick": tick, "buttons": mask})

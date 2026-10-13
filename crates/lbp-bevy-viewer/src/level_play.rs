@@ -11,14 +11,15 @@
 //! script's override camera and back (part 20), while the scripts are told which camera
 //! the picture was drawn with; and the camera is put where a script writes the camera
 //! itself, with the Pod's planets level hung under its script-moved world Thing (part
-//! 23). The rest is the clock and the counts.
+//! 23). With the Pod's shell layer the shell level has a script world of its own, and
+//! the two tick in one session (part 28). The rest is the clock and the counts.
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts, EguiPrimaryContextPass};
 use lbp_catalog::{attachment::AttachedSource, LoadControl};
 use lbp_preview::level_scene;
 use lbp_runtime::{
-    CameraPose, CameraSource, CameraView, DisplayCamera, LevelScripts, LevelWorld, LightFollower,
-    StepReport, TICK_HZ,
+    tick_session, CameraPose, CameraSource, CameraView, DisplayCamera, LevelScripts, LevelWorld,
+    LightFollower, SessionLevel, StepReport, TICK_HZ,
 };
 use lbp_script_vm::natives::Bindings;
 use lbp_script_vm::Vm;
@@ -81,6 +82,30 @@ struct Play {
     /// by ([`follow_world`]), and how often it was placed.
     world_root: Option<[f32; 16]>,
     world_root_placed: u64,
+    /// The Pod's shell level (pod.bin), played in one session with the level above
+    /// (part 28): there under `--pod-camera N` with `--pod-shell HEX`.
+    shell: Option<ShellLevel>,
+}
+
+/// The script world of the Pod's shell layer (part 28): the second level of the
+/// session, with a VM of its own (a Thing handle is an index into one level world).
+/// It ticks before the level it is drawn over. No camera is written for it and none is
+/// read from it: pod.bin's scripts ask for none, and which camera the game draws the
+/// shell with is not established.
+struct ShellLevel {
+    vm: Vm,
+    host: Bindings<LevelWorld>,
+    scripts: LevelScripts,
+    created: Option<StepReport>,
+    /// Sums over update ticks.
+    totals: StepReport,
+    ticks_with_faults: usize,
+    /// The shell scene whose draw entities were last set from this world
+    /// (`thing_view::ShellThings`), and what was done to them since the start.
+    things_scene: Option<u64>,
+    followed: crate::thing_view::Followed,
+    /// The opening progress after the last tick ([`opening`]).
+    opening: f32,
 }
 
 /// What the camera a script writes itself did since the tick before.
@@ -121,6 +146,46 @@ fn in_use_now(at: &mut Option<u64>, ticks: u64) -> bool {
     at.take_if(|n| ticks >= *n).is_some()
 }
 
+/// Sets "pod computer in use" for the session: on the played level's world and, with
+/// the shell layer, on the shell's. Both, because the first level of a session tick
+/// hands its own value to the others afterwards (`lbp_runtime::tick_session`): a value
+/// set on the second world only is written over before that world ticks.
+fn set_in_use(level: &mut LevelWorld, shell: Option<&mut LevelWorld>, in_use: bool) {
+    level.pod_computer_in_use = in_use;
+    if let Some(shell) = shell {
+        shell.pod_computer_in_use = in_use;
+    }
+}
+
+/// The opening progress of the viewer's Pod rig for the change-over value of pod.bin's
+/// script (`LevelWorld::pod_transition`): the value kept inside 0..1; 0 before the
+/// script's first update and for a value that is not a number.
+///
+/// PLACEHOLDER: FOUND uses of the value are the pod's shape colour alpha, the pod
+/// decorations' fade, the pod's mesh at 1 and the mask texture. Nothing read ties the
+/// shell's opening (the viewer's fitted shell eyes) or the tent's slide out of the frame
+/// to it; the camera the game draws the shell level with is not established.
+fn opening(transition: Option<f32>) -> f32 {
+    match transition {
+        Some(t) if t.is_finite() => t.clamp(0., 1.),
+        _ => 0.,
+    }
+}
+
+/// What to say of the opening progress on a tick: something when it leaves one of its
+/// two ends, and when it arrives at one.
+fn opening_event(was: f32, now: f32) -> Option<&'static str> {
+    let at_end = |t: f32| t == 0. || t == 1.;
+    match (was == now, at_end(was), at_end(now)) {
+        (true, ..) => None,
+        (_, _, true) if now == 1. => Some("open"),
+        (_, _, true) => Some("closed"),
+        (_, true, false) if now > was => Some("opening"),
+        (_, true, false) => Some("closing"),
+        _ => None,
+    }
+}
+
 /// Loads scripts and the level and adds the 30 Hz schedule when `--level-scripts` is
 /// given; otherwise does nothing.
 pub fn install(app: &mut App) -> Result<(), String> {
@@ -138,6 +203,12 @@ pub fn install(app: &mut App) -> Result<(), String> {
         return Err("--level-scripts requires --level-guid or --level-path".into());
     }
     let hide_ui = all.iter().any(|a| a == "--qa-hide-ui");
+    // Part 28: with the Pod's shell layer (`--pod-camera N --pod-shell HEX`, the
+    // condition under which the viewer builds its Pod rig) the shell level is played too.
+    let shell_guid = value(&all, "--pod-shell")
+        .filter(|_| value(&all, "--pod-camera").is_some())
+        .map(|g| u32::from_str_radix(&g, 16).map_err(|_| "--pod-shell requires hex digits"))
+        .transpose()?;
     let hold_at = tick_option(&all, "--level-scripts-hold-at")?;
     let in_use_at = tick_option(&all, "--level-scripts-in-use-at")?;
     // Bit masks ORed into the profile's word of LBP2 game progression flags (as
@@ -150,23 +221,33 @@ pub fn install(app: &mut App) -> Result<(), String> {
         .transpose()?
         .unwrap_or_default();
     // The level reader recurses deeply: same worker stack as the level scene.
-    let (mut vm, mut world, header) = std::thread::Builder::new()
+    type Loaded = (Vm, LevelWorld, String, Option<(Vm, LevelWorld, String)>);
+    let (mut vm, mut world, header, shell) = std::thread::Builder::new()
         .stack_size(level_scene::LEVEL_STACK_BYTES)
-        .spawn(move || -> Result<(Vm, LevelWorld, String), String> {
+        .spawn(move || -> Result<Loaded, String> {
             let control = LoadControl::default();
             let catalog = lbp_catalog::load(Path::new(&snapshot), &control)?;
             let source = AttachedSource::attach(Path::new(&game), &catalog, &control)?;
             let (scripts, not_read) = lbp_ui_script::load::load(&source, &catalog, &control)?;
             let mut vm = Vm::default();
+            // The shell level's scripts run on a VM of their own, loaded in the same
+            // order (as the `level_scripts` example's second level).
+            let mut shell_vm = shell_guid.map(|_| Vm::default());
             let loaded = scripts.len();
             for (g, s) in scripts {
+                if let Some(shell_vm) = shell_vm.as_mut() {
+                    shell_vm.load(s.clone(), g);
+                }
                 vm.load(s, g);
             }
-            let (key, identity) = level_scene::resolve_level(&catalog, guid, path.as_deref())?;
-            let bytes = level_scene::read_level_bytes(&source, &key, &control)?;
-            let report = lbp_level::read(&bytes, lbp_level::Limits::default(), &|| false)
-                .map_err(|e| e.to_string())?;
-            let mut world = LevelWorld::from_things(&report.things);
+            let read_world = |guid: Option<u32>, path: Option<&str>| {
+                let (key, identity) = level_scene::resolve_level(&catalog, guid, path)?;
+                let bytes = level_scene::read_level_bytes(&source, &key, &control)?;
+                let report = lbp_level::read(&bytes, lbp_level::Limits::default(), &|| false)
+                    .map_err(|e| e.to_string())?;
+                Ok::<_, String>((LevelWorld::from_things(&report.things), identity))
+            };
+            let (mut world, identity) = read_world(guid, path.as_deref())?;
             // The English tables, patch first, as the `level_scripts` example loads them
             // (INFERRED that these are the tables loaded while a level plays). A table
             // that cannot be read is left out: the scripts then give their own text for
@@ -181,7 +262,15 @@ pub fn install(app: &mut App) -> Result<(), String> {
                 "Level scripts: {identity}; scripts loaded {loaded} (not read {not_read}); translation tables {}",
                 world.translations.len()
             );
-            Ok((vm, world, header))
+            let shell = shell_vm
+                .zip(shell_guid)
+                .map(|(shell_vm, g)| {
+                    let (mut shell, identity) = read_world(Some(g), None)?;
+                    shell.translations.clone_from(&world.translations);
+                    Ok::<_, String>((shell_vm, shell, identity))
+                })
+                .transpose()?;
+            Ok((vm, world, header, shell))
         })
         .map_err(|e| format!("level scripts thread: {e}"))?
         .join()
@@ -200,6 +289,38 @@ pub fn install(app: &mut App) -> Result<(), String> {
         host.world.unconverted
     );
     println!("{header}");
+    // Part 28: the shell level's world, set up the same way, and the session's start.
+    let shell = shell.map(|(mut shell_vm, mut shell_world, identity)| {
+        let built = shell_world.bind_objects(&mut shell_vm);
+        shell_world.add_class_defaults(&shell_vm);
+        let mut shell_host = Bindings::defaulting(shell_world);
+        let engine = lbp_runtime::add_engine_objects(&mut shell_vm, &mut shell_host, BUDGET_PER_CALL);
+        let room = MAX_FAULT_LINES.saturating_sub(faults.len());
+        faults.extend(engine.into_iter().take(room).map(|f| format!("shell: {f}")));
+        let shell_scripts = LevelScripts::new(&shell_vm, &shell_host.world);
+        // The session is our Pod when the shell has a pod Thing: the stand-in of the
+        // `level_scripts` example. PLACEHOLDER: the game tests the slot the level was
+        // entered from. Then the two worlds agree on the state outside a level.
+        host.world.our_pod = shell_host.world.pod_thing(true).is_some();
+        host.world.hand_session_to(&mut shell_host.world);
+        println!(
+            "Level scripts, shell level: {identity}; scripted Things {}; objects built {built}, unconverted {}; one session with the level above, the shell ticks first; our Pod {}",
+            shell_scripts.instances.len(),
+            shell_host.world.unconverted,
+            host.world.our_pod
+        );
+        ShellLevel {
+            vm: shell_vm,
+            host: shell_host,
+            scripts: shell_scripts,
+            created: None,
+            totals: StepReport::default(),
+            ticks_with_faults: 0,
+            things_scene: None,
+            followed: Default::default(),
+            opening: 0.,
+        }
+    });
     app.insert_non_send(Play {
         vm,
         host,
@@ -228,6 +349,7 @@ pub fn install(app: &mut App) -> Result<(), String> {
         puter_open: None,
         world_root: None,
         world_root_placed: 0,
+        shell,
     })
     .insert_resource(crate::CaptureHold(hold_at.is_some()))
     .insert_resource(Time::<Fixed>::from_hz(f64::from(TICK_HZ)))
@@ -260,25 +382,56 @@ fn tick(
     mut play: NonSendMut<Play>,
     mut capture: ResMut<crate::CaptureHold>,
     sackboy: Query<(&Position, &lbp_sim::ZSlab), With<SackboyBody>>,
-    puter: Option<Res<crate::pod_menu::PuterState>>,
+    mut puter: Option<ResMut<crate::pod_menu::PuterState>>,
 ) {
     let p = &mut *play;
     // Part 26: the Puter key of the viewer's Pod rig is the player at the pod computer.
     // Handed over when it changes, also while the ticks are held.
-    if let Some(open) = puter_change(&mut p.puter_open, puter.map(|s| s.open)) {
-        p.host.world.pod_computer_in_use = open;
+    if let Some(open) = puter_change(&mut p.puter_open, puter.as_deref().map(|s| s.open)) {
+        let shell = p.shell.as_mut().map(|s| &mut s.host.world);
+        set_in_use(&mut p.host.world, shell, open);
         println!(
             "Pod computer at tick {}: in use {open}, from the viewer's Puter state (stand-in for the pod's own script)",
             p.scripts.ticks
         );
     }
+    step(p, &mut capture, &sackboy);
+    // Part 28: the opening progress of the viewer's Pod rig is the change-over value of
+    // pod.bin's script after the last tick (PLACEHOLDER, see [`opening`]). Also while
+    // the ticks are held, for a rig that came up after them.
+    if let (Some(shell), Some(puter)) = (&p.shell, puter.as_mut()) {
+        if puter.t != shell.opening {
+            puter.t = shell.opening;
+        }
+    }
+}
+
+/// One fixed step of the scripts: the create step first, then a tick each, unless held.
+fn step(
+    p: &mut Play,
+    capture: &mut ResMut<crate::CaptureHold>,
+    sackboy: &Query<(&Position, &lbp_sim::ZSlab), With<SackboyBody>>,
+) {
     // `--level-scripts-hold-at N`: a capture waits for tick N, and no tick follows it.
     let held = p.hold_at.is_some_and(|n| p.scripts.ticks >= n);
     if capture.0 != (p.hold_at.is_some() && !held) {
         capture.0 = p.hold_at.is_some() && !held;
     }
     if p.created.is_none() {
+        // Part 28: the shell is created first, and each hands its session state on (the
+        // order of the `level_scripts` example).
+        if let Some(shell) = p.shell.as_mut() {
+            let r = shell
+                .scripts
+                .create(&mut shell.vm, &mut shell.host, BUDGET_PER_CALL);
+            shell.host.world.hand_session_to(&mut p.host.world);
+            note_shell(&mut p.faults, &r);
+            shell.created = Some(r);
+        }
         let r = p.scripts.create(&mut p.vm, &mut p.host, BUDGET_PER_CALL);
+        if let Some(shell) = p.shell.as_mut() {
+            p.host.world.hand_session_to(&mut shell.host.world);
+        }
         note(p, &r);
         p.created = Some(r);
         return;
@@ -291,7 +444,8 @@ fn tick(
     // path of part 24 (pad zone, press, the host's answer), which needs a Sackboy and a
     // pad the viewer does not feed in yet.
     if in_use_now(&mut p.in_use_at, p.scripts.ticks) {
-        p.host.world.pod_computer_in_use = true;
+        let shell = p.shell.as_mut().map(|s| &mut s.host.world);
+        set_in_use(&mut p.host.world, shell, true);
         println!(
             "Pod computer at tick {}: in use true, from --level-scripts-in-use-at (stand-in for the player engaging it)",
             p.scripts.ticks
@@ -308,13 +462,58 @@ fn tick(
             None => p.player = Some(p.host.world.add_player(at, layers)),
         }
     }
-    let r = p
-        .scripts
-        .tick_level(&mut p.vm, &mut p.host, BUDGET_PER_CALL);
+    let r = match p.shell.as_mut() {
+        // Part 28: both Pod levels in one session, the shell first. INFERRED: the
+        // order of the levels in the game's frame was not read; MEASURED that the other
+        // order gives the same events on the same ticks (part 24).
+        Some(shell) => {
+            let mut levels = [
+                SessionLevel {
+                    scripts: &mut shell.scripts,
+                    vm: &mut shell.vm,
+                    host: &mut shell.host,
+                },
+                SessionLevel {
+                    scripts: &mut p.scripts,
+                    vm: &mut p.vm,
+                    host: &mut p.host,
+                },
+            ];
+            let mut reports = tick_session(&mut levels, BUDGET_PER_CALL).into_iter();
+            let (of_shell, of_level) = (reports.next(), reports.next());
+            let of_shell = of_shell.unwrap_or_default();
+            shell.ticks_with_faults += usize::from(!of_shell.faults.is_empty());
+            note_shell(&mut p.faults, &of_shell);
+            shell.totals.absorb(of_shell);
+            let was = std::mem::replace(
+                &mut shell.opening,
+                opening(shell.host.world.pod_transition()),
+            );
+            if let Some(what) = opening_event(was, shell.opening) {
+                println!(
+                    "Pod change-over at tick {}: {what}, value {:.2} from pod.bin's script; the shell's opening progress follows it (placeholder: the game's shell camera is not established)",
+                    shell.scripts.ticks, shell.opening
+                );
+            }
+            of_level.unwrap_or_default()
+        }
+        None => p
+            .scripts
+            .tick_level(&mut p.vm, &mut p.host, BUDGET_PER_CALL),
+    };
     p.ticks_with_faults += usize::from(!r.faults.is_empty());
     note(p, &r);
     p.totals.absorb(r);
     print_messages(p);
+}
+
+/// The shell level's faults, in the same list as the level's.
+fn note_shell(faults: &mut Vec<String>, r: &StepReport) {
+    for (thing, f) in &r.faults {
+        if faults.len() < MAX_FAULT_LINES {
+            faults.push(format!("shell thing {thing}: {f}"));
+        }
+    }
 }
 
 /// The Puter state to hand to the script world as "pod computer in use": `now` when it
@@ -405,42 +604,76 @@ fn follow_fog(play: NonSend<Play>, mut v: ResMut<crate::Viewer>) {
 /// Like [`relight`], nothing until the scene has been drawn for
 /// [`RELIGHT_AFTER_FRAMES`]: the same guard, since a first tint makes a new material.
 /// One line per tick on which the scene changed: the check that needs no screenshot.
+///
+/// Part 28: with the Pod's shell layer the same is done for the shell level, from its
+/// own script world through its own map (`thing_view::ShellThings`); its line starts
+/// with `Shell Things`.
 fn follow_things(
     mut play: NonSendMut<Play>,
     mut v: ResMut<crate::Viewer>,
     things: Option<Res<crate::thing_view::LevelThings>>,
+    shell_things: Option<Res<crate::thing_view::ShellThings>>,
     mut entities: Query<crate::thing_view::Parts>,
     mut materials: ResMut<Assets<crate::ViewerMaterial>>,
 ) {
     let p = &mut *play;
-    let Some(things) = things else {
-        return;
-    };
-    if v.ready_frames < RELIGHT_AFTER_FRAMES {
-        p.things_scene = None;
+    let ready = v.ready_frames >= RELIGHT_AFTER_FRAMES;
+    if let Some(things) = &things {
+        let state = (&mut p.things_scene, &mut p.followed);
+        let level = (&mut p.host.world, p.scripts.ticks, "Things");
+        follow_level(
+            level,
+            things,
+            state,
+            ready,
+            &mut v,
+            &mut entities,
+            &mut materials,
+        );
+    }
+    if let (Some(shell), Some(things)) = (p.shell.as_mut(), &shell_things) {
+        let state = (&mut shell.things_scene, &mut shell.followed);
+        let level = (&mut shell.host.world, shell.scripts.ticks, "Shell Things");
+        follow_level(
+            level,
+            &things.0,
+            state,
+            ready,
+            &mut v,
+            &mut entities,
+            &mut materials,
+        );
+    }
+}
+
+/// [`follow_things`] for one level: its script world, tick count and the name of its
+/// printed line; its map; the scene last set from the world and the sums.
+fn follow_level(
+    (world, ticks, label): (&mut LevelWorld, u64, &str),
+    things: &crate::thing_view::LevelThings,
+    (things_scene, followed): (&mut Option<u64>, &mut crate::thing_view::Followed),
+    ready: bool,
+    v: &mut ResMut<crate::Viewer>,
+    entities: &mut Query<crate::thing_view::Parts>,
+    materials: &mut Assets<crate::ViewerMaterial>,
+) {
+    if !ready {
+        *things_scene = None;
         return;
     }
-    let world = &mut p.host.world;
-    let first = p.things_scene != Some(things.scene);
+    let first = *things_scene != Some(things.scene);
     let list = if first {
-        p.things_scene = Some(things.scene);
+        *things_scene = Some(things.scene);
         world.take_display_dirty();
-        crate::thing_view::first_list(world, &things)
+        crate::thing_view::first_list(world, things)
     } else {
         world.take_display_dirty()
     };
     if list.is_empty() {
         return;
     }
-    let done = crate::thing_view::apply(
-        world,
-        &list,
-        &things,
-        &mut entities,
-        &mut materials,
-        &mut v.scene,
-    );
-    p.followed.absorb(&done);
+    let done = crate::thing_view::apply(world, &list, things, entities, materials, &mut v.scene);
+    followed.absorb(&done);
     if first || done.any() {
         // The first few Things by what the list says of them, to find them in the scene.
         let some = |keep: &dyn Fn(u32, &lbp_runtime::ThingDisplay) -> bool| -> Vec<u32> {
@@ -476,8 +709,7 @@ fn follow_things(
         .filter_map(|t| Some((t, format!("{:08x}", world.thing_display(t)?.mesh?))))
         .collect();
         println!(
-            "Things at tick {}{}: {}; first Things hidden {hidden:?} (of them by a script {by_script:?}), tinted {tinted:?}, with another mesh than the file's {other_mesh:?}",
-            p.scripts.ticks,
+            "{label} at tick {ticks}{}: {}; first Things hidden {hidden:?} (of them by a script {by_script:?}), tinted {tinted:?}, with another mesh than the file's {other_mesh:?}",
             if first { " (new scene)" } else { "" },
             done.line()
         );
@@ -578,9 +810,11 @@ fn camera_view(display: Mat4, global: Mat4, clip_from_view: Mat4) -> Option<Came
 ///
 /// With the Pod's shell layer (`--pod-shell` with `--pod-camera`; part 26) the shell and
 /// tent roots are then placed from the camera a script wrote: its eye and turn, and the
-/// opening progress `t` of the viewer's own Puter state (`PodRig::shell_root_at`). A
-/// shell point keeps its place in the frame; the planets behind it are the script's
-/// view. While no script camera is shown the roots stay where they were.
+/// opening progress `t` of the viewer's Puter state (`PodRig::shell_root_at`), which
+/// [`tick`] writes from the change-over value of pod.bin's script (part 28;
+/// PLACEHOLDER, see [`opening`]). A shell point keeps its place in the frame; the
+/// planets behind it are the script's view. While no script camera is shown the roots
+/// stay where they were. The shell's own script world gets no camera view here.
 ///
 /// INFERRED: world +Y is up under the override. Not applied: the near and far planes of
 /// either script camera (the viewer keeps its own, in display units). One line is
@@ -903,6 +1137,25 @@ fn window(mut contexts: EguiContexts, play: NonSend<Play>) -> Result {
                     play.world_root_placed
                 ));
             }
+            if let Some(shell) = &play.shell {
+                ui.label(format!(
+                    "Shell level: tick {}; suspended {}; stopped by a fault {}; ticks with faults {}; in use {}; change-over {:.2}",
+                    shell.scripts.ticks,
+                    shell.scripts.pending(),
+                    shell.scripts.stopped.len(),
+                    shell.ticks_with_faults,
+                    shell.host.world.pod_computer_in_use,
+                    shell.opening
+                ));
+                if let Some(c) = &shell.created {
+                    ui.small(format!("  create: {}", line(c)));
+                }
+                ui.small(format!("  ticks: {}", line(&shell.totals)));
+                ui.small(match shell.things_scene {
+                    Some(_) => format!("  Things: {}", shell.followed.line()),
+                    None => "  Things: the scene does not follow them (yet)".into(),
+                });
+            }
             for f in &play.faults {
                 ui.small(f);
             }
@@ -1141,6 +1394,84 @@ mod tests {
         // A count already passed (the option's 0, or ticks run before the look).
         assert!(in_use_now(&mut Some(0), 0) && in_use_now(&mut Some(3), 7));
         assert!(!in_use_now(&mut None, 7));
+    }
+
+    /// Part 28. The opening progress is the change-over value inside 0..1, and 0 while
+    /// there is none; a line is due when it leaves an end and when it reaches one.
+    #[test]
+    fn d277_the_opening_is_the_change_over_value_clamped() {
+        assert_eq!(opening(None), 0.);
+        assert_eq!(opening(Some(0.35)), 0.35);
+        assert_eq!(opening(Some(0.)), 0.);
+        assert_eq!(opening(Some(1.)), 1.);
+        assert_eq!(opening(Some(-0.2)), 0.);
+        assert_eq!(opening(Some(1.05)), 1.);
+        for odd in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(opening(Some(odd)), 0.);
+        }
+        assert_eq!(opening_event(0., 0.), None);
+        assert_eq!(opening_event(0., 0.05), Some("opening"));
+        assert_eq!(opening_event(0.05, 0.1), None);
+        assert_eq!(opening_event(0.95, 1.), Some("open"));
+        assert_eq!(opening_event(1., 1.), None);
+        assert_eq!(opening_event(1., 0.95), Some("closing"));
+        assert_eq!(opening_event(0.5, 0.45), None);
+        assert_eq!(opening_event(0.05, 0.), Some("closed"));
+        // A snap from end to end is an arrival.
+        assert_eq!(opening_event(0., 1.), Some("open"));
+        assert_eq!(opening_event(1., 0.), Some("closed"));
+    }
+
+    /// Part 28. "In use" is set on both worlds of the session. The first level of a
+    /// session tick hands its own value on, so a value set on the second world alone
+    /// is lost before that world ticks: the trap `set_in_use` is there for.
+    #[test]
+    fn d277_in_use_is_set_on_both_worlds_of_the_session() {
+        struct Side(Vm, Bindings<LevelWorld>, LevelScripts);
+        let side = || {
+            let (vm, host) = (Vm::default(), Bindings::defaulting(LevelWorld::default()));
+            let scripts = LevelScripts::new(&vm, &host.world);
+            Side(vm, host, scripts)
+        };
+        // The viewer's order: the shell, then the level.
+        let round = |shell: &mut Side, level: &mut Side| {
+            let mut levels = [
+                SessionLevel {
+                    scripts: &mut shell.2,
+                    vm: &mut shell.0,
+                    host: &mut shell.1,
+                },
+                SessionLevel {
+                    scripts: &mut level.2,
+                    vm: &mut level.0,
+                    host: &mut level.1,
+                },
+            ];
+            assert_eq!(tick_session(&mut levels, BUDGET_PER_CALL).len(), 2);
+        };
+        let in_use = |shell: &Side, level: &Side| {
+            (
+                shell.1.world.pod_computer_in_use,
+                level.1.world.pod_computer_in_use,
+            )
+        };
+        let (mut shell, mut level) = (side(), side());
+        set_in_use(&mut level.1.world, Some(&mut shell.1.world), true);
+        assert_eq!(in_use(&shell, &level), (true, true));
+        round(&mut shell, &mut level);
+        assert_eq!(in_use(&shell, &level), (true, true));
+        assert_eq!((shell.2.ticks, level.2.ticks), (1, 1));
+        set_in_use(&mut level.1.world, Some(&mut shell.1.world), false);
+        round(&mut shell, &mut level);
+        assert_eq!(in_use(&shell, &level), (false, false));
+        // The trap: set on the level's world only, the shell's hand-over takes it back.
+        level.1.world.pod_computer_in_use = true;
+        round(&mut shell, &mut level);
+        assert_eq!(in_use(&shell, &level), (false, false));
+        // Without a shell the one world is set, as before.
+        let mut alone = LevelWorld::default();
+        set_in_use(&mut alone, None, true);
+        assert!(alone.pod_computer_in_use);
     }
 
     /// Part 26. The Puter state of the Pod rig goes to the script world when it changes;

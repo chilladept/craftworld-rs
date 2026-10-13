@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D276
+# Current state (overwrite each milestone) — after D277
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -11,7 +11,54 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D276 the pod's mesh swap in the scene (2026-10-13)
+## Latest: D277 both Pod levels in one viewer session (2026-10-13)
+- "Pod picture" PR 4a: viewer, one runtime accessor, one tool option (`docs/level-scripts.md` part
+  28). With the shell layer under `--level-scripts` only the planets level was played: the pod's mesh
+  swap never showed in the Pod picture and the tent left on the viewer's own dolly.
+- Viewer: under `--level-scripts --pod-camera N --pod-shell HEX` pod.bin gets a script world and a VM
+  of its own (`level_play::ShellLevel`); each tick is one `lbp_runtime::tick_session` round, the shell
+  first; `our_pod` when the shell has a pod Thing (PLACEHOLDER, the tool's stand-in). "In use" (Puter
+  key, `--pod-open`, `--level-scripts-in-use-at N`) is set on both worlds (`set_in_use`: a value set
+  on one is written over by the first level's hand-over). `thing_view::ShellThings` (a second Thing
+  map), the swapped pair loaded for the shell (`LevelMode::shell_scripted`), `follow_things` once per
+  level (`Shell Things at tick N`). After each tick `PuterState.t` is the shell world's change-over
+  value kept in 0..1 (`opening`); `pod_dolly` no longer moves `t` there. Without the shell layer the
+  `tick_level` path is unchanged.
+- Runtime: `LevelWorld::pod_transition()` (the last value `SetFadePodDecorations__f` was given).
+  `level_scripts --with-level` honours `--puter-in-use=N` (both worlds).
+- FOUND in the EBOOT and the game data (scoping; part 28 has the addresses): `SetFadePodDecorations__f`
+  (0x403ca4) stores a fade byte per decoration of the pod Thing from its world height and the value
+  (a wipe from the top down, each over 0.2 of the value, none drawn at 1); pod.bin has no decoration.
+  `SetPodTransitionTexture__g` (0x4015e8) swaps texture slot 5 (a mask) of the three materials of
+  `pod.mol`. The tent goes by a dissolve from the top down in the pixel shader, through that mask and
+  the alpha of the pod's shape colour (1 - value), not by an even fade. The two orange pieces of D276
+  are Things 13 and 14, string joints (mesh 0x4c7f) from the bar Thing 12 to the pod Thing 2; nothing
+  read hides them (INFERRED: the game keeps them drawn), so they are left drawn.
+- MEASURED, session run pod.bin + pod_planets, 700 rounds, in use from 600
+  (`local-analysis/d277-pod-session-700-inuse600.json`): in use on 601, change-over 0.05 on 601 to 1.0
+  on 620, mesh 145753 on 620, planets camera at rest at (0, -300, 900) on 626; no fault, no unbound
+  call in either level.
+- MEASURED (no focus taken; `local-analysis/rscript/stage6/shots/d277-*`): equal byte for byte to
+  main's captures: pod.bin alone and the shell picture without scripts, pod.bin alone with scripts
+  (held at 610 and 640), the planets level alone with scripts (600), and the Pod picture with scripts
+  closed at 600 (D275's). In use from 600: `Pod change-over at tick 601: opening`, `at tick 620: open`,
+  `Shell Things at tick 620: ... mesh swapped 1 (5 entities) ... [(2, "00023959")]`.
+- Eye check: at 610 the tent is half way out (its inner walls at the frame's left and right borders);
+  at 640 the tent is gone and a flat round disc lies under the DualShock at the bottom of the frame,
+  the DualShock's grips in its cut-outs. The string ends are in neither frame (INFERRED: above the
+  open view). Two short dark marks on the disc were not identified. Nothing compared against the game.
+- PLACEHOLDER: the shell's opening `t` from `PodTransition` (nothing read ties the shell's eye or the
+  tent's slide to it; the game's shell camera is not established); `our_pod`; the Puter key.
+- Left out: the tent's dissolve (no blended or discard material path yet: next PR), the viewer's
+  Sackboy and pad as the input (PR 4b), the player's Pod decorations, the snap for a computer open on
+  arrival, one VM for both levels.
+- Tests: four new viewer tests (`d277_*`), one runtime test extended. fmt, CI clippy, CI tests (611),
+  Python tests (36), `cargo check` of both viewers and the viewer's clippy pass; the viewer's tests
+  pass (62) but `sackboy_play::tests::input_script_steps` (fails on main). The 378-level runs were not
+  repeated (`tick_level` unchanged; Things stopped by a fault 3 / 3 / 3 as in D274).
+- Next: the tent's dissolve; PR 4b, the Puter key through the pad zone and press.
+
+## Before: D276 the pod's mesh swap in the scene (2026-10-13)
 - "Pod picture" PR 3, viewer and scene builder (`docs/level-scripts.md` part 27). The runtime reported
   the mesh a script puts on a PRenderMesh and the viewer counted it as not drawn. FOUND before: the one
   such call is `Pod.SetPodTransition__b` on pod.bin Thing 2, `pod.mol` (0x2f6c) under 1,

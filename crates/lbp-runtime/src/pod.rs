@@ -151,6 +151,18 @@ impl LevelWorld {
             .unwrap_or(DEFAULT_PLANETS_BACKGROUND)
     }
 
+    /// The Pod's change-over value: 0 with the tent, 1 with the platform; none before
+    /// the Pod's script has run an update.
+    ///
+    /// FOUND (the script class `Pod`, the world script of pod.bin): the value is the
+    /// private field `PodTransition`, stepped by 0.05 a tick toward 1 while the pod
+    /// computer is in use and toward 0 while it is not, and handed to
+    /// `PodComputer.SetFadePodDecorations__f` on every update. This is the last value
+    /// that native was given ([`PodState::fade`]), so a host need not know the class.
+    pub fn pod_transition(&self) -> Option<f32> {
+        self.pod.fade
+    }
+
     /// The number of the primary local player, if there is a player.
     ///
     /// FOUND (01.33, 0x240a88): the game picks one entry of the session's player list.

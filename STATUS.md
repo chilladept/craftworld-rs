@@ -5307,3 +5307,49 @@ Next: Pod picture PR 3, the pod's mesh swap. `docs/level-scripts.md` part 26.
   (`sackboy_play::tests::input_script_steps`, fails on main).
 **+0 newly viewable / +0 newly Complete (viewer feature).**
 Next: Pod picture PR 4, the two Pod levels in one viewer session. `docs/level-scripts.md` part 27.
+
+## D277 both Pod levels in one viewer session (2026-10-13)
+- "Pod picture" PR 4a: viewer, one runtime accessor, one tool option. Full detail:
+  `docs/level-scripts.md` part 28. No new native; `tick_level` is unchanged.
+- Before: with the shell layer under `--level-scripts` only the planets level was played; the pod's
+  mesh swap (D276) never showed in the Pod picture and the tent left on the viewer's own dolly.
+- Viewer: under `--level-scripts --pod-camera N --pod-shell HEX` pod.bin has a script world and a VM
+  of its own; each tick is one `tick_session` round, the shell first; `our_pod` when the shell has a
+  pod Thing (PLACEHOLDER). "In use" (Puter key, `--pod-open`, `--level-scripts-in-use-at N`) is set
+  on both worlds. `thing_view::ShellThings`, the swapped pair loaded for the shell, `follow_things`
+  once per level. `PuterState.t` is written from the shell world's change-over value, kept in 0..1
+  (PLACEHOLDER: nothing read ties the shell's opening or the tent's slide to `PodTransition`; the
+  game's shell camera is not established); `pod_dolly` no longer moves `t` there.
+- Runtime: `LevelWorld::pod_transition()`. `level_scripts --with-level` honours `--puter-in-use=N`.
+- FOUND (scoping, 01.33): `SetFadePodDecorations__f` (0x403ca4) stores a fade byte per decoration of
+  the pod Thing from its world height and the value (top-down wipe; pod.bin has no decoration);
+  `SetPodTransitionTexture__g` (0x4015e8) swaps the mask in texture slot 5 of `pod.mol`'s three
+  materials; the tent goes by a top-down dissolve through that mask and the pod's shape-colour alpha.
+  The two orange pieces of D276 are Things 13 and 14, string joints (mesh 0x4c7f) from the bar Thing
+  12 to the pod Thing 2; nothing read hides them (INFERRED: the game keeps them drawn): left drawn.
+- `level_scripts.exe <d133 snapshot> <three dirs> gamedata/levels/pod/pod.bin
+  local-analysis/d277-pod-session-700-inuse600.json --play=700
+  --with-level=gamedata/lbp2/pod/levels/pod_planets.bin --puter-in-use=600`: in use on 601,
+  change-over 0.05 on 601, 1.0 and mesh 145753 on 620, camera at rest at (0, -300, 900) on 626; no
+  fault, no unbound call.
+- Viewer captures, no focus taken (`--qa-capture`, hidden window, `--window-16-9 --preview-lighting
+  --qa-hide-ui`; `local-analysis/rscript/stage6/shots/d277-*`): equal byte for byte to main's
+  captures of the same commands: pod.bin alone and the shell picture without scripts; pod.bin alone
+  with scripts held at 610 and 640; the planets level alone with scripts at 600; the Pod picture with
+  scripts closed at 600. In use from 600: `Shell Things at tick 620: ... mesh swapped 1 (5 entities)
+  ... [(2, "00023959")]`. `--pod-open` held at 600 equals the hold at 640 byte for byte.
+- Eye check (stills at 610 and 640): at 610 the tent is half way out; at 640 it is gone and the
+  platform disc lies under the DualShock where the tent's floor was. The string ends are in neither
+  frame. Two short dark marks on the disc were not identified.
+- Not done: the tent's dissolve (the viewer has no blended or discard material path: next PR), the
+  viewer's Sackboy and pad as the input (PR 4b), the player's Pod decorations. Not seen: the motion,
+  the way back. Not compared: anything against the game. Not repeated: the 378-level runs.
+- Tests: viewer `d277_two_maps_keep_two_levels_apart`,
+  `d277_the_opening_is_the_change_over_value_clamped`,
+  `d277_in_use_is_set_on_both_worlds_of_the_session`,
+  `d277_the_shell_layer_loads_the_swapped_meshes_only_with_a_script_world`; runtime: the accessor in
+  the D270 pod test. `cargo fmt --all -- --check`, CI clippy, CI tests (611), `cargo check` of both
+  viewers, the viewer's clippy and the Python tests (36) pass; `cargo test -q -p lbp-bevy-viewer` 62
+  pass, 1 fails (`sackboy_play::tests::input_script_steps`, fails on main).
+**+0 newly viewable / +0 newly Complete (viewer feature).**
+Next: the tent's dissolve; PR 4b, the Puter key through the pad zone. `docs/level-scripts.md` part 28.

@@ -153,6 +153,12 @@ impl LevelMode {
     fn pod_scripted(&self) -> bool {
         self.scripts && self.pod.is_some()
     }
+    /// D277: the shell layer (`--pod-shell HEX`) has a script world of its own, ticked
+    /// in one session with the planets level's (`level_play`): its scene loads the
+    /// meshes the scripts swap and its Things' models are mapped.
+    fn shell_scripted(&self) -> bool {
+        self.pod_scripted() && self.shell.is_some()
+    }
 }
 impl LevelMode {
     fn active(&self) -> bool {
@@ -314,9 +320,10 @@ impl Viewer {
             // swap in. Without `--level-scripts` there are none.
             mesh_alternates: swapped_meshes(self.level.scripts),
         };
-        // The shell layer has no script world: it is loaded as without scripts.
+        // D277: the shell layer loads the swapped meshes when it has a script world
+        // (`--level-scripts --pod-camera N`); else it is loaded as without scripts.
         let shell_options = level_scene::LevelSceneOptions {
-            mesh_alternates: Vec::new(),
+            mesh_alternates: swapped_meshes(self.level.shell_scripted()),
             ..scene_options.clone()
         };
         let options = self.preview_options();
@@ -1210,7 +1217,7 @@ fn load(
             // D274: but under that root the planets' own scripts place them, and the
             // Thing map moves each one's model inside the root.
             let follow = v.level.scripts && (v.level.pod.is_none() || under_world_thing);
-            spawn_level(
+            let things = spawn_level(
                 &mut v,
                 &mut commands,
                 &mut meshes,
@@ -1219,6 +1226,9 @@ fn load(
                 plan,
                 follow,
             );
+            if let Some(things) = things {
+                commands.insert_resource(things);
+            }
             v.lighting.level =
                 followed
                     .zip(light_frame)
@@ -1267,7 +1277,11 @@ fn load(
                     .as_ref()
                     .and_then(|s| s.checkpoints.first().copied());
                 let normalize = shell_plan.normalize;
-                let t0 = v.level.t0.unwrap_or(0.);
+                // D277: under `--level-scripts` the opening follows pod.bin's script
+                // (`level_play::tick`), so the layer starts closed; `--pod-open` is
+                // the Puter state "open" and a `--pod-t` between has no meaning there.
+                let asked = v.level.t0.unwrap_or(0.);
+                let t0 = if scripted { 0. } else { asked };
                 let root = commands
                     .spawn((rig.shell_root(t0), Visibility::default(), PodShellRoot))
                     .id();
@@ -1295,15 +1309,25 @@ fn load(
                 });
                 let first = v.scene.len();
                 let planets_light = v.lighting.light.clone();
-                spawn_level(
+                // D277: with a script world of its own the shell's Things are mapped,
+                // in a map of their own beside the planets level's.
+                let shell_things = spawn_level(
                     &mut v,
                     &mut commands,
                     &mut meshes,
                     &mut materials,
                     &mut images,
                     shell_plan,
-                    false,
+                    scripted,
                 );
+                if let Some(things) = shell_things {
+                    commands.insert_resource(thing_view::ShellThings(things));
+                }
+                if scripted && asked > 0. && asked < 1. {
+                    v.level.lines.push(format!(
+                        "--pod-t {asked} is not used under --level-scripts: the opening follows pod.bin's script (mid stills: --level-scripts-in-use-at N --level-scripts-hold-at N+k, value 0.05 k)"
+                    ));
+                }
                 // P2l: the shell keeps its own level's light; the planets keep theirs.
                 let mut shell_light =
                     std::mem::replace(&mut v.lighting.light, planets_light.clone());
@@ -1337,7 +1361,7 @@ fn load(
                 commands.insert_resource(PodRigRes(rig, scripted));
                 commands.insert_resource(pod_menu::PuterState {
                     t: t0,
-                    open: t0 >= 1.,
+                    open: asked >= 1.,
                     // Mid-dolly starts stay put (QA); Space then opens or closes.
                     hold: t0 > 0. && t0 < 1.,
                 });
@@ -2782,6 +2806,8 @@ fn clear_pod_shell(mut commands: Commands, v: Res<Viewer>, roots: Query<Entity, 
         for root in &roots {
             commands.entity(root).despawn();
         }
+        // D277: the shell's Thing map goes with its entities.
+        commands.remove_resource::<thing_view::ShellThings>();
     }
 }
 /// The Pod rig, and (D275) whether the planets level's scripts run: the camera and the
@@ -2881,7 +2907,9 @@ fn pod_dolly(
         return;
     };
     // D275: under `--level-scripts` the script's camera gives the field of view, the
-    // view and the place of the roots (`level_play::script_camera`); only `t` moves here.
+    // view and the place of the roots (`level_play::script_camera`). D277: `t` is not
+    // moved here either: it is written from pod.bin's change-over value after each tick
+    // (`level_play::tick`); the keys only set `open`, the stand-in input.
     let scripted = rig.1;
     // P2k: the camera's field of view follows the rig (the game's under --pod-game-camera).
     for mut projection in &mut layers.2 {
@@ -2901,7 +2929,7 @@ fn pod_dolly(
         state.open = false;
         state.hold = false;
     }
-    if state.hold {
+    if state.hold || scripted {
         return;
     }
     let target = if state.open { 1. } else { 0. };
@@ -2914,9 +2942,6 @@ fn pod_dolly(
     } else {
         (state.t - step).max(0.)
     };
-    if scripted {
-        return;
-    }
     *orbit = pod_orbit(&rig.0, state.t);
     for (mut root, PodPlanetsRoot(normalize)) in &mut layers.1 {
         *root = planets_root(*normalize, state.t);
@@ -2930,7 +2955,8 @@ fn pod_dolly(
     }
 }
 /// `follow` (D268): the scene is the level a script world plays; its Things' own models
-/// are tagged and listed in a `thing_view::LevelThings` map.
+/// are tagged and listed in a `thing_view::LevelThings` map, which is returned (D277:
+/// the caller keeps it as the played level's map or as the shell layer's).
 fn spawn_level(
     v: &mut Viewer,
     commands: &mut Commands,
@@ -2939,7 +2965,7 @@ fn spawn_level(
     images: &mut Assets<Image>,
     mut plan: LevelPlan,
     follow: bool,
-) {
+) -> Option<thing_view::LevelThings> {
     // One set of GPU assets per scene mesh, shared by every instance.
     let uploaded: Vec<Vec<_>> = plan
         .prepared
@@ -2981,16 +3007,16 @@ fn spawn_level(
                 .push((entity, mesh.clone(), material.clone(), image.clone()));
         }
     }
-    if let Some(things) = things {
+    if let Some(things) = &things {
         let (mapped, entities) = things.counts();
         plan.lines.push(format!(
             "Thing map (level scripts): {mapped} Things with a model of their own, {entities} draw entities"
         ));
-        commands.insert_resource(things);
     }
     v.level.lines = plan.lines;
     v.level.home = Some(plan.home);
     v.lighting.light = plan.light;
+    things
 }
 /// P2j: the Pod side panels (pod.mol slot 0, window_glassy) show the room wall art
 /// default_wall_diffuse 0001f3b9 unless a `--runtime-texture` rule names that slot or
@@ -4185,6 +4211,35 @@ mod tests {
             app.world().get::<Window>(window).unwrap().position,
             bevy::window::WindowPosition::At(IVec2::new(20, 30))
         );
+    }
+    /// D277. The shell layer's scene loads the swapped meshes only when the shell has a
+    /// script world: `--level-scripts` with `--pod-camera N` and `--pod-shell HEX`. Of
+    /// the pair, the tent goes under the tent root and the platform under the shell root.
+    #[test]
+    fn d277_the_shell_layer_loads_the_swapped_meshes_only_with_a_script_world() {
+        let mode = |scripts, pod, shell| LevelMode {
+            scripts,
+            pod,
+            shell,
+            ..Default::default()
+        };
+        let on = mode(true, Some(1), Some(0x27b9));
+        assert!(on.pod_scripted() && on.shell_scripted());
+        assert_eq!(
+            swapped_meshes(on.shell_scripted()),
+            thing_view::SWAPPED_MESHES
+        );
+        for off in [
+            mode(false, Some(1), Some(0x27b9)),
+            mode(true, None, Some(0x27b9)),
+            mode(true, Some(1), None),
+        ] {
+            assert!(!off.shell_scripted());
+            assert!(swapped_meshes(off.shell_scripted()).is_empty());
+        }
+        let [[tent, platform]] = thing_view::SWAPPED_MESHES;
+        assert_eq!(tent, POD_TENT_MESH);
+        assert_ne!(platform, POD_TENT_MESH);
     }
     #[test]
     fn p2j_pod_wall_default_yields_to_an_explicit_slot_rule() {
