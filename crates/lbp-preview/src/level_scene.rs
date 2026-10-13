@@ -71,6 +71,20 @@ pub struct LevelSceneOptions {
     /// [`PreviewOptions`] win. Default on; `StandaloneDefaults::OFF` restores the old
     /// source-only scene.
     pub defaults: crate::StandaloneDefaults,
+    /// D276: pairs of mesh GUIDs a script swaps on a Thing's RENDER_MESH. A Thing drawn
+    /// with one mesh of a pair also gets an item for the other at the same POS
+    /// ([`add_alternate_meshes`]; `SceneItem::alternate`), for a renderer to keep hidden
+    /// until the swap. Empty (default): no such items.
+    pub mesh_alternates: Vec<[u32; 2]>,
+}
+
+/// D276: the other mesh GUID of the first pair in `pairs` that holds `guid`.
+pub fn alternate_mesh(pairs: &[[u32; 2]], guid: u32) -> Option<u32> {
+    pairs
+        .iter()
+        .find(|pair| pair.contains(&guid))
+        .map(|&[a, b]| if guid == a { b } else { a })
+        .filter(|&other| other != guid)
 }
 
 /// D191: `PRenderMesh.editorColor` (packed ARGB, -1 = opaque white) as an RGBA tint.
@@ -218,6 +232,10 @@ pub struct SceneItem {
     pub shapes: usize,
     /// The item draws an entry of `thing`'s DECORATIONS part, not its RENDER_MESH part.
     pub decoration: bool,
+    /// D276: the item draws a mesh the level file does not name on `thing`: the other
+    /// mesh of a `LevelSceneOptions::mesh_alternates` pair. Not counted as drawn, left
+    /// out of the scene bounds, and for a renderer to hide until a script swaps to it.
+    pub alternate: bool,
 }
 
 /// Merged world-space shape geometry for one gfx material (D114 extrusions).
@@ -315,6 +333,10 @@ pub struct SceneCounts {
     /// P2e opt-in runtime texture rules: per rule, primitive groups of distinct loaded
     /// model meshes drawn with the rule's texture, and those left by reason.
     pub runtime_textures: crate::runtime_texture::RuntimeCounts,
+    /// D276 (`LevelSceneOptions::mesh_alternates`): Things given an item for the other
+    /// mesh of a pair, and those whose other mesh could not be loaded or placed.
+    pub alternate_meshes: usize,
+    pub alternate_meshes_failed: usize,
 }
 
 impl SceneCounts {
@@ -458,6 +480,12 @@ impl SceneCounts {
         }
         out.extend(self.backdrop.lines());
         out.extend(crate::runtime_texture::lines(&self.runtime_textures));
+        if self.alternate_meshes + self.alternate_meshes_failed > 0 {
+            out.push(format!(
+                "Alternate meshes (a script swaps them in): {} Things with a second item, kept hidden; {} not loaded or placed",
+                self.alternate_meshes, self.alternate_meshes_failed
+            ));
+        }
         out.push(match &self.reader_stop {
             None => "Level reader: complete".into(),
             Some(s) => format!("Level reader stopped: {s}"),
@@ -523,7 +551,7 @@ impl<T> LevelScene<T> {
     pub fn bounds_where(&self, keep: impl Fn(&SceneItem) -> bool) -> Option<[[f32; 3]; 2]> {
         let mut lo = [f64::INFINITY; 3];
         let mut hi = [f64::NEG_INFINITY; 3];
-        for item in self.items.iter().filter(|i| keep(i)) {
+        for item in self.items.iter().filter(|i| !i.alternate && keep(i)) {
             let Some([a, b]) = self.meshes[item.mesh].bounds else {
                 continue;
             };
@@ -1348,9 +1376,83 @@ pub fn build_scene_with_colors<T>(
             uid: t.uid,
             shapes: 0,
             decoration: false,
+            alternate: false,
         });
     }
     scene
+}
+
+/// D276: for every RENDER_MESH item of a POS Thing whose mesh is one of a pair in
+/// `pairs`, adds an item for the pair's other mesh (`SceneItem::alternate`): the same
+/// Thing and POS, under the other mesh's own bone-0 inverse bind (the placement rule of
+/// [`build_scene`]). `load` is called once for a mesh the scene does not hold yet. The
+/// new items follow the scene's items; they are not counted as drawn and stay out of
+/// the bounds. Call it right after [`build_scene`], before shapes and decals are added.
+#[allow(clippy::too_many_arguments)]
+pub fn add_alternate_meshes<T>(
+    scene: &mut LevelScene<T>,
+    things: &[ThingRecord],
+    pairs: &[[u32; 2]],
+    mut load: impl FnMut(&MeshSource) -> Result<T, String>,
+    local_bounds: impl Fn(&T) -> Option<[[f32; 3]; 2]>,
+    neutral_groups: impl Fn(&T) -> bool,
+    bind_poses: impl Fn(&T) -> Vec<BindPose>,
+    placement: PosPlacement,
+) {
+    let wanted: Vec<(usize, Option<i32>, u32)> = scene
+        .items
+        .iter()
+        .filter(|i| !i.decoration && !i.alternate && i.shapes == 0)
+        .filter_map(|i| match scene.meshes[i.mesh].source {
+            MeshSource::Guid(g) => Some((i.thing, i.uid, alternate_mesh(pairs, g)?)),
+            _ => None,
+        })
+        .collect();
+    for (thing, uid, other) in wanted {
+        let source = MeshSource::Guid(other);
+        let placed = (|| {
+            let pos = things
+                .iter()
+                .find(|t| t.index == thing)
+                .and_then(|t| t.data.pos.as_ref())?;
+            let mesh = match scene.meshes.iter().position(|m| m.source == source) {
+                Some(mesh) => mesh,
+                None if scene.meshes.len() >= MAX_LEVEL_MESHES => return None,
+                None => {
+                    let payload = load(&source).ok()?;
+                    scene.meshes.push(SceneMesh {
+                        source: source.clone(),
+                        bounds: local_bounds(&payload),
+                        neutral_groups: neutral_groups(&payload),
+                        payload,
+                    });
+                    scene.meshes.len() - 1
+                }
+            };
+            let bind = bind_poses(&scene.meshes[mesh].payload);
+            let world = match (placement, bind.first()) {
+                (PosPlacement::InverseBind, Some(b0)) => mul44(&pos.world, &b0.inv),
+                _ => pos.world,
+            };
+            world_matrix_check(&world).ok()?;
+            (scene.items.len() < MAX_LEVEL_ITEMS).then_some((mesh, world))
+        })();
+        match placed {
+            Some((mesh, world)) => {
+                scene.counts.alternate_meshes += 1;
+                scene.items.push(SceneItem {
+                    mesh,
+                    world,
+                    thing,
+                    uid,
+                    shapes: 0,
+                    decoration: false,
+                    alternate: true,
+                });
+            }
+            None => scene.counts.alternate_meshes_failed += 1,
+        }
+    }
 }
 
 /// Mesh source named by a RENDER_MESH-style descriptor (None for a null reference).
@@ -1526,6 +1628,7 @@ fn add_decorations<T>(
             uid: t.uid,
             shapes: 0,
             decoration: true,
+            alternate: false,
         });
     }
 }
@@ -1690,6 +1793,7 @@ pub fn add_shapes_with<T>(
                 uid: None,
                 shapes: newly,
                 decoration: false,
+                alternate: false,
             });
         }
     }
@@ -1922,6 +2026,7 @@ pub fn add_sticker_decals<T>(
                 uid: None,
                 shapes: 0,
                 decoration: false,
+                alternate: false,
             });
         }
     }
@@ -2242,9 +2347,8 @@ pub fn load_level_scene_with_options(
         instance_color: explicit_color,
         ..options
     };
-    let mut scene = build_scene_with_colors(
-        &report.things,
-        |src, editor_color| {
+    let mut load_model =
+        |src: &MeshSource, editor_color: Option<u32>| -> Result<ScenePayload, String> {
             control.check()?;
             let key = match src {
                 MeshSource::Guid(g) => resolve(catalog, Some(*g), None)?,
@@ -2275,13 +2379,30 @@ pub fn load_level_scene_with_options(
             }
             charge(retained(&mesh))?;
             Ok(ScenePayload::Model(Box::new(mesh)))
-        },
+        };
+    let neutral = |p: &ScenePayload| matches!(p, ScenePayload::Model(m) if grouped_neutral(m));
+    let mut scene = build_scene_with_colors(
+        &report.things,
+        &mut load_model,
         payload_bounds,
-        |p| matches!(p, ScenePayload::Model(m) if grouped_neutral(m)),
+        neutral,
         model_bind_poses,
         |p| thing_colors && matches!(p, ScenePayload::Model(m) if uses_instance_color(m)),
         scene_options.placement,
     );
+    if !scene_options.mesh_alternates.is_empty() {
+        // D276: the other mesh of a pair a script swaps, loaded with the base inputs.
+        add_alternate_meshes(
+            &mut scene,
+            &report.things,
+            &scene_options.mesh_alternates,
+            |source| load_model(source, None),
+            payload_bounds,
+            neutral,
+            model_bind_poses,
+            scene_options.placement,
+        );
+    }
     scene.counts.runtime_textures = runtime_counts;
     control.check()?;
     skin_span_joints(
@@ -2973,6 +3094,82 @@ mod tests {
         );
     }
 
+    /// D276. A Thing drawn with one mesh of a pair gets a second item for the other
+    /// mesh, at its POS under that mesh's own inverse bind; other Things get none; the
+    /// second item is not counted as drawn and stays out of the bounds.
+    #[test]
+    fn d276_a_thing_with_a_mesh_of_a_pair_gets_an_item_for_the_other() {
+        let pairs = [[0x10, 0x11]];
+        assert_eq!(alternate_mesh(&pairs, 0x10), Some(0x11));
+        assert_eq!(alternate_mesh(&pairs, 0x11), Some(0x10));
+        assert_eq!(alternate_mesh(&pairs, 0x20), None);
+        assert_eq!(alternate_mesh(&[], 0x10), None);
+        assert_eq!(alternate_mesh(&[[7, 7]], 7), None);
+        let mut swapped = thing(0, Some(0x10), Some(identity_at(100.)));
+        swapped.data.decorations = vec![decoration(Some(0x10), identity_at(1.))];
+        let things = [swapped, thing(1, Some(0x20), Some(identity_at(0.)))];
+        let load = |s: &MeshSource| match s {
+            MeshSource::Guid(0x12) => Err("Unresolved: GUID".to_string()),
+            MeshSource::Guid(g) => Ok(*g),
+            _ => unreachable!(),
+        };
+        // The bounds grow with the GUID; mesh 0x11 is bound 3 units along x.
+        let bounds = |g: &u32| Some([[-1.; 3], [*g as f32; 3]]);
+        let bind = |g: &u32| {
+            let skin = identity_at(if *g == 0x11 { 3. } else { 0. });
+            let inv = identity_at(-skin[12]);
+            vec![BindPose { skin, inv }]
+        };
+        let build = || {
+            build_scene(
+                &things,
+                load,
+                bounds,
+                |_| false,
+                bind,
+                PosPlacement::InverseBind,
+            )
+        };
+        let plain = build();
+        let mut scene = build();
+        let mut loads = Vec::new();
+        let mut add = |scene: &mut LevelScene<u32>, pairs: &[[u32; 2]]| {
+            add_alternate_meshes(
+                scene,
+                &things,
+                pairs,
+                |s| {
+                    loads.push(s.clone());
+                    load(s)
+                },
+                bounds,
+                |_| false,
+                bind,
+                PosPlacement::InverseBind,
+            )
+        };
+        add(&mut scene, &pairs);
+        assert_eq!(scene.items.len(), plain.items.len() + 1);
+        assert_eq!(scene.items[..plain.items.len()], plain.items[..]);
+        let extra = scene.items.last().unwrap();
+        assert!(extra.alternate && !extra.decoration);
+        assert_eq!((extra.thing, extra.uid, extra.world[12]), (0, Some(1), 97.));
+        assert_eq!(scene.meshes[extra.mesh].source, MeshSource::Guid(0x11));
+        assert_eq!(scene.items.iter().filter(|i| i.alternate).count(), 1);
+        let c = &scene.counts;
+        assert_eq!((c.alternate_meshes, c.alternate_meshes_failed), (1, 0));
+        assert_eq!((c.drawn, c.meshes_loaded), (plain.counts.drawn, 2));
+        assert_eq!(scene.bounds(), plain.bounds());
+        assert!(c.lines().iter().any(|l| l.starts_with("Alternate meshes")));
+        assert!(!plain.counts.lines().iter().any(|l| l.contains("Alternate")));
+        // A mesh that does not load: counted, no item. A mesh the scene already holds
+        // is not loaded again.
+        add(&mut scene, &[[0x20, 0x12], [0x10, 0x11]]);
+        let c = &scene.counts;
+        assert_eq!((c.alternate_meshes, c.alternate_meshes_failed), (2, 1));
+        assert_eq!(loads, [MeshSource::Guid(0x11), MeshSource::Guid(0x12)]);
+    }
+
     #[test]
     fn synthetic_scene_shares_meshes_and_counts_skips() {
         let mut nan = identity_at(0.);
@@ -3492,6 +3689,7 @@ mod tests {
                 uid: None,
                 shapes: 0,
                 decoration: false,
+                alternate: false,
             })
             .is_err());
         scene.meshes.push(SceneMesh {
@@ -3508,6 +3706,7 @@ mod tests {
                 uid: None,
                 shapes: 0,
                 decoration: false,
+                alternate: false,
             })
             .unwrap();
         assert_eq!(scene.bounds(), None);

@@ -320,6 +320,17 @@ UI (`UpdateUI__`) and photo natives are not planned.
   scripts. Without `--level-scripts` the captures are equal byte for byte. Not
   compared against the game. Left: the shell's own camera in the game, the mesh swap
   (PR 3), the shared session (PR 4).
+- After stage 6, "Pod picture" PR 3 (D276, part 27): the pod's mesh swap in the scene,
+  on pod.bin alone. The scene of a played level loads both meshes of the one pair the
+  scripts swap (`thing_view::SWAPPED_MESHES`: `pod.mol` 0x2f6c, `pod_platform.mol`
+  0x23959; `LevelSceneOptions::mesh_alternates`, `add_alternate_meshes`), the second
+  one hidden; `thing_view::apply` shows the set of the mesh the Thing has now, under
+  the play-mode visibility rule. QA option `--level-scripts-in-use-at N` (stand-in for
+  engaging the pod computer). pod.bin alone: the swap is printed on tick N + 20; the
+  still before it equals the capture without scripts byte for byte, the still after it
+  shows the platform in the tent's place. Not drawn: the fade; two small pieces at the
+  tent's sides stay in mid-air. Without `--level-scripts` the captures are equal byte
+  for byte. Not compared against the game. Left: the shared session (PR 4).
 
 ## Rules
 

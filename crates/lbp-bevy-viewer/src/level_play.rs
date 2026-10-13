@@ -62,6 +62,9 @@ struct Play {
     override_printed: (bool, bool, bool),
     /// `--level-scripts-hold-at N` (QA): no tick after tick N.
     hold_at: Option<u64>,
+    /// `--level-scripts-in-use-at N` (QA, part 27): the pod computer is set in use when
+    /// N ticks have run, before the next one; none once that is done.
+    in_use_at: Option<u64>,
     /// Frames drawn with a camera a script wrote itself (part 23), that camera's state
     /// at the last printed line, and its pose after the last tick it was looked at.
     script_frames: u64,
@@ -101,6 +104,23 @@ fn value(all: &[String], flag: &str) -> Option<String> {
         .cloned()
 }
 
+/// The tick count after `flag`: none without the flag, an error for another value.
+fn tick_option(all: &[String], flag: &str) -> Result<Option<u64>, String> {
+    value(all, flag)
+        .map(|v| {
+            v.parse::<u64>()
+                .map_err(|_| format!("{flag} takes a tick count"))
+        })
+        .transpose()
+}
+
+/// `--level-scripts-in-use-at N` (QA, part 27): whether to set "pod computer in use"
+/// now: once, when `ticks` ticks have run and that is the option's count or more.
+/// `at` is cleared when it fires.
+fn in_use_now(at: &mut Option<u64>, ticks: u64) -> bool {
+    at.take_if(|n| ticks >= *n).is_some()
+}
+
 /// Loads scripts and the level and adds the 30 Hz schedule when `--level-scripts` is
 /// given; otherwise does nothing.
 pub fn install(app: &mut App) -> Result<(), String> {
@@ -118,12 +138,8 @@ pub fn install(app: &mut App) -> Result<(), String> {
         return Err("--level-scripts requires --level-guid or --level-path".into());
     }
     let hide_ui = all.iter().any(|a| a == "--qa-hide-ui");
-    let hold_at = value(&all, "--level-scripts-hold-at")
-        .map(|v| {
-            v.parse::<u64>()
-                .map_err(|_| "--level-scripts-hold-at takes a tick count")
-        })
-        .transpose()?;
+    let hold_at = tick_option(&all, "--level-scripts-hold-at")?;
+    let in_use_at = tick_option(&all, "--level-scripts-in-use-at")?;
     // Bit masks ORed into the profile's word of LBP2 game progression flags (as
     // `level_scripts --flags`).
     let flags = value(&all, "--level-scripts-flags")
@@ -203,6 +219,7 @@ pub fn install(app: &mut App) -> Result<(), String> {
         override_frames: 0,
         override_printed: (false, false, false),
         hold_at,
+        in_use_at,
         script_frames: 0,
         script_state: ScriptCameraState::Out,
         script_last: None,
@@ -268,6 +285,17 @@ fn tick(
     }
     if held {
         return;
+    }
+    // Part 27, `--level-scripts-in-use-at N`: a player is at the pod computer from the
+    // tick after tick N on (as `level_scripts --puter-in-use=N`). A stand-in for the
+    // path of part 24 (pad zone, press, the host's answer), which needs a Sackboy and a
+    // pad the viewer does not feed in yet.
+    if in_use_now(&mut p.in_use_at, p.scripts.ticks) {
+        p.host.world.pod_computer_in_use = true;
+        println!(
+            "Pod computer at tick {}: in use true, from --level-scripts-in-use-at (stand-in for the player engaging it)",
+            p.scripts.ticks
+        );
     }
     // The play-mode Sackboy (`--play-sackboy`), when there is one, is the player the
     // level's triggers test.
@@ -438,8 +466,17 @@ fn follow_things(
             .into_iter()
             .filter_map(|t| Some((t, world.thing_display(t)?.mesh_tint?)))
             .collect();
+        // Part 27: a mesh other than the level file's, as (Thing, mesh GUID).
+        let other_mesh: Vec<(u32, String)> = some(&|t, d| {
+            world
+                .display_at_load(t)
+                .is_some_and(|was| was.mesh != d.mesh)
+        })
+        .into_iter()
+        .filter_map(|t| Some((t, format!("{:08x}", world.thing_display(t)?.mesh?))))
+        .collect();
         println!(
-            "Things at tick {}{}: {}; first Things hidden {hidden:?} (of them by a script {by_script:?}), tinted {tinted:?}",
+            "Things at tick {}{}: {}; first Things hidden {hidden:?} (of them by a script {by_script:?}), tinted {tinted:?}, with another mesh than the file's {other_mesh:?}",
             p.scripts.ticks,
             if first { " (new scene)" } else { "" },
             done.line()
@@ -1080,6 +1117,30 @@ mod tests {
         assert_eq!(fog_bias(&world), 0.);
         set(&mut world, f32::NAN);
         assert_eq!(fog_bias(&world), 0.);
+    }
+
+    /// Part 27. `--level-scripts-in-use-at N` is a tick count, and fires once: on the
+    /// first look at which N ticks or more have run.
+    #[test]
+    fn the_in_use_option_is_a_tick_count_and_fires_once() {
+        let args = |list: &[&str]| -> Vec<String> { list.iter().map(|a| a.to_string()).collect() };
+        let flag = "--level-scripts-in-use-at";
+        assert_eq!(tick_option(&args(&["--level-scripts"]), flag), Ok(None));
+        assert_eq!(tick_option(&args(&[flag, "60"]), flag), Ok(Some(60)));
+        assert_eq!(tick_option(&args(&[flag, "0"]), flag), Ok(Some(0)));
+        for bad in ["-1", "soon", "1.5"] {
+            let e = tick_option(&args(&[flag, bad]), flag).unwrap_err();
+            assert_eq!(e, "--level-scripts-in-use-at takes a tick count");
+        }
+        let mut at = Some(60);
+        assert!(!in_use_now(&mut at, 0) && !in_use_now(&mut at, 59));
+        assert_eq!(at, Some(60));
+        assert!(in_use_now(&mut at, 60));
+        assert_eq!(at, None);
+        assert!(!in_use_now(&mut at, 61));
+        // A count already passed (the option's 0, or ticks run before the look).
+        assert!(in_use_now(&mut Some(0), 0) && in_use_now(&mut Some(3), 7));
+        assert!(!in_use_now(&mut None, 7));
     }
 
     /// Part 26. The Puter state of the Pod rig goes to the script world when it changes;

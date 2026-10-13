@@ -1,5 +1,13 @@
 # Development log
 
+## 2026-10-13 - D276 the pod's mesh swap in the scene
+
+Pod picture PR 3. The scene of a level played by `--level-scripts` loads both meshes of the pair the Pod's
+script swaps (`pod.mol`, `pod_platform.mol`), the second hidden; `thing_view::apply` shows the one the
+Thing has now. QA option `--level-scripts-in-use-at N`. pod.bin alone: swap printed on tick N + 20; the
+still after it shows the platform in the tent's place (no fade; two small pieces stay in mid-air).
+Without `--level-scripts` captures are equal byte for byte. `docs/level-scripts.md` part 27.
+
 ## 2026-10-13 - D275 the Pod shell layer under the script's camera
 
 Pod picture PR 2, viewer only. `PodRig::layer_at` places the shell and the tent from any planets camera;

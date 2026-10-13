@@ -5265,3 +5265,45 @@ Next: Pod picture PR 2, the shell layer under the script's camera. `docs/level-s
   (`sackboy_play::tests::input_script_steps`, fails on main).
 **+0 newly viewable / +0 newly Complete (viewer feature).**
 Next: Pod picture PR 3, the pod's mesh swap. `docs/level-scripts.md` part 26.
+
+## D276 the pod's mesh swap in the scene (2026-10-13)
+- "Pod picture" PR 3, viewer and scene builder. Full detail: `docs/level-scripts.md` part 27. No
+  native, no runtime change, nothing new read in the EBOOT.
+- Before: the runtime reported the mesh a script puts on a PRenderMesh (D270) and the viewer counted
+  it as "another mesh, not drawn". FOUND (D270, D273): the one call site of `Thing.SetRenderMeshMesh`
+  is `Pod.SetPodTransition__b`, on pod.bin Thing 2: `pod.mol` (0x2f6c) under 1, `pod_platform.mol`
+  (0x23959) at 1.
+- `lbp-preview`: `LevelSceneOptions::mesh_alternates` (GUID pairs, empty by default),
+  `add_alternate_meshes` (a POS Thing drawn with one mesh of a pair gets a second item for the
+  other, under that mesh's inverse bind), `SceneItem::alternate` (not counted as drawn, out of the
+  bounds), `SceneCounts::alternate_meshes`.
+- Viewer: `thing_view::SWAPPED_MESHES` (one pair), handed to the scene only under `--level-scripts`
+  and never to the shell layer; alternate items are spawned hidden; `thing_view::apply` shows the
+  entities of the mesh the Thing has now and hides the others, under the play-mode visibility rule
+  of D268 in either order (`Followed::mesh_swapped`; `mesh_not_drawn` stays for a mesh that was not
+  loaded). QA option `--level-scripts-in-use-at N`: `pod_computer_in_use` is set when N ticks have
+  run. The `Things at tick N` line names the Things with another mesh.
+- MEASURED (`level_scripts`, pod.bin alone, 200 ticks, in use from 100): "in use" alone runs the
+  change-over, with and without flags 3: 1 mesh change, GUID 145753 at the end, no fault, no
+  unbound call. The stand-in skips the path of D273 (pad zone, press, host answer).
+- MEASURED, no focus taken (`--qa-capture`, 1280 x 720, `--window-16-9 --preview-lighting
+  --qa-hide-ui`; `local-analysis/rscript/stage6/shots/d276-*`): without `--level-scripts`, before
+  (main at D275) and after: pod.bin alone equal byte for byte, the shell picture equal byte for byte
+  (and equal to D275's). pod.bin with scripts, flags 3, in use from 600: `Things at tick 620: ...
+  mesh swapped 1 (5 entities) ... with another mesh than the file's [(2, "00023959")]`. Hold at
+  610: equal byte for byte to the capture without scripts. In use from 30, hold at 100 (swap before
+  the scene is up): equal byte for byte to the hold at 640.
+- Eye check (stills at 610 and 640): before, the cardboard pod with the DualShock in its opening;
+  after, the pod is gone and a flat round cardboard disc lies where its floor was, the DualShock on
+  it. Two small orange pieces at the pod's upper sides stay in mid-air (not entities of the pod
+  Thing; which Things they are was not looked up).
+- Not done: the fade (the pod pops on the tick the value reaches 1), the swap in the Pod picture
+  (the shell layer has no script world: PR 4). Not seen: the swap in motion. Not compared: anything
+  against the game.
+- Tests: `lbp-preview` `d276_a_thing_with_a_mesh_of_a_pair_gets_an_item_for_the_other`; viewer
+  `d276_a_swapped_mesh_shows_its_own_entities`, `the_in_use_option_is_a_tick_count_and_fires_once`.
+  fmt, CI clippy, CI tests (611), `cargo check` of both viewers, the viewer's clippy and the Python
+  tests (36) pass; `cargo test -q -p lbp-bevy-viewer` 58 pass, 1 fails
+  (`sackboy_play::tests::input_script_steps`, fails on main).
+**+0 newly viewable / +0 newly Complete (viewer feature).**
+Next: Pod picture PR 4, the two Pod levels in one viewer session. `docs/level-scripts.md` part 27.

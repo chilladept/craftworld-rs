@@ -12,6 +12,10 @@
 //! Thing with no mesh), a new editor colour of a mesh or colour of a shape, which the
 //! scene builds into the material when the level is loaded, and (D272) another mesh on a
 //! Thing's PRenderMesh, which would need that mesh loaded while the scene is up.
+//!
+//! D276 (part 27): the meshes of [`SWAPPED_MESHES`] are loaded with the scene. A Thing
+//! drawn with one of a pair has a second, hidden set of draw entities for the other
+//! (`Item::alternate`), and [`apply`] shows the set of the mesh the PRenderMesh has now.
 use crate::dual::{self, ViewerMaterial};
 use bevy::prelude::*;
 use lbp_runtime::{pack_colour, DisplayChange, LevelWorld, WHITE};
@@ -27,7 +31,19 @@ pub struct Item {
     pub decoration: bool,
     /// The item's matrix in level units, as the scene placed it from the level file.
     pub world: Mat4,
+    /// GUID of the mesh the item draws (none for a mesh named by its hash only).
+    pub mesh: Option<u32>,
+    /// D276: the item draws the other mesh of a [`SWAPPED_MESHES`] pair, not the one the
+    /// level file names: hidden until a script sets that mesh on the Thing.
+    pub alternate: bool,
 }
+
+/// D276: pairs of mesh GUIDs a script swaps on a Thing with `Thing.SetRenderMeshMesh`.
+/// FOUND: the one call site in the 426 scripts is `Pod.SetPodTransition__b`, which puts
+/// `pod.mol` (0x2f6c) on the pod Thing while the change-over is under 1 and
+/// `pod_platform.mol` (0x23959) at 1; `Thing.GetPodThing__b` tests for the same two
+/// (docs/level-scripts.md, parts 21 and 27). Any other mesh a script sets is not loaded.
+pub const SWAPPED_MESHES: [[u32; 2]; 1] = [[0x2f6c, 0x0002_3959]];
 
 /// On a draw entity of the played level: the Thing it shows.
 #[derive(Component)]
@@ -97,9 +113,12 @@ pub struct Followed {
     pub not_placed: usize,
     /// Tints that change only the alpha (red, green and blue stay white): not drawn.
     pub tint_alpha_not_drawn: usize,
-    /// Things whose PRenderMesh shows another mesh than the level file's: the scene
-    /// keeps the file's mesh.
+    /// Things whose PRenderMesh shows another mesh than the level file's, one that was
+    /// not loaded with the scene: the scene keeps the file's mesh.
     pub mesh_not_drawn: usize,
+    /// D276: Things whose draw entities were changed over to the mesh the PRenderMesh
+    /// has now (to the other mesh of a pair, or back to the file's).
+    pub mesh_swapped: usize,
 }
 
 impl Followed {
@@ -117,16 +136,17 @@ impl Followed {
         self.not_placed += o.not_placed;
         self.tint_alpha_not_drawn += o.tint_alpha_not_drawn;
         self.mesh_not_drawn += o.mesh_not_drawn;
+        self.mesh_swapped += o.mesh_swapped;
     }
 
     /// Whether anything in the scene was changed.
     pub fn any(&self) -> bool {
-        self.hidden + self.shown + self.tinted + self.untinted + self.placed > 0
+        self.hidden + self.shown + self.tinted + self.untinted + self.placed + self.mesh_swapped > 0
     }
 
     pub fn line(&self) -> String {
         format!(
-            "listed {}, with a draw entity {}; hidden {}, shown {}, tinted {}, tint taken off {}, placed {} ({} entities); not followed: no draw entity {}, editor or shape colour {}, tint of alpha only {}, no placement {}, another mesh {}",
+            "listed {}, with a draw entity {}; hidden {}, shown {}, tinted {}, tint taken off {}, placed {}, mesh swapped {} ({} entities); not followed: no draw entity {}, editor or shape colour {}, tint of alpha only {}, no placement {}, another mesh {}",
             self.listed,
             self.drawn,
             self.hidden,
@@ -134,6 +154,7 @@ impl Followed {
             self.tinted,
             self.untinted,
             self.placed,
+            self.mesh_swapped,
             self.entities,
             self.not_drawn,
             self.colour_not_drawn,
@@ -181,8 +202,11 @@ pub type Parts<'a> = (
 ///   clean-up reach it.
 /// - Place: every entity of the Thing is moved by the matrix that takes the Thing from
 ///   its stored world matrix to the one it has now.
-/// - Mesh: a Thing whose PRenderMesh shows another mesh than the level file's keeps the
-///   file's mesh in the scene, and is counted.
+/// - Mesh (D276): a Thing with a second set of entities for the other mesh of a
+///   [`SWAPPED_MESHES`] pair shows the set of the mesh its PRenderMesh has now and hides
+///   the other; the visibility rule above still hides the set that is shown, whichever
+///   of the two changes comes first. A mesh that was not loaded with the scene leaves
+///   the file's mesh in the scene, and is counted.
 pub fn apply(
     world: &LevelWorld,
     list: &[(u32, DisplayChange)],
@@ -207,8 +231,23 @@ pub fn apply(
             || packed(now.shape_colour) != packed(was.shape_colour)
             || tint_of(now.shape_tint) != tint_of(was.shape_tint);
         done.colour_not_drawn += usize::from(change.colour && other_colour);
-        done.mesh_not_drawn += usize::from(change.mesh && now.mesh != was.mesh);
-        let Some(list) = things.entities.get(&thing).filter(|l| !l.is_empty()) else {
+        let list = things.entities.get(&thing).filter(|l| !l.is_empty());
+        // D276: the Thing has a second set of entities for another mesh, and the mesh
+        // it has now is that set's.
+        let sets = |keep: &dyn Fn(&Item) -> bool| {
+            list.is_some_and(|l| {
+                l.iter()
+                    .any(|&e| entities.get(e).is_ok_and(|(tag, ..)| keep(&tag.item)))
+            })
+        };
+        let other_mesh = now.mesh != was.mesh;
+        let alternates = sets(&|item| item.alternate);
+        let preloaded = other_mesh && sets(&|item| item.alternate && item.mesh == now.mesh);
+        done.mesh_not_drawn += usize::from(change.mesh && other_mesh && !preloaded);
+        // The entities change sets: to the other mesh, or back to the file's.
+        let swap = change.mesh && alternates && (preloaded || !other_mesh);
+        done.mesh_swapped += usize::from(swap);
+        let Some(list) = list else {
             done.not_drawn += 1;
             continue;
         };
@@ -238,15 +277,24 @@ pub fn apply(
             if tag.item.decoration {
                 continue;
             }
-            if change.visibility {
-                let want = if now.mesh_hidden() {
-                    Visibility::Hidden
+            if change.visibility || (change.mesh && alternates) {
+                // The set of the mesh the Thing has now; a mesh that was not loaded
+                // leaves the file's set in the scene.
+                let in_set = if preloaded {
+                    tag.item.alternate && tag.item.mesh == now.mesh
                 } else {
+                    !tag.item.alternate
+                };
+                let want = if in_set && !now.mesh_hidden() {
                     Visibility::Inherited
+                } else {
+                    Visibility::Hidden
                 };
                 if *visibility != want {
-                    hid |= want == Visibility::Hidden;
-                    showed |= want == Visibility::Inherited;
+                    // A change of sets is counted as the swap, not as hidden or shown.
+                    let sets_change = change.mesh && alternates;
+                    hid |= !sets_change && want == Visibility::Hidden;
+                    showed |= !sets_change && want == Visibility::Inherited;
                     *visibility = want;
                 }
             }
@@ -336,6 +384,8 @@ mod tests {
             thing,
             decoration,
             world: Mat4::from_translation(Vec3::new(10. + x, 0., 0.)),
+            mesh: None,
+            alternate: false,
         };
         let mut things = LevelThings::new(Mat4::from_scale(Vec3::splat(0.5)));
         let mut spawned = Vec::new();
@@ -468,5 +518,158 @@ mod tests {
         sum.absorb(&done);
         sum.absorb(&want);
         assert_eq!((sum.listed, sum.hidden, sum.shown), (5, 1, 1));
+    }
+
+    /// D276. One Thing with two sets of draw entities, the file's mesh and the other
+    /// mesh of a pair (spawned hidden), and a decoration. A swap shows one set and hides
+    /// the other, and back; a mesh the visibility byte hides stays hidden through a
+    /// swap in either order; a mesh that was not loaded with the scene is counted and
+    /// leaves the file's set in the scene.
+    #[test]
+    fn d276_a_swapped_mesh_shows_its_own_entities() {
+        let [[tent, platform]] = SWAPPED_MESHES;
+        assert_eq!((tent, platform), (0x2f6c, 145_753));
+        // Thing 1 of the level has the first mesh of the pair in the file; the three
+        // GUIDs are meshes a script loaded.
+        let mut world = level();
+        world.things[1].mesh_guid = Some(tent);
+        world.pod.mesh_resources.extend([tent, platform, 0x77]);
+        let mut app = App::new();
+        app.insert_resource(Assets::<ViewerMaterial>::default());
+        let shared = app
+            .world_mut()
+            .resource_mut::<Assets<ViewerMaterial>>()
+            .add(dual::material(StandardMaterial::default()));
+        let item = |mesh, alternate, decoration| Item {
+            thing: 1,
+            decoration,
+            world: Mat4::IDENTITY,
+            mesh,
+            alternate,
+        };
+        let mut things = LevelThings::new(Mat4::IDENTITY);
+        let mut spawned = Vec::new();
+        // The file's mesh in two draw entities (two material groups), the other mesh in
+        // one, hidden as the scene spawns it, and a decoration.
+        for (row, item) in [
+            item(Some(tent), false, false),
+            item(Some(tent), false, false),
+            item(Some(platform), true, false),
+            item(Some(0x55), false, true),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let visibility = if item.alternate {
+                Visibility::Hidden
+            } else {
+                Visibility::default()
+            };
+            let tag = LevelThing {
+                item,
+                scene_row: row,
+                own_material: false,
+            };
+            let parts = (
+                Transform::IDENTITY,
+                visibility,
+                MeshMaterial3d(shared.clone()),
+                tag,
+            );
+            let entity = app.world_mut().spawn(parts).id();
+            things.add(1, entity);
+            spawned.push(entity);
+        }
+        app.insert_resource(things);
+        let mut scene: Vec<crate::OwnedScene> = spawned
+            .iter()
+            .map(|&e| (e, Handle::default(), shared.clone(), None))
+            .collect();
+        let shown = |app: &App| -> Vec<bool> {
+            let visible = |e: &Entity| *app.world().get::<Visibility>(*e).unwrap();
+            spawned
+                .iter()
+                .map(|e| visible(e) != Visibility::Hidden)
+                .collect()
+        };
+        let mut step = |app: &mut App, world: &mut LevelWorld| {
+            let list = world.take_display_dirty();
+            run(app, world, list, &mut scene)
+        };
+        // A new scene with the file's mesh: nothing to do, the other set stays hidden.
+        let things = app.world().resource::<LevelThings>();
+        assert!(first_list(&world, things).is_empty());
+        assert_eq!(shown(&app), [true, true, false, true]);
+
+        // The swap: the other set is shown, the file's hidden, the decoration stays.
+        world.set_render_mesh_mesh(1, Some(platform)).unwrap();
+        let done = step(&mut app, &mut world);
+        assert_eq!((done.mesh_swapped, done.mesh_not_drawn), (1, 0));
+        assert_eq!((done.hidden, done.shown, done.entities), (0, 0, 4));
+        assert!(done.any() && done.line().contains("mesh swapped 1"));
+        assert_eq!(shown(&app), [false, false, true, true]);
+        // A scene spawned now starts from the file's set and is told of the swap.
+        let things = app.world().resource::<LevelThings>();
+        assert_eq!(first_list(&world, things), [(1, DisplayChange::MESH)]);
+        // The same mesh set again changes nothing and lists nothing.
+        world.set_render_mesh_mesh(1, Some(platform)).unwrap();
+        assert!(world.take_display_dirty().is_empty());
+
+        // Hidden by the visibility byte while swapped: only the shown set is hidden.
+        world.set_render_mesh_visible(1, false).unwrap();
+        let done = step(&mut app, &mut world);
+        assert_eq!((done.hidden, done.mesh_swapped), (1, 0));
+        assert_eq!(shown(&app), [false, false, false, true]);
+        // Swapped back while hidden: the swap is followed and nothing is shown.
+        world.set_render_mesh_mesh(1, Some(tent)).unwrap();
+        let done = step(&mut app, &mut world);
+        assert_eq!((done.mesh_swapped, done.shown, done.hidden), (1, 0, 0));
+        assert_eq!(shown(&app), [false, false, false, true]);
+        // Shown again: the set of the mesh the Thing has now, not the other.
+        world.set_render_mesh_visible(1, true).unwrap();
+        let done = step(&mut app, &mut world);
+        assert_eq!((done.shown, done.mesh_swapped), (1, 0));
+        assert_eq!(shown(&app), [true, true, false, true]);
+
+        // The other order: hidden first, then swapped, then shown.
+        world.set_render_mesh_visible(1, false).unwrap();
+        step(&mut app, &mut world);
+        world.set_render_mesh_mesh(1, Some(platform)).unwrap();
+        step(&mut app, &mut world);
+        assert_eq!(shown(&app), [false, false, false, true]);
+        world.set_render_mesh_visible(1, true).unwrap();
+        step(&mut app, &mut world);
+        assert_eq!(shown(&app), [false, false, true, true]);
+        // Hidden and swapped back on one tick, then shown.
+        world.set_render_mesh_visible(1, false).unwrap();
+        world.set_render_mesh_mesh(1, Some(tent)).unwrap();
+        let done = step(&mut app, &mut world);
+        assert_eq!((done.mesh_swapped, done.hidden, done.shown), (1, 0, 0));
+        assert_eq!(shown(&app), [false, false, false, true]);
+        world.set_render_mesh_visible(1, true).unwrap();
+        step(&mut app, &mut world);
+        assert_eq!(shown(&app), [true, true, false, true]);
+
+        // A mesh that was not loaded with the scene: counted, the file's set stays;
+        // also when it comes after the other mesh of the pair.
+        world.set_render_mesh_mesh(1, Some(0x77)).unwrap();
+        let done = step(&mut app, &mut world);
+        assert_eq!((done.mesh_not_drawn, done.mesh_swapped), (1, 0));
+        assert!(!done.any());
+        assert_eq!(shown(&app), [true, true, false, true]);
+        world.set_render_mesh_mesh(1, Some(platform)).unwrap();
+        step(&mut app, &mut world);
+        assert_eq!(shown(&app), [false, false, true, true]);
+        world.set_render_mesh_mesh(1, Some(0x77)).unwrap();
+        let done = step(&mut app, &mut world);
+        assert_eq!((done.mesh_not_drawn, done.mesh_swapped), (1, 0));
+        assert_eq!(shown(&app), [true, true, false, true]);
+        let mut sum = Followed::default();
+        sum.absorb(&done);
+        sum.absorb(&Followed {
+            mesh_swapped: 2,
+            ..Default::default()
+        });
+        assert_eq!((sum.mesh_not_drawn, sum.mesh_swapped), (1, 2));
     }
 }

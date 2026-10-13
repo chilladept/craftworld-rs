@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D275
+# Current state (overwrite each milestone) — after D276
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -11,7 +11,32 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D275 the Pod shell layer under the script's camera (2026-10-13)
+## Latest: D276 the pod's mesh swap in the scene (2026-10-13)
+- "Pod picture" PR 3, viewer and scene builder (`docs/level-scripts.md` part 27). The runtime reported
+  the mesh a script puts on a PRenderMesh and the viewer counted it as not drawn. FOUND before: the one
+  such call is `Pod.SetPodTransition__b` on pod.bin Thing 2, `pod.mol` (0x2f6c) under 1,
+  `pod_platform.mol` (0x23959) at 1.
+- `lbp-preview`: `LevelSceneOptions::mesh_alternates`, `add_alternate_meshes`, `SceneItem::alternate`:
+  a Thing drawn with one mesh of a pair gets a second item for the other (not counted as drawn, out of
+  the bounds). Viewer: `thing_view::SWAPPED_MESHES` (one pair), only under `--level-scripts` and never
+  for the shell layer; the second set is spawned hidden; `thing_view::apply` shows the set of the mesh
+  the Thing has now, under the play-mode visibility rule (`Followed::mesh_swapped`). QA option
+  `--level-scripts-in-use-at N` sets `pod_computer_in_use` when N ticks have run (stand-in for D273's
+  pad zone, press and host answer; MEASURED that "in use" alone runs pod.bin's change-over).
+- MEASURED (no focus taken; `local-analysis/rscript/stage6/shots/d276-*`): without `--level-scripts`
+  pod.bin alone and the shell picture are equal byte for byte before and after. pod.bin with scripts,
+  in use from 600: `Things at tick 620: ... mesh swapped 1 ... [(2, "00023959")]`; the still at 610
+  equals the capture without scripts byte for byte.
+- Eye check: before, the cardboard pod with the DualShock in its opening; after, a flat round cardboard
+  disc where the pod's floor was, the DualShock on it. Two small orange pieces at the pod's sides stay
+  in mid-air (not entities of the pod Thing; not looked up). Nothing compared against the game.
+- Left out: the fade (the pod pops), the swap in the Pod picture (the shell layer has no script world).
+- Tests: one `lbp-preview` and two viewer tests. fmt, CI clippy, CI tests (611), Python tests, `cargo
+  check` of both viewers and the viewer's clippy pass; the viewer's tests pass (58) but
+  `sackboy_play::tests::input_script_steps` (fails on main).
+- Next: Pod picture PR 4, the two Pod levels in one viewer session.
+
+## Before: D275 the Pod shell layer under the script's camera (2026-10-13)
 - "Pod picture" PR 2, viewer only (`docs/level-scripts.md` part 26). With `--pod-camera N --pod-shell
   HEX` under `--level-scripts` the viewer kept its own Pod camera and said the script's was "not
   applied". Now the planets level is drawn with the script's camera there too, and the shell and the
