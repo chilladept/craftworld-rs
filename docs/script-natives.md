@@ -19,7 +19,7 @@ used or is committed.
 - Example `native_coverage SCRIPT-DIR NEW-JSON`: the share of native call sites that have
   a binding, over all scripts and over gameplay scripts.
 
-## Bound natives (118 in the table, plus `System.Yield__` in the VM)
+## Bound natives (123 in the table, plus `System.Yield__` in the VM)
 
 | Group | Natives | Needs from `World` |
 |---|---|---|
@@ -27,9 +27,10 @@ used or is committed.
 | String | `Concat__Q6StringQ6String`, `StringFromInt__i`, `InfinitySymbol__` | nothing |
 | LAMS | `Translate__i` | text by key |
 | Thing | `GetThingUID__`, `GetParent/GetFirstChild/GetNextSibling__Q5Thing`, `GetWorld__` (also System), `GetWorldPosition__`, `GetCOM__`, `SetLocalPosition__m`, `IsInactive__` | thing tree, transforms |
-| Switch inputs | `IsSwitchTriggered__i`, `GetSwitchActivationBinary/Analogue/Player__i` | switch input per port |
+| Switch inputs and outputs (docs/level-scripts.md part 11) | `Thing.IsSwitchTriggered__i`, `GetSwitchActivationBinary/Analogue/Ternary/Player__i`, `GetInput__Q5Thingi`, `GetOutput__Q5Thingii` | the output wired to each input port; a PSwitch's output targets |
 | PartList | `HasPJoint/PSwitch/PTrigger/PYellowHead/PShape/PSpriteLight/PRenderMesh/PCameraTweak__Q5Thing` | parts |
-| Triggers (docs/level-scripts.md part 10) | `Native.GetNumInThings__Q5Thing` | Things inside a PTrigger |
+| Triggers (docs/level-scripts.md parts 10 and 11) | `Native.GetNumInThings__Q5Thing`, `GetInThing__Q5Thingi` | Things inside a PTrigger |
+| Script class (part 11) | `BaseWorld.IsScoreBoard__Q5Thing` | the Thing's script and its superclasses |
 | Other | `Audio.PlaySound__Q5ThingQ7StringA`, `Resource.LoadTextureByFilename__g`, `Resource.LoadPlanByFilename__g`, `Game.GetNumPlayers__`, `Game.GetPlayOrEditMode__`, `Audio.GetDialogueList__`, `Thing.Get/SetShapeEditorColour__Q5Thing(r)` (docs/level-scripts.md part 2), `Thing.SetRenderMeshEditorColourTint__Q5Thingr`, `Native.SetAnimSpeed__Q5Thingf`, `Game.GetPlayerNumber__i` (part 4), `System.Yield__` (in the VM) | audio, resources, players, mode, shape colour |
 | Pod camera and part 6 (docs/level-scripts.md part 6) | `Math.lerp__frr`, `SmoothStep__fff`, `Smooth__fffff`, `Smooth2D__pppff`, `Smooth3D__rrrff`; `Cam.SetCameraFromToUp__rrrffff`, `SetDOFAndFog__fff`, `ClearMotionBlur__`; `HUD.GetCinemaModeCount__`; `PodComputer.GetPodComputer__`, `GetPodComputerInUse__`, `GetCrashZoom__`, `GetPlanets__`; `Planets.GetCrafteroid__i`; `Planet.GetThing__`; `Profile.IsLBP2GameProgressionFlagSet__i`; `Thing.SetWorldPosition__m`; `Native.DebugPrint__i`, `SetAnimPos__Q5Thingf`; `LAMS.MakeLamsKeyID__Q6String` (Toolkit makeLamsKeyID); `Game.SetPlayerScoreMultiplierTimer__Q18Game.EPlayerNumberi`; `Gooey.CreateGooey__i`; interactive music commands (`Audio.SetInteractiveMusic__ggffiQ5Thing`, `SetInteractiveMusicStereoPairVolume__giff`, `StopInteractiveMusic__`); 11 state queries (`natives::STATE_QUERIES`) | camera, engine objects, profile flags, state defaults |
 | Strings and math, stage 1 (docs/level-scripts.md part 9) | `String.Length/IsNullOrEmpty/Find/SubStr/ToUpper/StringFromStringA`, `StringA.Length/IsNullOrEmpty/Find/SubStr`, `Math.identity__`, `ceil__f`, `exp__f`, `pow__ff`, `sign__f`, `lerp__fff`, `Delt__fff`, `BiasCosine__f`, `Resource.LoadTextureByFilename__gb` | resources (texture) |

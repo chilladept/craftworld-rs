@@ -23,7 +23,8 @@
 //! instead. `--visit-triggers` then adds a player who stands on every PTrigger's Thing in
 //! turn (two ticks on it, one far away), so the level's `Enter`, `Inside` and `Leave`
 //! scripts run; the report counts the events raised and run. `triggers` is the PTrigger
-//! census over the levels read. Names and counts only; no bytecode. Output: a NEW JSON file under
+//! census over the levels read, `switches` the PSwitch census with the input tables built
+//! from the outputs' targets. Names and counts only; no bytecode. Output: a NEW JSON file under
 //! ignored `local-analysis/`. Counting unit: Thing with a PScript part (instances) or
 //! distinct script class (function names).
 use lbp_catalog::{attachment::AttachedSource, LoadControl};
@@ -59,6 +60,7 @@ struct Totals {
     objects_built: usize,
     classes: BTreeSet<lbp_script_vm::ClassId>,
     triggers: Triggers,
+    switches: Switches,
 }
 
 /// PTrigger census. Unit: Thing with a PTrigger part.
@@ -163,12 +165,116 @@ impl Triggers {
     }
 }
 
+/// PSwitch census and the input tables built from it (`LevelWorld::wire_inputs`).
+/// Unit: Thing, switch output or output target, as each line says.
+#[derive(Default)]
+struct Switches {
+    count: usize,
+    by_type: BTreeMap<i32, usize>,
+    inverted: usize,
+    outputs: usize,
+    outputs_null: usize,
+    targets: usize,
+    dangling_targets: usize,
+    /// Outputs by ternary value and by "activation is zero" as stored.
+    ternary: BTreeMap<i32, usize>,
+    activation_not_zero: usize,
+    with_player: usize,
+    things_with_inputs: usize,
+    wired_ports: usize,
+    most_ports: usize,
+    collisions: usize,
+    ports_dropped: usize,
+    scripted_with_input: usize,
+    /// Class of the scripted Things with a wired port.
+    scripted_classes: BTreeMap<String, usize>,
+    /// Scripted Things `BaseWorld.IsScoreBoard__Q5Thing` holds for.
+    score_boards: usize,
+}
+
+impl Switches {
+    fn add(&mut self, vm: &Vm, world: &LevelWorld, found: &[lbp_runtime::Instance]) {
+        self.collisions += world.input_collisions;
+        self.ports_dropped += world.input_ports_dropped;
+        for t in &world.things {
+            if let Some(s) = &t.switch {
+                self.count += 1;
+                *self.by_type.entry(s.switch_type).or_default() += 1;
+                self.inverted += usize::from(s.inverted);
+                self.outputs += s.outputs.len();
+                for o in &s.outputs {
+                    let Some(o) = o else {
+                        self.outputs_null += 1;
+                        continue;
+                    };
+                    *self.ternary.entry(o.signal.ternary).or_default() += 1;
+                    self.activation_not_zero += usize::from(o.signal.activation != 0.);
+                    self.with_player += usize::from(o.signal.player != -1);
+                    self.targets += o.targets.len();
+                    self.dangling_targets += o.targets.iter().filter(|t| t.0.is_none()).count();
+                }
+            }
+            let wired = t.inputs.iter().flatten().count();
+            self.things_with_inputs += usize::from(wired > 0);
+            self.wired_ports += wired;
+            self.most_ports = self.most_ports.max(t.inputs.len());
+        }
+        for inst in found {
+            let class = inst.class;
+            if world.things[inst.thing as usize]
+                .inputs
+                .iter()
+                .any(Option::is_some)
+            {
+                self.scripted_with_input += 1;
+                let name = class.map_or("(class not loaded)", |c| vm.class_name(c));
+                *self.scripted_classes.entry(name.to_owned()).or_default() += 1;
+            }
+            let guids = class.map_or(vec![Some(inst.guid)], |c| {
+                vm.class_chain(c)
+                    .into_iter()
+                    .map(|c| vm.class_guid(c))
+                    .collect()
+            });
+            self.score_boards +=
+                usize::from(guids.contains(&Some(lbp_script_vm::natives::SCORE_BOARD_SCRIPT)));
+        }
+    }
+
+    fn json(&self) -> serde_json::Value {
+        let mut classes: Vec<_> = self.scripted_classes.iter().collect();
+        classes.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+        serde_json::json!({
+            "unit": "Thing with a PSwitch part; switch output; output target; input port",
+            "count": self.count,
+            "by_type": self.by_type,
+            "inverted": self.inverted,
+            "outputs": self.outputs,
+            "outputs_null": self.outputs_null,
+            "outputs_by_stored_ternary": self.ternary,
+            "outputs_activation_not_zero": self.activation_not_zero,
+            "outputs_with_player": self.with_player,
+            "targets": self.targets,
+            "dangling_targets": self.dangling_targets,
+            "things_with_input_table": self.things_with_inputs,
+            "wired_ports": self.wired_ports,
+            "most_ports_on_a_thing": self.most_ports,
+            "port_collisions": self.collisions,
+            "ports_dropped": self.ports_dropped,
+            "scripted_things_with_wired_port": self.scripted_with_input,
+            "scripted_classes_with_wired_port": classes,
+            "score_board_things": self.score_boards,
+        })
+    }
+}
+
 fn add_level(vm: &Vm, world: &LevelWorld, t: &mut Totals) -> serde_json::Value {
     t.levels += 1;
     t.things += world.things.len();
     t.unconverted += world.unconverted;
     let found = instances(vm, world);
     t.triggers.add(vm, world, &found);
+    t.switches.add(vm, world, &found);
     let mut level_classes = BTreeMap::<String, usize>::new();
     let mut unresolved = BTreeSet::new();
     for inst in &found {
@@ -742,6 +848,7 @@ fn run() -> Result<(), String> {
         "objects_built": totals.objects_built,
         "function_names": ranked,
         "triggers": totals.triggers.json(),
+        "switches": totals.switches.json(),
         "per_level": levels,
         "runs": runs,
         "play_all": play_opts.as_ref().filter(|_| every).map(|o| play_totals.json(o)),

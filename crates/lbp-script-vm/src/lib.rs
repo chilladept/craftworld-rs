@@ -537,18 +537,26 @@ impl Vm {
             .filter(|&s| s != c)
     }
 
-    /// Class names from `class` up its superclass chain (for diagnostics).
-    pub fn super_chain(&self, class: ClassId) -> Vec<String> {
+    /// `class` and its superclasses, nearest first.
+    pub fn class_chain(&self, class: ClassId) -> Vec<ClassId> {
         let mut out = Vec::new();
         let mut at = Some(class);
         while let Some(c) = at {
             if out.len() > MAX_CALL_DEPTH {
                 break;
             }
-            out.push(self.class_name(c).to_owned());
+            out.push(c);
             at = self.super_class(c);
         }
         out
+    }
+
+    /// Class names from `class` up its superclass chain (for diagnostics).
+    pub fn super_chain(&self, class: ClassId) -> Vec<String> {
+        self.class_chain(class)
+            .into_iter()
+            .map(|c| self.class_name(c).to_owned())
+            .collect()
     }
 
     /// Frame running `.init__` (field initialisers) on a new object, if the class or a

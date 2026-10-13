@@ -1,14 +1,15 @@
 //! Rt on authored synthetic data (no game bytes): a three-Thing level and a small script
 //! class with a superclass. docs/level-scripts.md.
 use lbp_level::parts::{
-    Pos, ScriptField, ScriptObject, ScriptPart, ScriptValue, World as WorldPart,
+    Pos, ScriptField, ScriptObject, ScriptPart, ScriptValue, Switch, SwitchOutput, SwitchSignal,
+    Trigger, World as WorldPart,
 };
 use lbp_level::script::{FieldDef, FunctionDef, MemberRef, Script, Span, TypeRef};
 use lbp_level::serial::Descriptor;
 use lbp_level::thing::ThingRecord;
-use lbp_runtime::{instances, LevelScripts, LevelWorld, Outcome, Runner};
-use lbp_script_vm::natives::{Bindings, World};
-use lbp_script_vm::{MemberKind, Value, Vm};
+use lbp_runtime::{instances, InputWire, LevelScripts, LevelWorld, Outcome, Runner};
+use lbp_script_vm::natives::{Bindings, World, SCORE_BOARD_SCRIPT};
+use lbp_script_vm::{Host, MemberKind, Value, Vm};
 
 const GUID: u32 = 0x2d06;
 const BASE: u32 = 0x2d07;
@@ -459,6 +460,203 @@ fn stage2_trigger_events_call_the_parent_script() {
     host.world.add_player([100., 0., 0.], (-1., 1.));
     let t = level.tick_level(&mut vm, &mut host, 1000);
     assert_eq!((t.trigger_events, t.events_without_script), ([1, 1, 0], 2));
+}
+
+/// Thing 0: a PSwitch with two outputs. Output 0 (activation 0.25, ternary -1, player 2)
+/// goes to Thing 1 port 0, Thing 1 port 2 and a null Thing; output 1 (ternary 0, no
+/// player) goes to Thing 2 port 1. Thing 3: a PSwitch whose only output also targets
+/// Thing 1 port 0 (a collision) and a negative port. Thing 4: a PSwitch with a null output.
+fn switch_level() -> Vec<ThingRecord> {
+    let mut t: Vec<ThingRecord> = (0..5)
+        .map(|index| ThingRecord {
+            index,
+            ..Default::default()
+        })
+        .collect();
+    let signal = |activation, ternary, player| SwitchSignal {
+        activation,
+        ternary,
+        player,
+    };
+    t[0].data.switch = Some(Switch {
+        outputs: vec![
+            Some(SwitchOutput {
+                signal: signal(0.25, -1, 2),
+                targets: vec![(Some(1), 0), (Some(1), 2), (None, 0)],
+            }),
+            Some(SwitchOutput {
+                signal: signal(0.75, 0, -1),
+                targets: vec![(Some(2), 1)],
+            }),
+        ],
+        ..Default::default()
+    });
+    t[3].data.switch = Some(Switch {
+        outputs: vec![Some(SwitchOutput {
+            signal: signal(1., 1, 0),
+            targets: vec![(Some(1), 0), (Some(2), -1)],
+        })],
+        ..Default::default()
+    });
+    t[4].data.switch = Some(Switch {
+        outputs: vec![None],
+        ..Default::default()
+    });
+    t
+}
+
+#[test]
+fn stage3_input_tables_are_built_from_the_switch_outputs() {
+    let w = LevelWorld::from_things(&switch_level());
+    let wire = |switch, output| Some(InputWire { switch, output });
+    // As long as the highest wired port + 1; the first output on a port is kept.
+    assert_eq!(w.things[1].inputs, [wire(0, 0), None, wire(0, 0)]);
+    assert_eq!(w.things[2].inputs, [None, wire(0, 1)]);
+    assert!(w.things[0].inputs.is_empty() && w.things[3].inputs.is_empty());
+    assert_eq!((w.input_collisions, w.input_ports_dropped), (1, 1));
+    assert_eq!(w.things[0].switch.as_ref().unwrap().outputs.len(), 2);
+}
+
+#[test]
+fn stage3_switch_input_natives_follow_the_wired_output() {
+    let mut host = Bindings::new(LevelWorld::from_things(&switch_level()));
+    let mut port = |m: &str, thing: u32, p: i32| {
+        host.call_native("Thing", m, &[Value::Thing(Some(thing)), Value::Int(p)])
+            .unwrap()
+    };
+    let (yes, no) = (Value::Bool(true), Value::Bool(false));
+    // Triggered is "something is wired", whatever the signal says.
+    assert_eq!(port("IsSwitchTriggered__i", 1, 0), yes);
+    assert_eq!(port("IsSwitchTriggered__i", 2, 1), yes);
+    for (thing, p) in [(1, 1), (1, 3), (1, -1), (0, 0)] {
+        assert_eq!(port("IsSwitchTriggered__i", thing, p), no);
+        assert_eq!(port("GetSwitchActivationBinary__i", thing, p), no);
+        assert_eq!(
+            port("GetSwitchActivationAnalogue__i", thing, p),
+            Value::Float(0.)
+        );
+        assert_eq!(
+            port("GetSwitchActivationTernary__i", thing, p),
+            Value::Float(0.)
+        );
+        assert_eq!(
+            port("GetSwitchActivationPlayer__i", thing, p),
+            Value::Int(-1)
+        );
+        assert_eq!(port("GetInput__Q5Thingi", thing, p), Value::Thing(None));
+    }
+    // Binary is "the ternary is not 0".
+    assert_eq!(port("GetSwitchActivationBinary__i", 1, 2), yes);
+    assert_eq!(port("GetSwitchActivationBinary__i", 2, 1), no);
+    assert_eq!(
+        port("GetSwitchActivationAnalogue__i", 1, 0),
+        Value::Float(0.25)
+    );
+    assert_eq!(
+        port("GetSwitchActivationAnalogue__i", 2, 1),
+        Value::Float(0.75)
+    );
+    assert_eq!(
+        port("GetSwitchActivationTernary__i", 1, 0),
+        Value::Float(-1.)
+    );
+    assert_eq!(port("GetSwitchActivationPlayer__i", 1, 0), Value::Int(2));
+    // A wired output without a player: -1 (the game's owner fallback is not modelled).
+    assert_eq!(port("GetSwitchActivationPlayer__i", 2, 1), Value::Int(-1));
+    assert_eq!(port("GetInput__Q5Thingi", 1, 2), Value::Thing(Some(0)));
+    assert_eq!(port("GetInput__Q5Thingi", 2, 1), Value::Thing(Some(0)));
+    // The signal is read through the wire, so a changed output is seen at once.
+    host.world.things[0].switch.as_mut().unwrap().outputs[1]
+        .as_mut()
+        .unwrap()
+        .signal
+        .ternary = 1;
+    assert_eq!(
+        host.call_native(
+            "Thing",
+            "GetSwitchActivationBinary__i",
+            &[Value::Thing(Some(2)), Value::Int(1)]
+        ),
+        Ok(yes)
+    );
+}
+
+#[test]
+fn stage3_outputs_in_things_and_score_boards() {
+    let mut things = switch_level();
+    things[2].data.trigger = Some(Trigger {
+        in_things: vec![Some(4), Some(1)],
+        ..Default::default()
+    });
+    things[1].data.script = Some(ScriptPart {
+        script: Some(desc(SCORE_BOARD_SCRIPT)),
+        fields: vec![],
+    });
+    things[2].data.script = Some(ScriptPart {
+        script: Some(desc(GUID)),
+        fields: vec![],
+    });
+    things[3].data.script = Some(ScriptPart {
+        script: Some(desc(BASE)),
+        fields: vec![],
+    });
+    let mut host = Bindings::new(LevelWorld::from_things(&things));
+    let thing = |t: u32| Value::Thing(Some(t));
+    let mut call = |class: &str, m: &str, args: &[Value]| host.call_native(class, m, args).unwrap();
+    let mut output = |t: Value, o: i32, i: i32| {
+        call(
+            "Thing",
+            "GetOutput__Q5Thingii",
+            &[t, Value::Int(o), Value::Int(i)],
+        )
+    };
+    assert_eq!(output(thing(0), 0, 1), thing(1));
+    assert_eq!(output(thing(0), 1, 0), thing(2));
+    // A null target, a target or output index out of range, a null output, no PSwitch,
+    // a null Thing.
+    for (t, o, i) in [
+        (thing(0), 0, 2),
+        (thing(0), 0, 3),
+        (thing(0), 0, -1),
+        (thing(0), 2, 0),
+        (thing(0), -1, 0),
+        (thing(4), 0, 0),
+        (thing(1), 0, 0),
+        (Value::Thing(None), 0, 0),
+    ] {
+        assert_eq!(output(t.clone(), o, i), Value::Thing(None), "{t:?} {o} {i}");
+    }
+    let mut inside = |t: Value, i: i32| call("Native", "GetInThing__Q5Thingi", &[t, Value::Int(i)]);
+    assert_eq!(inside(thing(2), 0), thing(4));
+    assert_eq!(inside(thing(2), 1), thing(1));
+    for (t, i) in [
+        (thing(2), 2),
+        (thing(2), -1),
+        (thing(0), 0),
+        (Value::Thing(None), 0),
+    ] {
+        assert_eq!(inside(t, i), Value::Thing(None));
+    }
+    // The scoreboard script itself, or a class with it on its superclass chain.
+    let mut vm = Vm::default();
+    vm.load(base(), Some(SCORE_BOARD_SCRIPT));
+    vm.load(
+        Script {
+            super_class: Some(desc(SCORE_BOARD_SCRIPT)),
+            ..lamp()
+        },
+        Some(GUID),
+    );
+    let board = |host: &mut Bindings<LevelWorld>, t: Value| {
+        host.call_native("BaseWorld", "IsScoreBoard__Q5Thing", &[t])
+    };
+    assert_eq!(board(&mut host, thing(1)), Ok(Value::Bool(true)));
+    assert_eq!(board(&mut host, thing(2)), Ok(Value::Bool(false)));
+    host.world.add_class_defaults(&vm);
+    assert_eq!(board(&mut host, thing(2)), Ok(Value::Bool(true)));
+    assert_eq!(board(&mut host, thing(3)), Ok(Value::Bool(false)));
+    assert_eq!(board(&mut host, thing(0)), Ok(Value::Bool(false)));
+    assert_eq!(board(&mut host, Value::Thing(None)), Ok(Value::Bool(false)));
 }
 
 fn object(kind: u32, id: usize, body: Option<ScriptObject>) -> ScriptValue {

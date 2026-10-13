@@ -95,6 +95,13 @@ UI (`UpdateUI__`) and photo natives are not planned.
   each trigger: 11,430 Enter, 895 Inside and 7,357 Leave calls run, no new fault, 29 more
   unbound natives reached (switch inputs and outputs lead). The viewer feeds the
   play-mode Sackboy to the triggers.
+- Stage 3a done (D260, part 11): switch inputs. PSwitch kept by the reader; each Thing's
+  input table built from the outputs' targets (INFERRED; 177,800 targets, no port
+  collision); the switch-input natives follow the rules FOUND in the executable, and
+  `GetSwitchActivationTernary`, `GetInput`, `GetOutput`, `GetInThing` and `IsScoreBoard`
+  are bound (123). Things stopped by a fault 1,722 -> 582. Still open: the logic network
+  is not evaluated (signals stay as the level file stores them) and
+  `SwitchPerformReaction__b` is never called.
 
 ## Rules
 

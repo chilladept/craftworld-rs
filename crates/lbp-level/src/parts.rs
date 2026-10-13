@@ -87,7 +87,9 @@
 //! - GAMEPLAY_DATA (PGameplayData): fluffCost s32, eggLink ref EggLink, keyLink ref SlotID,
 //!   gameplayType i32. EggLink: plan res, shareable bool, hasPainting bool (> 0x3e0),
 //!   painting desc when set. SlotID: slotType i32, slotNumber u32.
-//! - SWITCH (PSwitch + SwitchOutput/SwitchSignal/SwitchTarget): inverted bool, radius
+//! - SWITCH (PSwitch + SwitchOutput/SwitchSignal/SwitchTarget; inverted, the outputs'
+//!   signals and targets, type, manualActivation and behavior are kept as
+//!   `PartData::switch`, rscript-plan stage 3): inverted bool, radius
 //!   f32, minRadius f32 (>= 0x382), colorIndex s32, name wstr, crappyOldLbp1Switch bool
 //!   (>= 0x38f), behaviorOld s32, outputs array of ref SwitchOutput {SwitchSignal
 //!   (activation f32, ternary s32, player i32), targets array {ref Thing, port i32},
@@ -304,6 +306,37 @@ pub struct PartData {
     /// PTrigger as stored (rscript-plan stage 2).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trigger: Option<Trigger>,
+    /// PSwitch as stored, the fields the script world uses (rscript-plan stage 3).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub switch: Option<Switch>,
+}
+
+/// SwitchSignal as stored: activation f32, ternary s32, player i32 (-1 = no player).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+pub struct SwitchSignal {
+    pub activation: f32,
+    pub ternary: i32,
+    pub player: i32,
+}
+
+/// One SwitchOutput of a PSwitch: its signal when the level was saved and the inputs it
+/// is wired to, each a (Thing, port) pair. A target's Thing can be null.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct SwitchOutput {
+    pub signal: SwitchSignal,
+    pub targets: Vec<(Option<usize>, i32)>,
+}
+
+/// PSwitch as stored, the fields kept (the rest is read through; the module comment has
+/// the full serialized order). `outputs` keeps the stored order; an entry is `None` for a
+/// null reference or a back-reference to an output already read.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct Switch {
+    pub inverted: bool,
+    pub outputs: Vec<Option<SwitchOutput>>,
+    pub switch_type: i32,
+    pub manual_activation: SwitchSignal,
+    pub behavior: i32,
 }
 
 /// PTrigger as stored, in serialized order. `in_things` are the Things inside the
@@ -1055,7 +1088,10 @@ fn part_body(
                 thing_ref(r, things)?;
             }
         }
-        "SWITCH" => switch(r, things)?,
+        "SWITCH" => {
+            let switch = switch(r, things)?;
+            things.list[me].data.switch = Some(switch);
+        }
         "SCRIPT" => {
             let part = script_instance(r, things)?;
             things.list[me].data.script = Some(part);
@@ -1816,16 +1852,17 @@ fn emitter(r: &mut Reader, things: &mut Things) -> Result<()> {
     Ok(())
 }
 
-fn switch_signal(r: &mut Reader) -> Result<()> {
-    r.f32()?;
-    r.s32()?;
-    r.i32()?;
-    Ok(())
+fn switch_signal(r: &mut Reader) -> Result<SwitchSignal> {
+    Ok(SwitchSignal {
+        activation: r.f32()?,
+        ternary: r.s32()?,
+        player: r.i32()?,
+    })
 }
 
-fn switch(r: &mut Reader, things: &mut Things) -> Result<()> {
+fn switch(r: &mut Reader, things: &mut Things) -> Result<Switch> {
     let v = r.rev.version();
-    r.bool()?;
+    let inverted = r.bool()?;
     r.f32()?;
     if v >= 0x382 {
         r.f32()?;
@@ -1836,22 +1873,27 @@ fn switch(r: &mut Reader, things: &mut Things) -> Result<()> {
         r.bool()?;
     }
     r.s32()?;
-    let outputs = r.count(1)?;
-    for _ in 0..outputs {
+    let count = r.count(1)?;
+    let mut outputs = Vec::with_capacity(count.min(4096));
+    for _ in 0..count {
         let tag = r.tag("SwitchOutput", |r| Ok(r.next_other("SwitchOutput")))?;
+        let mut output = None;
         if let Tag::New(_) = tag {
             r.enter()?;
-            switch_signal(r)?;
+            let signal = switch_signal(r)?;
             let n = r.count(1)?;
+            let mut targets = Vec::with_capacity(n.min(4096));
             for _ in 0..n {
-                thing_ref(r, things)?;
-                r.i32()?;
+                let thing = thing_ref(r, things)?;
+                targets.push((thing, r.i32()?));
             }
             if v >= 0x34d {
                 r.wstr()?;
             }
             r.leave();
+            output = Some(SwitchOutput { signal, targets });
         }
+        outputs.push(output);
     }
     if v < 0x398 {
         r.resource(true)?;
@@ -1859,7 +1901,7 @@ fn switch(r: &mut Reader, things: &mut Things) -> Result<()> {
     r.bool()?;
     let kind = r.s32()?;
     thing_ref(r, things)?;
-    switch_signal(r)?;
+    let manual_activation = switch_signal(r)?;
     if v >= 0x398 && kind == 5 {
         r.resource(true)?;
     }
@@ -1890,7 +1932,7 @@ fn switch(r: &mut Reader, things: &mut Things) -> Result<()> {
     r.bool()?;
     r.f32()?;
     r.i32()?;
-    r.i32()?;
+    let behavior = r.i32()?;
     for _ in 0..6 {
         r.i32()?;
     }
@@ -1925,7 +1967,13 @@ fn switch(r: &mut Reader, things: &mut Things) -> Result<()> {
         let n = r.count(1)?;
         r.bytes(n)?;
     }
-    Ok(())
+    Ok(Switch {
+        inverted,
+        outputs,
+        switch_type: kind,
+        manual_activation,
+        behavior,
+    })
 }
 
 const DIVERGENT: u32 = 1 << 12;

@@ -12,15 +12,20 @@ use crate::signature;
 use crate::{Host, MemberKind, Value};
 use std::collections::BTreeMap;
 
-/// What a Thing's switch input reports on one port (INFERRED field split: the census has
-/// separate `IsSwitchTriggered`, binary, analogue and player natives).
+/// The signal of the switch output wired to one input port of a Thing. FOUND in the 01.33
+/// executable (readers 0x7541e0, 0x754308, 0x7542a4, 0x75437c, 0x754ccc): a Thing has a
+/// table of input ports, each empty or pointing at a SwitchOutput, whose signal is an
+/// activation (f32), a ternary (s32) and a player (s32, -1 = none).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct SwitchInput {
-    pub triggered: bool,
-    pub binary: bool,
-    pub analogue: f32,
+    pub activation: f32,
+    pub ternary: i32,
     pub player: i32,
 }
+
+/// Script resource GUID of the scoreboard class, which `BaseWorld.IsScoreBoard__Q5Thing`
+/// tests against (FOUND, 01.33: the constant the test at 0x622658 loads its script by).
+pub const SCORE_BOARD_SCRIPT: u32 = 11599;
 
 /// One `Cam.SetCameraFromToUp__rrrffff` call: eye position, look-at point, up vector and
 /// the four trailing floats as passed (PlanetsWorld passes 10, 100000, 0, 1; INFERRED near
@@ -78,12 +83,38 @@ pub trait World {
     fn has_part(&mut self, _thing: u32, _part: &str) -> Result<bool, String> {
         Err(not_available("parts"))
     }
-    fn switch_input(&mut self, _thing: u32, _port: i32) -> Result<SwitchInput, String> {
+    /// The signal wired to input port `port` of the Thing; `None` when the port is out of
+    /// range (negative included) or nothing is wired to it.
+    fn switch_input(&mut self, _thing: u32, _port: i32) -> Result<Option<SwitchInput>, String> {
         Err(not_available("switch inputs"))
+    }
+    /// The Thing whose PSwitch has an output wired to input port `port` of the Thing;
+    /// `None` as [`World::switch_input`].
+    fn switch_input_thing(&mut self, _thing: u32, _port: i32) -> Result<Option<u32>, String> {
+        Err(not_available("switch inputs"))
+    }
+    /// Target `target` of output `output` of the Thing's own PSwitch: the Thing that
+    /// output is wired to. `None` without a PSwitch, out of range, or for a null target.
+    fn switch_output_target(
+        &mut self,
+        _thing: u32,
+        _output: i32,
+        _target: i32,
+    ) -> Result<Option<u32>, String> {
+        Err(not_available("switch outputs"))
     }
     /// How many Things are inside the Thing's PTrigger; 0 without one.
     fn trigger_count(&mut self, _thing: u32) -> Result<i32, String> {
         Err(not_available("triggers"))
+    }
+    /// Entry `index` of the Thing's PTrigger in-list; `None` without one or out of range.
+    fn trigger_thing(&mut self, _thing: u32, _index: i32) -> Result<Option<u32>, String> {
+        Err(not_available("triggers"))
+    }
+    /// Is the Thing's script the scoreboard script ([`SCORE_BOARD_SCRIPT`]) or a class
+    /// derived from it? False without a PScript.
+    fn is_score_board(&mut self, _thing: u32) -> Result<bool, String> {
+        Err(not_available("script classes of Things"))
     }
     /// LAMS text by key (the strings the U3 text browser reads).
     fn translate(&mut self, _key: i32) -> Result<String, String> {
@@ -460,6 +491,11 @@ fn this(c: &Call<'_>) -> Result<u32, String> {
     )
 }
 
+/// For the `Thing.*Switch*__i` natives: the signal wired to the receiver's input port.
+fn wired(w: &mut dyn World, c: &Call<'_>) -> Result<Option<SwitchInput>, String> {
+    w.switch_input(this(c)?, int(param(c, 0)?)?)
+}
+
 /// For `Get*__Q5Thing`: the Thing parameter (static form or member form alike).
 fn subject(c: &Call<'_>) -> Result<u32, String> {
     some_thing(param(c, 0)?)
@@ -805,25 +841,55 @@ const TABLE: &[(&str, &str, NativeFn)] = &[
         Ok(Value::Bool(w.is_inactive(this(c)?)?))
     }),
     // ---- switches (the Thing's own inputs, by port) ----
+    // FOUND in the 01.33 executable through the Ghidra bridge; each native is a thin
+    // wrapper (address first) around a reader of the Thing's input table (second).
+    // Not modelled: the Binary, Analogue, Ternary and Player readers also answer "nothing
+    // wired" while a flag byte of the Thing (+0x7f, meaning unknown) is set.
+    //
+    // 0x64228c -> 0x7541e0: true when an output is wired to the port. The signal's
+    // value is not looked at.
     ("Thing", "IsSwitchTriggered__i", |w, c| {
-        Ok(Value::Bool(
-            w.switch_input(this(c)?, int(param(c, 0)?)?)?.triggered,
-        ))
+        Ok(Value::Bool(wired(w, c)?.is_some()))
     }),
+    // 0x642228 -> 0x754308: wired and the ternary is not 0.
     ("Thing", "GetSwitchActivationBinary__i", |w, c| {
-        Ok(Value::Bool(
-            w.switch_input(this(c)?, int(param(c, 0)?)?)?.binary,
-        ))
+        Ok(Value::Bool(wired(w, c)?.is_some_and(|s| s.ternary != 0)))
     }),
+    // 0x6421c4 -> 0x7542a4: the activation; 0.0 when nothing is wired (the constant the
+    // reader loads from its TOC, read as 0.0).
     ("Thing", "GetSwitchActivationAnalogue__i", |w, c| {
-        Ok(Value::Float(
-            w.switch_input(this(c)?, int(param(c, 0)?)?)?.analogue,
-        ))
+        Ok(Value::Float(wired(w, c)?.map_or(0., |s| s.activation)))
     }),
+    // 0x642160 -> 0x75437c: the ternary as a float (declared f32 in the script tables,
+    // as the analogue form); the same 0.0 when nothing is wired.
+    ("Thing", "GetSwitchActivationTernary__i", |w, c| {
+        Ok(Value::Float(wired(w, c)?.map_or(0., |s| s.ternary as f32)))
+    }),
+    // 0x6420fc -> 0x754ccc: the signal's player when it is not -1. Not modelled: with
+    // -1 or nothing wired the game falls back to the player who owns the Thing (through
+    // its root and parent); here that case is -1.
     ("Thing", "GetSwitchActivationPlayer__i", |w, c| {
-        Ok(Value::Int(
-            w.switch_input(this(c)?, int(param(c, 0)?)?)?.player,
-        ))
+        Ok(Value::Int(wired(w, c)?.map_or(-1, |s| s.player)))
+    }),
+    // 0x643f2c -> 0x754244: the Thing of the PSwitch whose output is wired to the port;
+    // null for a null Thing, a port out of range or nothing wired.
+    ("Thing", "GetInput__Q5Thingi", |w, c| {
+        let port = int(param(c, 1)?)?;
+        Ok(Value::Thing(match thing(param(c, 0)?)? {
+            Some(t) => w.switch_input_thing(t, port)?,
+            None => None,
+        }))
+    }),
+    // 0x643ea0 -> 0x754af8: (thing, output, target): the Thing that target of that
+    // output of the Thing's own PSwitch points at; null for a null Thing, no PSwitch or
+    // a target index at or past the output's target count. The game does not check the
+    // output index (nor a negative target index); those are null here.
+    ("Thing", "GetOutput__Q5Thingii", |w, c| {
+        let (output, target) = (int(param(c, 1)?)?, int(param(c, 2)?)?);
+        Ok(Value::Thing(match thing(param(c, 0)?)? {
+            Some(t) => w.switch_output_target(t, output, target)?,
+            None => None,
+        }))
     }),
     // ---- parts ----
     ("PartList", "HasPJoint__Q5Thing", |w, c| {
@@ -845,6 +911,25 @@ const TABLE: &[(&str, &str, NativeFn)] = &[
         Ok(Value::Int(match param(c, 0)? {
             Value::Thing(None) => 0,
             t => w.trigger_count(some_thing(t)?)?,
+        }))
+    }),
+    // FOUND (01.33, 0x6486ec -> 0x6d558c): entry `i` of the PTrigger's in-list; null for
+    // a null Thing or a Thing without the part. The game does not check `i` against the
+    // count; out of range is null here.
+    ("Native", "GetInThing__Q5Thingi", |w, c| {
+        let index = int(param(c, 1)?)?;
+        Ok(Value::Thing(match thing(param(c, 0)?)? {
+            Some(t) => w.trigger_thing(t, index)?,
+            None => None,
+        }))
+    }),
+    // FOUND (01.33, 0x64bae0 -> 0x7569ec -> 0x622658 -> 0x164454): the Thing has a
+    // PScript whose script is the scoreboard script ([`SCORE_BOARD_SCRIPT`]) or has it
+    // on its superclass chain (by identity or by class name); false for a null Thing.
+    ("BaseWorld", "IsScoreBoard__Q5Thing", |w, c| {
+        Ok(Value::Bool(match thing(param(c, 0)?)? {
+            Some(t) => w.is_score_board(t)?,
+            None => false,
         }))
     }),
     ("PartList", "HasPShape__Q5Thing", |w, c| {
@@ -1139,11 +1224,16 @@ mod tests {
         fn thing_uid(&mut self, t: u32) -> Result<i32, String> {
             Ok(t as i32 + 100)
         }
-        fn switch_input(&mut self, _t: u32, port: i32) -> Result<SwitchInput, String> {
-            Ok(SwitchInput {
-                analogue: port as f32 / 2.,
-                ..Default::default()
-            })
+        /// Ports 0..=2 are wired; port 2 carries a player and a zero ternary.
+        fn switch_input(&mut self, _t: u32, port: i32) -> Result<Option<SwitchInput>, String> {
+            Ok((0..=2).contains(&port).then(|| SwitchInput {
+                activation: port as f32 / 2.,
+                ternary: if port == 2 { 0 } else { -1 },
+                player: if port == 2 { 3 } else { -1 },
+            }))
+        }
+        fn switch_input_thing(&mut self, t: u32, port: i32) -> Result<Option<u32>, String> {
+            Ok((port == 0).then_some(t + 1))
         }
     }
 
@@ -1375,6 +1465,59 @@ mod tests {
                 &[Value::Thing(Some(7)), Value::Int(1)]
             ),
             Ok(Value::Float(0.5))
+        );
+        // Stage 3: what each switch-input native reads from a wired or empty port.
+        let port = |m: &str, p: i32| call("Thing", m, &[Value::Thing(Some(7)), Value::Int(p)]);
+        for (m, wired, zero_ternary, empty) in [
+            (
+                "IsSwitchTriggered__i",
+                Value::Bool(true),
+                Value::Bool(true),
+                Value::Bool(false),
+            ),
+            (
+                "GetSwitchActivationBinary__i",
+                Value::Bool(true),
+                Value::Bool(false),
+                Value::Bool(false),
+            ),
+            (
+                "GetSwitchActivationTernary__i",
+                Value::Float(-1.),
+                Value::Float(0.),
+                Value::Float(0.),
+            ),
+            (
+                "GetSwitchActivationPlayer__i",
+                Value::Int(-1),
+                Value::Int(3),
+                Value::Int(-1),
+            ),
+        ] {
+            assert_eq!(port(m, 1), Ok(wired), "{m}");
+            assert_eq!(port(m, 2), Ok(zero_ternary), "{m}");
+            assert_eq!(port(m, 3), Ok(empty.clone()), "{m}");
+            assert_eq!(port(m, -1), Ok(empty), "{m}");
+        }
+        assert_eq!(
+            port("GetSwitchActivationAnalogue__i", 9),
+            Ok(Value::Float(0.))
+        );
+        let input = |t, p| call("Thing", "GetInput__Q5Thingi", &[t, Value::Int(p)]);
+        assert_eq!(input(Value::Thing(Some(7)), 0), Ok(Value::Thing(Some(8))));
+        assert_eq!(input(Value::Thing(Some(7)), 1), Ok(Value::Thing(None)));
+        assert_eq!(input(Value::Thing(None), 0), Ok(Value::Thing(None)));
+        for (class, m, args) in [
+            ("Thing", "GetOutput__Q5Thingii", vec![Value::Int(0); 2]),
+            ("Native", "GetInThing__Q5Thingi", vec![Value::Int(0)]),
+        ] {
+            let mut all = vec![Value::Thing(None)];
+            all.extend(args);
+            assert_eq!(call(class, m, &all), Ok(Value::Thing(None)), "{m}");
+        }
+        assert_eq!(
+            call("BaseWorld", "IsScoreBoard__Q5Thing", &[Value::Thing(None)]),
+            Ok(Value::Bool(false))
         );
         assert_eq!(
             call("Thing", "GetThingUID__", &[Value::Thing(Some(7))]),

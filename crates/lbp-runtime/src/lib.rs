@@ -14,9 +14,11 @@
 //! Entry names: `OnCreate__` and `Update__` are the create/update functions (PC D152:
 //! across the 49 classes Rookie Test and the other levels use, `OnCreate__` is defined by
 //! 24 and `Update__` by 11; the remaining names are UI, switch and enter/leave handlers).
-use lbp_level::parts::{ScriptObject, ScriptPart, ScriptValue, ShapeColor};
+use lbp_level::parts::{ScriptObject, ScriptPart, ScriptValue, ShapeColor, SwitchSignal};
 use lbp_level::thing::ThingRecord;
-use lbp_script_vm::natives::{Bindings, CameraFromToUp, ResourceKind, World};
+use lbp_script_vm::natives::{
+    Bindings, CameraFromToUp, ResourceKind, SwitchInput, World, SCORE_BOARD_SCRIPT,
+};
 use lbp_script_vm::{ClassId, Host, MemberKind, ObjectId, Step, Task, Value, Vm};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -44,7 +46,42 @@ pub struct ThingState {
     pub anim_pos: Option<f32>,
     /// PTrigger, when the Thing has one.
     pub trigger: Option<TriggerState>,
+    /// PSwitch, when the Thing has one.
+    pub switch: Option<SwitchState>,
+    /// The Thing's input table by port: the switch output wired to each port, `None`
+    /// for a port nothing is wired to (see [`LevelWorld::wire_inputs`]).
+    pub inputs: Vec<Option<InputWire>>,
 }
+
+/// A PSwitch at run time: the stored settings and its outputs. The signals are the ones
+/// the level file stores; nothing evaluates the logic network yet, so they never change.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SwitchState {
+    pub switch_type: i32,
+    pub inverted: bool,
+    pub behavior: i32,
+    /// In stored order; `None` for an output the level file leaves null.
+    pub outputs: Vec<Option<SwitchOutputState>>,
+    pub manual_activation: SwitchInput,
+}
+
+/// One output of a PSwitch: its signal and the (Thing, port) inputs it is wired to.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SwitchOutputState {
+    pub signal: SwitchInput,
+    pub targets: Vec<(Option<u32>, i32)>,
+}
+
+/// What is wired to one input port: output `output` of the PSwitch on Thing `switch`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InputWire {
+    pub switch: u32,
+    pub output: usize,
+}
+
+/// Input ports past this are not wired (a guard against a damaged file; the count of
+/// targets it drops is [`LevelWorld::input_ports_dropped`]).
+pub const MAX_INPUT_PORTS: usize = 1024;
 
 /// A PTrigger at run time: the stored settings and the Things inside it.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -186,6 +223,13 @@ pub struct LevelWorld {
     pub score_multiplier_timers: BTreeMap<i32, i32>,
     /// Players' Sackboys ([`LevelWorld::add_player`]); none until a caller adds one.
     pub players: Vec<PlayerState>,
+    /// Switch targets whose port already had an output wired (the first one is kept).
+    pub input_collisions: usize,
+    /// Switch targets with a negative port or one at or past [`MAX_INPUT_PORTS`].
+    pub input_ports_dropped: usize,
+    /// Script GUIDs of the loaded classes that are, or derive from, the scoreboard class
+    /// (filled by [`LevelWorld::add_class_defaults`]).
+    pub score_board_scripts: BTreeSet<u32>,
 }
 
 /// VM value for a stored script field; `None` for a field the instance does not store.
@@ -233,6 +277,14 @@ fn collect_objects(v: &ScriptValue, out: &mut BTreeMap<usize, ScriptObject>) {
     out.entry(*id).or_insert_with(|| (**body).clone());
 }
 
+fn signal(s: &SwitchSignal) -> SwitchInput {
+    SwitchInput {
+        activation: s.activation,
+        ternary: s.ternary,
+        player: s.player,
+    }
+}
+
 /// `"PSpriteLight"` -> `"SPRITE_LIGHT"`, the reader's part name.
 fn part_name(native: &str) -> String {
     let base = native.strip_prefix('P').unwrap_or(native);
@@ -274,6 +326,26 @@ impl LevelWorld {
                         z_offset: g.z_offset,
                         inside: g.in_things.iter().filter_map(|i| handle((*i)?)).collect(),
                     }),
+                    switch: t.data.switch.as_ref().map(|s| SwitchState {
+                        switch_type: s.switch_type,
+                        inverted: s.inverted,
+                        behavior: s.behavior,
+                        outputs: s
+                            .outputs
+                            .iter()
+                            .map(|o| {
+                                o.as_ref().map(|o| SwitchOutputState {
+                                    signal: signal(&o.signal),
+                                    targets: o
+                                        .targets
+                                        .iter()
+                                        .map(|&(t, port)| (t.and_then(handle), port))
+                                        .collect(),
+                                })
+                            })
+                            .collect(),
+                        manual_activation: signal(&s.manual_activation),
+                    }),
                     ..Default::default()
                 })
                 .collect(),
@@ -310,7 +382,67 @@ impl LevelWorld {
                 w.add_script(i, part);
             }
         }
+        w.wire_inputs();
         w
+    }
+
+    /// Builds every Thing's input table from the PSwitch outputs' targets.
+    ///
+    /// FOUND in the 01.33 executable (the switch-input natives' readers, 0x7541e0 and
+    /// its neighbours): a Thing holds a table with one entry per input port, each empty
+    /// or the SwitchOutput wired to it. INFERRED: the table is what the outputs' stored
+    /// targets say. A target (Thing, port) puts its output on that port of that Thing;
+    /// the table is as long as the highest wired port + 1. When two outputs target one
+    /// port the first in Thing order (then output and target order) is kept and the
+    /// other is counted in `input_collisions`. Targets with a null Thing wire nothing.
+    pub fn wire_inputs(&mut self) {
+        let mut wires = Vec::new();
+        for (i, t) in self.things.iter().enumerate() {
+            let outputs = t.switch.iter().flat_map(|s| s.outputs.iter().enumerate());
+            for (output, o) in outputs {
+                for &(target, port) in o.iter().flat_map(|o| &o.targets) {
+                    let wire = InputWire {
+                        switch: i as u32,
+                        output,
+                    };
+                    wires.push((target, port, wire));
+                }
+            }
+        }
+        for t in &mut self.things {
+            t.inputs.clear();
+        }
+        (self.input_collisions, self.input_ports_dropped) = (0, 0);
+        for (target, port, wire) in wires {
+            let Some(t) = target.and_then(|t| self.things.get_mut(t as usize)) else {
+                continue;
+            };
+            let Some(port) = usize::try_from(port).ok().filter(|&p| p < MAX_INPUT_PORTS) else {
+                self.input_ports_dropped += 1;
+                continue;
+            };
+            if t.inputs.len() <= port {
+                t.inputs.resize(port + 1, None);
+            }
+            match &mut t.inputs[port] {
+                Some(_) => self.input_collisions += 1,
+                empty => *empty = Some(wire),
+            }
+        }
+    }
+
+    /// The wire on input port `port` of a Thing, with the output it leads to.
+    fn input(
+        &self,
+        thing: u32,
+        port: i32,
+    ) -> Result<Option<(InputWire, &SwitchOutputState)>, String> {
+        let inputs = &self.state(thing)?.inputs;
+        let wire = usize::try_from(port).ok().and_then(|p| *inputs.get(p)?);
+        Ok(wire.and_then(|w| {
+            let s = self.things.get(w.switch as usize)?.switch.as_ref()?;
+            Some((w, s.outputs.get(w.output)?.as_ref()?))
+        }))
     }
 
     fn add_script(&mut self, i: usize, part: &ScriptPart) {
@@ -440,9 +572,17 @@ impl LevelWorld {
     /// still exists on the instance (INFERRED, the way `instantiate` builds script objects).
     pub fn add_class_defaults(&mut self, vm: &Vm) {
         for t in &mut self.things {
-            let Some(class) = t.script_guid.and_then(|g| vm.class_by_guid(g)) else {
+            let Some((guid, class)) = t.script_guid.and_then(|g| Some((g, vm.class_by_guid(g)?)))
+            else {
                 continue;
             };
+            let chain = vm.class_chain(class);
+            if chain
+                .iter()
+                .any(|&c| vm.class_guid(c) == Some(SCORE_BOARD_SCRIPT))
+            {
+                self.score_board_scripts.insert(guid);
+            }
             let Ok(defaults) = vm.field_defaults(class) else {
                 continue;
             };
@@ -662,6 +802,41 @@ impl World for LevelWorld {
     fn trigger_count(&mut self, thing: u32) -> Result<i32, String> {
         let t = self.state(thing)?;
         Ok(t.trigger.as_ref().map_or(0, |g| g.inside.len() as i32))
+    }
+    fn trigger_thing(&mut self, thing: u32, index: i32) -> Result<Option<u32>, String> {
+        let inside = self.state(thing)?.trigger.as_ref().map(|g| &g.inside);
+        Ok(usize::try_from(index)
+            .ok()
+            .and_then(|i| inside?.get(i).copied()))
+    }
+    /// The stored signal of the output wired to the port ([`LevelWorld::wire_inputs`]).
+    fn switch_input(&mut self, thing: u32, port: i32) -> Result<Option<SwitchInput>, String> {
+        Ok(self.input(thing, port)?.map(|(_, o)| o.signal))
+    }
+    fn switch_input_thing(&mut self, thing: u32, port: i32) -> Result<Option<u32>, String> {
+        Ok(self.input(thing, port)?.map(|(w, _)| w.switch))
+    }
+    fn switch_output_target(
+        &mut self,
+        thing: u32,
+        output: i32,
+        target: i32,
+    ) -> Result<Option<u32>, String> {
+        let switch = self.state(thing)?.switch.as_ref();
+        let (Ok(o), Ok(t)) = (usize::try_from(output), usize::try_from(target)) else {
+            return Ok(None);
+        };
+        Ok(switch
+            .and_then(|s| s.outputs.get(o)?.as_ref())
+            .and_then(|o| o.targets.get(t)?.0))
+    }
+    /// The Thing's script is the scoreboard script, or a loaded class derived from it
+    /// (known once [`LevelWorld::add_class_defaults`] ran).
+    fn is_score_board(&mut self, thing: u32) -> Result<bool, String> {
+        Ok(self
+            .state(thing)?
+            .script_guid
+            .is_some_and(|g| g == SCORE_BOARD_SCRIPT || self.score_board_scripts.contains(&g)))
     }
     fn get_member(
         &mut self,

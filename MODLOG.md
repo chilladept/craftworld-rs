@@ -1,5 +1,19 @@
 # Development log
 
+## 2026-10-13 - D260 switch inputs reach the level scripts
+
+RScript plan stage 3a. `lbp-level` keeps PSwitch (outputs with signal and targets, type, inverted,
+behavior, manualActivation). `LevelWorld::wire_inputs` builds each Thing's input table from the outputs'
+targets (INFERRED; the table itself and its readers FOUND in the EBOOT: 0x7541e0, 0x754308, 0x7542a4,
+0x75437c, 0x754ccc, 0x754244, 0x754af8, 0x6d558c). `IsSwitchTriggered__i` is "an output is wired", Binary is
+"ternary not 0", Analogue the activation or 0.0, Player the signal's player. Newly bound:
+`Thing.GetSwitchActivationTernary__i`, `GetInput__Q5Thingi`, `GetOutput__Q5Thingii`,
+`Native.GetInThing__Q5Thingi`, `BaseWorld.IsScoreBoard__Q5Thing` (123). `level_scripts`: switch census. PC
+run, 378 levels: 141,572 PSwitch Things, 144,608 outputs, 177,800 targets, 136,337 Things with an input
+table, no port collision, 3,732 scripted Things with a wired port; stopped Things 1,722 -> 582; unbound
+natives reached with the trigger visit 94 -> 91. Not done: the logic network is not evaluated and
+`SwitchPerformReaction__b` is not called. +0 viewable, +0 Complete. `docs/level-scripts.md` part 11.
+
 ## 2026-10-12 - D259 trigger events reach the level scripts
 
 RScript plan stage 2. `lbp-level` keeps PTrigger. `LevelWorld::add_player`/`move_player` put a player's

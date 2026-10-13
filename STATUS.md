@@ -4256,3 +4256,34 @@ Next: ledge-fall capture.
 - Not tested: the viewer window with a walking Sackboy; any trigger against the game in RPCS3.
 **+0 newly viewable / +0 newly Complete (runtime feature).**
 Next: stage 3, switch events and inputs.
+
+## D260 switch inputs (2026-10-13)
+- RScript plan stage 3a (`docs/rscript-plan.md`); detail in `docs/level-scripts.md` part 11.
+- FOUND (EBOOT, native then reader): a Thing has an input table, one entry per port, each empty or the
+  SwitchOutput wired to it; the output holds its signal (activation, ternary, player) and its PSwitch.
+  `IsSwitchTriggered__i` (0x64228c, 0x7541e0) is true when an output is wired; Binary (0x642228, 0x754308)
+  is wired and ternary not 0; Analogue (0x6421c4, 0x7542a4) the activation, else 0.0; Ternary (0x642160,
+  0x75437c) the ternary as a float, else 0.0; Player (0x6420fc, 0x754ccc) the signal's player when not -1;
+  `GetInput__Q5Thingi` (0x643f2c, 0x754244) the Thing of the wired output's PSwitch; `GetOutput__Q5Thingii`
+  (0x643ea0, 0x754af8) a target Thing of an output of the Thing's own PSwitch; `Native.GetInThing__Q5Thingi`
+  (0x6486ec, 0x6d558c) an entry of the PTrigger in-list; `BaseWorld.IsScoreBoard__Q5Thing` (0x64bae0,
+  0x7569ec, 0x622658, 0x164454) the Thing's script is script 11599 or derives from it.
+- INFERRED: the input table is built from the outputs' stored targets (Thing, port); first output in Thing
+  order wins a port.
+- Change: `lbp-level` keeps PSwitch (`PartData::switch`); `lbp-runtime` `SwitchState`, `InputWire`,
+  `LevelWorld::wire_inputs` and the World methods; `lbp-script-vm` reshapes `SwitchInput` to the wired
+  signal and binds 5 natives (123 bound), `Vm::class_chain`; `level_scripts` writes a switch census.
+- MEASURED (378 levels, 60 ticks): 141,572 PSwitch Things, 144,608 outputs (none null), 177,800 targets
+  (none with a null Thing), 136,337 Things with an input table, 177,800 wired ports, 0 port collisions,
+  3,732 scripted Things with a wired port; `IsScoreBoard` true for 102 Things. Things stopped by a fault
+  1,722 -> 582; native calls bound 51,030 -> 186,679 (with the trigger visit 215,292 -> 1,069,101);
+  unbound natives reached 65 -> 66 (visit 94 -> 91).
+- Not modelled: the logic network (no sensor, gate or timer runs, signals stay as stored);
+  `SwitchPerformReaction__b`; the owner-player fallback of the Player form; the Thing flag at +0x7f that
+  makes four forms read "nothing wired"; the game's missing bounds checks (out of range is null here).
+- Tests: `stage3_input_tables_are_built_from_the_switch_outputs`,
+  `stage3_switch_input_natives_follow_the_wired_output`, `stage3_outputs_in_things_and_score_boards` (new).
+  fmt, clippy, tests on the non-viewer crates, `cargo check -p lbp-bevy-viewer` pass.
+- Not tested: the viewer window; any switch against the game in RPCS3.
+**+0 newly viewable / +0 newly Complete (runtime feature).**
+Next: stage 3b, evaluate the logic network and call the switch reactions.

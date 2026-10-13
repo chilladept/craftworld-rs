@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D259
+# Current state (overwrite each milestone) — after D260
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -11,7 +11,18 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D259 trigger events (2026-10-12)
+## Latest: D260 switch inputs (2026-10-13)
+- RScript plan stage 3a. PSwitch is kept by `lbp-level`; `LevelWorld::wire_inputs` builds each Thing's
+  input table from the switch outputs' targets (INFERRED build; table and readers FOUND in the EBOOT:
+  0x7541e0, 0x754308, 0x7542a4, 0x75437c, 0x754ccc, 0x754244, 0x754af8). `IsSwitchTriggered__i` is true
+  when an output is wired to the port, whatever its signal. 5 natives bound (123): the ternary form,
+  `GetInput`, `GetOutput`, `Native.GetInThing`, `BaseWorld.IsScoreBoard`.
+- MEASURED, 378 levels: 141,572 PSwitch Things, 177,800 targets, no port collision, 3,732 scripted Things
+  with a wired port. Things stopped by a fault 1,722 -> 582; with the trigger visit unbound natives
+  reached 94 -> 91. Signals are the stored ones: the logic network is not evaluated and
+  `SwitchPerformReaction__b` is not called. Next: stage 3b. `docs/level-scripts.md` part 11.
+
+## Before: D259 trigger events (2026-10-12)
 - RScript plan stage 2. PTrigger is kept by `lbp-level`; `LevelWorld::update_triggers` tests the players
   against every trigger and `LevelScripts::tick_level` calls `Enter__Q5Thing`, `Inside__Q5Thing`,
   `Leave__Q5Thing`. FOUND in the EBOOT (0xe3bc0, 0x1364f0, 0x135fe0, 0x135a18, 0x1346fc): position in the
