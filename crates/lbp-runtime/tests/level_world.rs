@@ -2491,6 +2491,19 @@ fn d263_game_state_queries_and_the_scoring_slot_test() {
     }
     w.level_slot_id = (2, 7);
     assert_eq!(filter(w), Ok(Value::Bool(false)));
+    // The group of a slot: the empty slot is in no group, and the answer is a SlotID
+    // (0, 0) of its own, never null. Any other slot needs the slot database: an error.
+    let group =
+        |w: &mut LevelWorld, slot: Value| native(w, "Slot", "GetSlotGroup__Q6SlotID", &[slot]);
+    let none = w.no_group_slot.unwrap();
+    assert!(none != level_slot && none != primary);
+    assert_eq!(group(w, object(primary)), Ok(object(none)));
+    assert_eq!(group(w, object(none)), Ok(object(none)));
+    assert_eq!(vm.field(none, "Type"), Some(&int(0)));
+    assert_eq!(vm.field(none, "SlotNumber"), Some(&int(0)));
+    assert!(group(w, object(level_slot)).is_err());
+    assert!(group(w, Value::Object(None)).is_err());
+    assert_eq!(valid(w, object(none)), Ok(Value::Bool(false)));
     // A SlotID the world did not make cannot be read: an error, not a guess.
     assert!(valid(w, Value::Object(None)).is_err());
 
@@ -2686,4 +2699,20 @@ fn d263_recorded_calls_keep_their_arguments_for_a_later_stage() {
     }
     assert_eq!(w.requests.len(), MAX_REQUESTS);
     assert_eq!(w.requests_dropped, KEPT_REQUESTS.len() as u64);
+}
+
+#[test]
+fn d263_a_script_cast_tests_the_things_class_chain() {
+    let mut vm = Vm::default();
+    vm.load(base(), Some(BASE));
+    vm.load(lamp(), Some(GUID));
+    let mut w = LevelWorld::from_things(&level());
+    // Before the classes are resolved nothing is known and every cast passes.
+    assert!(w.thing_is(1, "Other") && w.thing_is(2, "Lamp"));
+    w.add_class_defaults(&vm);
+    // Thing 1 carries a Lamp, which derives from Base; Thing 2 has no script.
+    assert_eq!(w.things[1].script_classes, ["Lamp", "Base"]);
+    assert!(w.thing_is(1, "Lamp") && w.thing_is(1, "Base"));
+    assert!(!w.thing_is(1, "Other"));
+    assert!(!w.thing_is(2, "Lamp") && !w.thing_is(99, "Lamp"));
 }

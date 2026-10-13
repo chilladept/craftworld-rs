@@ -309,6 +309,10 @@ pub trait World {
     fn in_lams(&mut self, _key: i32) -> Result<bool, String> {
         Err(not_available("translated text"))
     }
+    /// `Slot.GetSlotGroup__Q6SlotID`: a script `SlotID` object for the group of a slot.
+    fn slot_group(&mut self, _slot: &Value) -> Result<Value, String> {
+        Err(not_available("level slots"))
+    }
     /// Type and SlotNumber of a script `SlotID` object.
     fn slot_id(&mut self, _slot: &Value) -> Result<(i32, i32), String> {
         Err(not_available("level slots"))
@@ -1903,6 +1907,15 @@ const TABLE: &[(&str, &str, NativeFn)] = &[
             ))
         },
     ),
+    // FOUND (0x640500 -> 0x7477d8 -> 0x1a6cd8, then 0x50c2cc). Declared static
+    // `SlotID GetSlotGroup(SlotID)`: reads Type and SlotNumber out of the script object,
+    // looks the slot up in the game's slot database and builds a new script SlotID from
+    // the group pair the slot record holds, or from (0, 0) when the slot is not found.
+    // Never null (the builder `GetLevelSlotID` uses). The lookup finds nothing for the
+    // slot (0, 0); the world answers that case and has no database for any other.
+    ("Slot", "GetSlotGroup__Q6SlotID", |w, c| {
+        w.slot_group(param(c, 0)?)
+    }),
     // FOUND shape (0x5f9ff0 -> 0x73a750). Declared static
     // `s32 GetPlayerIndicatorActivityType(s32 player)`: 0, 1 or 2; 0 = no off-screen
     // indicator. INFERRED for the world: 0 (see the world).

@@ -45,6 +45,9 @@ pub struct ThingState {
     pub parts: Vec<&'static str>,
     /// GUID of the PScript resource, when the Thing has one.
     pub script_guid: Option<u32>,
+    /// Names of the Thing's script class and its superclasses, once the class is loaded
+    /// ([`LevelWorld::add_class_defaults`]); a script cast tests against them.
+    pub script_classes: Vec<String>,
     /// Script members by field name; `None` when the Thing has no PScript layout.
     pub members: Option<BTreeMap<String, Value>>,
     /// PShape colour as a colour vector (`GetShapeEditorColour`).
@@ -321,6 +324,12 @@ pub struct LevelWorld {
     /// hand out (see [`add_engine_objects`]).
     pub level_slot: Option<ObjectId>,
     pub primary_level_slot: Option<ObjectId>,
+    /// The SlotID object (0, 0) that `Slot.GetSlotGroup__Q6SlotID` hands out for a slot
+    /// the game's slot database does not have (see [`add_engine_objects`]).
+    pub no_group_slot: Option<ObjectId>,
+    /// Set by [`LevelWorld::add_class_defaults`]: the Things' class names are known, so
+    /// a script cast is tested against them. Before that every cast passes.
+    pub classes_resolved: bool,
     /// `Game.IsTutorialLevel__`. False unless the caller sets it (INFERRED: which levels
     /// the game sets it for is not established).
     pub tutorial_level: bool,
@@ -884,12 +893,14 @@ impl LevelWorld {
     /// `Tweakable.IsTweaking` (read by `Trigger_Speech_Bubble.Update`) is never stored but
     /// still exists on the instance (INFERRED, the way `instantiate` builds script objects).
     pub fn add_class_defaults(&mut self, vm: &Vm) {
+        self.classes_resolved = true;
         for t in &mut self.things {
             let Some((guid, class)) = t.script_guid.and_then(|g| Some((g, vm.class_by_guid(g)?)))
             else {
                 continue;
             };
             let chain = vm.class_chain(class);
+            t.script_classes = chain.iter().map(|&c| vm.class_name(c).to_owned()).collect();
             if chain
                 .iter()
                 .any(|&c| vm.class_guid(c) == Some(SCORE_BOARD_SCRIPT))
@@ -1415,11 +1426,40 @@ impl World for LevelWorld {
             record?.pad
         }))
     }
-    /// The contents of the two SlotID objects the world hands out. A native cannot read
+    /// A script cast of a Thing to a script class (`CASTsp`): the Thing carries a script
+    /// of that class or of a class derived from it. A Thing without a script, or whose
+    /// class is not loaded, is no instance of any class. Until
+    /// [`LevelWorld::add_class_defaults`] has run the classes are not known and every
+    /// cast passes (INFERRED stand-in for a world without a VM).
+    fn thing_is(&mut self, thing: u32, class: &str) -> bool {
+        if !self.classes_resolved {
+            return true;
+        }
+        self.things
+            .get(thing as usize)
+            .is_some_and(|t| t.script_classes.iter().any(|c| c == class))
+    }
+    /// FOUND (01.33, 0x7477d8 -> 0x1a6cd8): the slot lookup finds nothing for (0, 0), and
+    /// the group of a slot that is not found is (0, 0), as a new SlotID. Here the object
+    /// made ahead for that answer. Any other slot needs the game's slot database, which
+    /// the world does not have: an error.
+    fn slot_group(&mut self, slot: &Value) -> Result<Value, String> {
+        match self.slot_id(slot)? {
+            (0, 0) => self
+                .no_group_slot
+                .map(|o| Value::Object(Some(o)))
+                .ok_or_else(|| "no SlotID object (class not loaded)".into()),
+            (kind, number) => Err(format!(
+                "the group of slot ({kind}, {number}) needs the slot database"
+            )),
+        }
+    }
+    /// The contents of the SlotID objects the world hands out. A native cannot read
     /// a script object, so any other SlotID (one a script built) is an error. INFERRED:
     /// the scripts do not change the objects they were handed.
     fn slot_id(&mut self, slot: &Value) -> Result<(i32, i32), String> {
         match slot {
+            Value::Object(Some(o)) if Some(*o) == self.no_group_slot => Ok((0, 0)),
             Value::Object(Some(o)) if Some(*o) == self.level_slot => Ok(self.level_slot_id),
             Value::Object(Some(o)) if Some(*o) == self.primary_level_slot => {
                 Ok(self.primary_level_slot_id)
@@ -2065,6 +2105,18 @@ pub fn add_engine_objects(
                 }
                 Err(f) => faults.push(format!("SlotID {f:?}")),
             }
+        }
+        // The (0, 0) SlotID of `Slot.GetSlotGroup__Q6SlotID` (the game builds a new one
+        // on every call; the scripts only read it).
+        match vm.instantiate(class) {
+            Ok(o) => {
+                if let Some(fields) = vm.fields_mut(o) {
+                    fields.insert("Type".into(), Value::Int(0));
+                    fields.insert("SlotNumber".into(), Value::Int(0));
+                }
+                host.world.no_group_slot = Some(o);
+            }
+            Err(f) => faults.push(format!("SlotID {f:?}")),
         }
     }
     faults.dedup();
