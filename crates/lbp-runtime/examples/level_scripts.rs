@@ -1035,6 +1035,13 @@ struct CameraSums {
     levels_screen: usize,
     without_view: u64,
     off_screen: u64,
+    /// `Cam.SetCameraFromToUp__rrrffff` (part 23): calls, the levels with one, the ticks
+    /// on which a script wrote the camera, and those of them with the override in too.
+    from_to_up_calls: u64,
+    levels_from_to_up: usize,
+    script_ticks: u64,
+    script_ticks_with_override: u64,
+    levels_script_and_override: usize,
 }
 
 impl CameraSums {
@@ -1055,6 +1062,11 @@ impl CameraSums {
             levels_screen: usize::from(c.screen_queries > 0),
             without_view: c.screen_queries_without_view,
             off_screen: c.screen_queries_off_screen,
+            from_to_up_calls: c.from_to_up_calls,
+            levels_from_to_up: usize::from(c.from_to_up_calls > 0),
+            script_ticks: c.script_camera_ticks,
+            script_ticks_with_override: c.script_camera_ticks_with_override,
+            levels_script_and_override: usize::from(c.script_camera_ticks_with_override > 0),
         }
     }
 
@@ -1073,6 +1085,11 @@ impl CameraSums {
         self.levels_screen += o.levels_screen;
         self.without_view += o.without_view;
         self.off_screen += o.off_screen;
+        self.from_to_up_calls += o.from_to_up_calls;
+        self.levels_from_to_up += o.levels_from_to_up;
+        self.script_ticks += o.script_ticks;
+        self.script_ticks_with_override += o.script_ticks_with_override;
+        self.levels_script_and_override += o.levels_script_and_override;
     }
 
     fn json(&self) -> serde_json::Value {
@@ -1092,6 +1109,11 @@ impl CameraSums {
             "levels_with_a_screen_position_query": self.levels_screen,
             "screen_position_queries_without_a_view": self.without_view,
             "screen_position_queries_off_screen": self.off_screen,
+            "from_to_up_calls": self.from_to_up_calls,
+            "levels_with_a_from_to_up_call": self.levels_from_to_up,
+            "ticks_with_a_script_camera": self.script_ticks,
+            "ticks_with_a_script_camera_and_the_override_in": self.script_ticks_with_override,
+            "levels_with_a_script_camera_and_the_override_in": self.levels_script_and_override,
         })
     }
 }
@@ -1382,6 +1404,25 @@ fn moved_things(world: &LevelWorld, loaded: &[Option<[f32; 16]>]) -> serde_json:
     })
 }
 
+/// The ticks after which a level played alone reports its script camera (part 23): the
+/// first, and the middle and the tick after the end of a zoom of 451 ticks.
+const CAMERA_SAMPLE_TICKS: [u64; 3] = [1, 226, 452];
+
+fn script_camera_json(tick: u64, world: &LevelWorld) -> serde_json::Value {
+    let camera = world.script_camera().map(|c| {
+        serde_json::json!({
+            "eye": c.pose.eye,
+            "direction": c.pose.direction,
+            "up": c.up,
+            "fov_y_deg": c.fov_y_deg(),
+            "near": c.near,
+            "far": c.far,
+            "third_float": c.lens_value,
+        })
+    });
+    serde_json::json!({"tick": tick, "camera": camera})
+}
+
 /// How far from a trigger's Thing the `--visit-triggers` player goes to leave it.
 const VISIT_AWAY: f32 = 1.0e7;
 
@@ -1425,6 +1466,7 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
         })
     };
     let mut camera_before_in_use = None;
+    let mut script_cameras = Vec::new();
     let mut first_tick = None;
     let sensors: Vec<usize> = (0..host.world.things.len())
         .filter(|&i| {
@@ -1455,6 +1497,9 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
             host.world.pod_computer_in_use = true;
         }
         let t = level.tick_level(vm, &mut host, BUDGET_PER_CALL);
+        if CAMERA_SAMPLE_TICKS.contains(&level.ticks) || tick + 1 == opts.ticks {
+            script_cameras.push(script_camera_json(level.ticks, &host.world));
+        }
         log.note(level.ticks, &t, &host.world);
         settings.note(&host.world);
         ticks_with_faults += usize::from(!t.faults.is_empty());
@@ -1631,6 +1676,10 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
                 "from": c.from, "to": c.to, "up": c.up, "params": c.params,
             })),
             "from_to_up_calls": host.world.camera.from_to_up_calls,
+            "script_camera": {
+                "unit": "the camera a display draws with after that tick, when a script wrote it with SetCameraFromToUp on the tick (null: none); eye, near and far in level units, direction of length 1, vertical field of view in degrees. Ticks 1, 226, 452 and the last",
+                "after_tick": script_cameras,
+            },
             "dof_and_fog": host.world.camera.dof_and_fog,
             "motion_blur_clears": host.world.camera.motion_blur_clears,
         },

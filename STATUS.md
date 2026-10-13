@@ -5040,3 +5040,84 @@ camera). `docs/level-scripts.md` part 21.
 **+0 newly viewable / +0 newly Complete (runtime feature).**
 Next: stage 6 PR 3 (the viewer's Pod camera), PR 4 (the pod computer is entered, one session for
 both Pod levels). `docs/level-scripts.md` part 22.
+
+## D272 the Pod's camera and its moving world (2026-10-13)
+- RScript plan stage 6 (`docs/rscript-plan.md`), PR 3. The planets level of the Pod writes the camera
+  itself each tick (`Cam.SetCameraFromToUp__rrrffff`, bound and kept since part 6) and moves its world
+  Thing each tick (`Thing.SetWorldPosition__m`). The runtime kept both; nothing drew by them. Now the
+  runtime says which camera a frame is drawn with and the Bevy viewer applies it.
+- FOUND in the 01.33 EBOOT (stage 5 and stage 6 scoping notes; nothing new was read for this PR):
+  - `Cam.SetCameraFromToUp__rrrffff` (0x5fc494 -> 0x734668 -> 0x2e9798): the camera matrix from eye,
+    point and up by the look-at builder 0x2e7990 (right, up, backward, eye), written with its inverse
+    into the render camera; no blend, no level camera.
+  - Its four floats are stored in the render camera as near, far, one value that goes to the projection
+    builder (0x2e8c58; its use was not read) and the field of view, the field `Cam.GetFov__` returns
+    (radians). The planets script passes 10, 100000, 0, 1.
+- Runtime (`lbp-runtime`):
+  - `camera.rs`: `ScriptCamera` (eye, direction at length 1, up as passed, near, far, the third float,
+    field of view), `ScriptCamera::of`, `matrix`, `fov_y_deg`; `CameraPose::matrix_with_up`;
+    `CameraState::from_to_up_frame`, `script_camera_ticks`, `script_camera_ticks_with_override`.
+  - `LevelWorld::script_camera`: the written camera while it stands (from the call to the end of the
+    next tick's frame count; one tick without a call ends it).
+  - `LevelWorld::display_camera(follow eye, follow direction)` -> `DisplayCamera` with a
+    `CameraSource`: 1. a camera a script wrote, outright, with its up vector and lens; 2. else the
+    follow camera mixed with an override that is in (D269), +Y up, 60 degrees; 3. else none.
+  - `LevelWorld::camera_matrix` without a view answers with the written camera's matrix (FOUND: the
+    native copies out the matrix the call wrote).
+  - `display.rs`: `LevelWorld::world_thing_moved` (the matrix from the world Thing's stored place to its
+    place now).
+  - `level_scripts`: `play_all.camera` gains the calls, the levels with a call, the ticks with a written
+    camera and those with an override in too; a level played alone lists the camera after ticks 1, 226,
+    452 and the last.
+- Viewer (`lbp-bevy-viewer`):
+  - `level_play.rs` `script_camera`: applies `display_camera` each frame (`place_camera`: eye through
+    the display matrix, turn from the runtime's matrix, the field of view); the orbit state is not
+    touched; the view written back for the scripts as before.
+  - `follow_world` and `WorldThingRoot`: under `--level-scripts --pod-camera N` without `--pod-shell`
+    the planets level hangs under a root that gets `N M N^-1` each tick (after 60 drawn frames, as the
+    relight guard).
+  - With `--pod-shell` (and `--pod-game-camera`) the script's camera is not applied and the planets
+    keep the viewer's own rule: the shell layer is placed for the viewer's own Pod camera. One line
+    says so. Without `--level-scripts` nothing changed.
+  - `--level-scripts-hold-at N` (QA): no tick after tick N, and `--qa-capture` waits for it
+    (`CaptureHold`). `thing_view.rs`: a swapped mesh is counted as not drawn (`another mesh`).
+- MEASURED (378 levels, 13,547 scripted Things, 60 ticks; plain / `--visit-triggers` / with
+  `--pulse-switches`; `local-analysis/d272-play-all-*.json`):
+  - The `play_all` block equals D271 in all three runs but for the five new camera counts.
+  - Things stopped by a fault 3 / 3 / 3; unbound natives called 41 / 73 / 73; unbound calls 61,480 /
+    862,986 / 868,663; native calls 573,134 / 5,365,247 / 5,424,893; natives in the table 249.
+  - `SetCameraFromToUp` calls 60 / 60 / 62 in 1 level; ticks with a written camera 60 / 60 / 62; levels
+    with a written camera and an override in at once 0 / 0 / 0.
+  - pod_planets alone (`d272-planets-{60,600,600-inuse}.json`): the camera after tick 1: eye (-500,
+    -2000, 2000), direction (0.248, 0.744, -0.620); after 226: (-250, -1125, 1565); after 452 and 600:
+    (0, -250, 1130), direction (0, 0.132, -0.991); in use from tick 100, after 600: (0, -300, 900),
+    direction (0, 0.316, -0.949). Field of view 57.3 degrees, up (0, 1, 0), near 10, far 100000.
+- Eye check (release build, 1280 x 720, `--qa-capture`, no focus taken; frames in ignored
+  `local-analysis/rscript/stage6/shots/`), planets level with `--pod-camera 1 --level-scripts
+  --window-16-9 --preview-lighting`:
+  - `d272-scripts-tick030.png`: a steep look up; the ceiling fills most of the picture, Earth, Moon and
+    the lamp at the lower edge. `-tick200`: the ceiling is the upper third, the planets left of the
+    middle, the table at the lower right. `-tick440`, `-tick600`: a nearly level view of the room, the
+    Earth a little left of and above the middle, the Moon right of it.
+  - All four are washed out in orange by the viewer's distance fog (`--preview-lighting`), now over the
+    31,000 units the world Thing puts between camera and room. `d272-scripts-tick600-lbp.png` (default
+    lighting) shows the same framing clearly.
+  - `d272-no-scripts.png`: the fitted globe view of `--pod-camera`, as before.
+  - `d272-shell-scripts.png` and `d272-shell-no-scripts.png` (`--pod-shell 000027b9 --pod-game-camera`):
+    equal byte for byte.
+  - Printed: `Script camera at tick 452: at rest; eye [0.0, -250.0, 1130.0] ...`.
+- INFERRED: a written camera stands for one tick; it goes before an override; the look-at axes (right =
+  forward x up); the field of view is vertical (57.3 degrees vertical measured in the game before,
+  P2k); the whole planets level is drawn under its world Thing (P2k memory reads; the engine code was
+  not read).
+- Not done: the shell layer under the script's camera; Earth and Moon by their own scripts (their
+  per-frame entry is not called: they stay at their stored places and do not spin, so the planets'
+  framing is not the game's); the pod's mesh swap in the scene; near, far, depth of field, fog, motion
+  blur; a `--preview-lighting` fog that fits the moved level.
+- Tests: `lbp-runtime` 61 unit and 46 world tests (new: two in `camera.rs`, world test
+  `d272_a_written_camera_stands_for_its_tick_and_the_world_thing_moves_the_level`); `lbp-bevy-viewer`
+  `a_script_camera_in_level_units_places_the_viewer_camera`. fmt, CI clippy, CI tests, Python tests,
+  `cargo check` of both viewers, clippy on the Bevy viewer with `-D warnings` pass; the Bevy viewer's
+  tests pass but `sackboy_play::tests::input_script_steps` (fails on main).
+**+0 newly viewable / +0 newly Complete (runtime and viewer feature).**
+Next: stage 6 PR 4 (the pod computer is entered). `docs/level-scripts.md` part 23.

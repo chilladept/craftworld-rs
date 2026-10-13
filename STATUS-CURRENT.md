@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D271
+# Current state (overwrite each milestone) — after D272
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -11,7 +11,48 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D271 video, voice-over and progression flags (2026-10-13)
+## Latest: D272 the Pod's camera and its moving world (2026-10-13)
+- RScript plan stage 6 (the Pod), PR 3. The planets level's world script writes the camera itself each
+  tick (`Cam.SetCameraFromToUp`) and moves its world Thing each tick. The runtime kept both and nothing
+  drew by them. No native is new (249).
+- FOUND in the EBOOT (scoping notes of stage 5 and 6): `SetCameraFromToUp` (0x2e9798) builds the camera
+  matrix from eye, point and up with the look-at builder 0x2e7990 and writes it into the render camera,
+  no blend; its four floats are stored as near, far, one value not read, and the field of view
+  `Cam.GetFov__` returns (radians). The script passes 10, 100000, 0, 1.
+- Runtime (`lbp-runtime/src/camera.rs`): `ScriptCamera` (eye, direction, up as passed, lens),
+  `LevelWorld::script_camera` (stands from the call to the end of the next tick's count),
+  `LevelWorld::display_camera` (which camera a frame is drawn with: a camera a script wrote, outright;
+  else the follow camera under an override; else none), `DisplayCamera`, `CameraSource`,
+  `CameraPose::matrix_with_up`; `GetCameraMatrix` without a view answers with the written matrix.
+  `display.rs`: `LevelWorld::world_thing_moved`. `level_scripts`: five counts in the `camera` block and
+  the camera after ticks 1, 226, 452 and the last for a level played alone.
+- Viewer (`level_play.rs`): `script_camera` applies `display_camera` (eye, turn, field of view; near and
+  far stay the viewer's); `follow_world` places the root of the planets level (`N M N^-1`) each tick.
+  With `--pod-camera N` and no `--pod-shell` the level hangs under that root; with the shell layer the
+  viewer keeps its own Pod camera and says so once (that layer is placed for it). Without
+  `--level-scripts` no flag changed. New QA option `--level-scripts-hold-at N` (scripts stop after tick
+  N and a capture waits for it). `thing_view.rs` counts a swapped mesh as not drawn.
+- MEASURED (378 levels, 60 ticks; plain / trigger visit / pulsed): the `play_all` block equals D271 but
+  for the new counts. Things stopped by a fault 3 / 3 / 3; unbound natives called 41 / 73 / 73; unbound
+  calls 61,480 / 862,986 / 868,663. `SetCameraFromToUp` 60 / 60 / 62 calls in 1 level; levels with a
+  written camera and an override in at once: 0.
+- pod_planets alone: the camera after tick 1 eye (-500, -2000, 2000), after 226 (-250, -1125, 1565),
+  from 452 on (0, -250, 1130) looking along (0, 0.132, -0.991), 57.3 degrees; with the pod computer in
+  use (0, -300, 900). The viewer prints the same poses.
+- Eye check (no focus taken, `local-analysis/rscript/stage6/shots/`): stills at ticks 30, 200, 440 and
+  600: the camera comes from low, looking up at the ceiling, to a level view of the room with the Earth
+  and the Moon near the middle. Under `--preview-lighting` they are washed out by the viewer's distance
+  fog (the level is 31,000 units away); the default lighting shows the room clearly. With the shell
+  layer the capture is equal byte for byte with and without scripts. Nothing compared against the game.
+- INFERRED: a written camera stands for one tick and goes before an override; the look-at axes; the
+  field of view is vertical; the whole planets level is drawn under its world Thing (measured in the
+  running game before, P2k; the engine code was not read).
+- Left out: the shell layer under the script's camera, Earth and Moon by their own scripts (they stay
+  at their stored places, so the planets' framing is not the game's), the pod's mesh swap in the scene,
+  near and far, depth of field, fog. Next: PR 4, the pod computer is entered. `docs/level-scripts.md`
+  part 23.
+
+## Before: D271 video, voice-over and progression flags (2026-10-13)
 - RScript plan stage 6 (the Pod), PR 2. The planets level's intro thread (451 ticks of camera zoom,
   then a wait on "a voice-over line plays or the pod computer has a video handle") never ended: the
   unbound `Video.StartVideo` answered 0 and the script takes any handle but -1 as a playing video.

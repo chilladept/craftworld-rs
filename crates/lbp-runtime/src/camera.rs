@@ -19,8 +19,17 @@
 //!   `HUD.GetScreenSpacePosition__r` (0x2e7bdc, 0x2e74a0) projects with the second onto a
 //!   screen whose size is two globals holding 1280 and 720 ([`screen_position`]).
 //!
+//! - `Cam.SetCameraFromToUp__rrrffff` (0x2e9798) does not go through the level's camera:
+//!   it builds the camera matrix from an eye, a point to look at and an up vector with
+//!   the same look-at builder, writes it and its inverse into the render camera, stores
+//!   its four floats there as near plane, far plane, one value whose use was not read and
+//!   the field of view (the field `Cam.GetFov__` returns, radians), and rebuilds the
+//!   projection. No blend ([`ScriptCamera`], docs/level-scripts.md, part 23).
+//!
 //! INFERRED: the up vector under an override is world +Y (the look-at build after the
-//! blend was not read); the step runs once per tick, after the scripts.
+//! blend was not read); the step runs once per tick, after the scripts; a camera written
+//! with `SetCameraFromToUp` stands for the frame it was written in and no longer, and
+//! wins over an override in that frame ([`LevelWorld::display_camera`]).
 use crate::transform::{self, IDENTITY};
 use crate::LevelWorld;
 use lbp_script_vm::natives::CameraFromToUp;
@@ -141,8 +150,19 @@ impl CameraPose {
     /// +Y as the up vector (INFERRED). A camera that looks straight up or down takes +X
     /// as its right.
     pub fn matrix(&self) -> [f32; 16] {
+        self.matrix_with_up([0., 1., 0.])
+    }
+
+    /// The camera matrix of the pose with `up` as the up vector: right is forward x up
+    /// at length 1, the matrix's up is right x forward. INFERRED: the usual look-at
+    /// rule; FOUND is the layout (right, up, backward, eye). An up vector without a
+    /// direction, or along the view, is replaced by world +Y, and that by +X as the
+    /// right (INFERRED guards: no script passes such a vector).
+    pub fn matrix_with_up(&self, up: [f32; 3]) -> [f32; 16] {
         let f = self.direction;
-        let right = normalized(cross(f, [0., 1., 0.])).unwrap_or([1., 0., 0.]);
+        let right = normalized(cross(f, up))
+            .or_else(|| normalized(cross(f, [0., 1., 0.])))
+            .unwrap_or([1., 0., 0.]);
         let up = cross(right, f);
         let mut m = IDENTITY;
         m[0..3].copy_from_slice(&right);
@@ -177,6 +197,96 @@ pub fn blend_pose(follow: CameraPose, eye: [f32; 3], direction: [f32; 3], w: f32
         mixed
     } else {
         follow
+    }
+}
+
+/// The camera one `Cam.SetCameraFromToUp__rrrffff` call writes, in level units.
+///
+/// FOUND (0x2e9798): the eye is the first vector, the camera looks at the second, the
+/// third is the up vector; the four floats are stored in the render camera as its near
+/// plane, its far plane, a value that goes to the projection builder (what it does there
+/// was not read) and its field of view, the field `Cam.GetFov__` returns. INFERRED: the
+/// field of view is the vertical one (the one script that calls this passes 1.0, and
+/// 57.3 degrees of vertical field of view were measured in the running game).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScriptCamera {
+    /// The eye, and the direction to the point looked at, at length 1.
+    pub pose: CameraPose,
+    /// The up vector as passed.
+    pub up: [f32; 3],
+    pub near: f32,
+    pub far: f32,
+    /// The third float, as passed.
+    pub lens_value: f32,
+    /// The fourth float, as passed: the vertical field of view in radians.
+    pub fov_y: f32,
+    /// `PWorld.Frame` when the script made the call.
+    pub frame: i32,
+}
+
+impl ScriptCamera {
+    /// The camera of a call made on `frame`. `None` when the eye and the point looked at
+    /// are the same point or one of them is not a number: such a call gives no direction
+    /// (INFERRED guard; what the game's look-at builder makes of it was not read).
+    pub fn of(call: &CameraFromToUp, frame: i32) -> Option<Self> {
+        let v3 = |v: [f32; 4]| [v[0], v[1], v[2]];
+        let (eye, to) = (v3(call.from), v3(call.to));
+        if !eye.iter().all(|x| x.is_finite()) {
+            return None;
+        }
+        let direction = normalized(std::array::from_fn(|i| to[i] - eye[i]))?;
+        let [near, far, lens_value, fov_y] = call.params;
+        Some(ScriptCamera {
+            pose: CameraPose { eye, direction },
+            up: v3(call.up),
+            near,
+            far,
+            lens_value,
+            fov_y,
+            frame,
+        })
+    }
+
+    /// The camera matrix the call writes ([`CameraPose::matrix_with_up`]).
+    pub fn matrix(&self) -> [f32; 16] {
+        self.pose.matrix_with_up(self.up)
+    }
+
+    /// The vertical field of view in degrees; `None` for a value a lens cannot have
+    /// (not above 0, not below 180 degrees, not a number).
+    pub fn fov_y_deg(&self) -> Option<f32> {
+        (self.fov_y > 0. && self.fov_y < std::f32::consts::PI).then(|| self.fov_y.to_degrees())
+    }
+}
+
+/// Which script camera a display draws with ([`LevelWorld::display_camera`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CameraSource {
+    /// The camera `Cam.SetCameraFromToUp__rrrffff` wrote this frame.
+    Script,
+    /// The follow camera under the override of `Cam.SetOverrideCamera__rr`.
+    Override,
+}
+
+/// The camera a display draws a frame with when a script has a say in it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DisplayCamera {
+    pub source: CameraSource,
+    pub pose: CameraPose,
+    /// The up vector to build the camera with.
+    pub up: [f32; 3],
+    /// Vertical field of view in degrees; `None`: the display keeps its own (a script
+    /// camera whose field of view no lens can have).
+    pub fov_y_deg: Option<f32>,
+    /// Near and far plane, level units.
+    pub near: f32,
+    pub far: f32,
+}
+
+impl DisplayCamera {
+    /// The camera matrix (camera to world, level units).
+    pub fn matrix(&self) -> [f32; 16] {
+        self.pose.matrix_with_up(self.up)
     }
 }
 
@@ -278,6 +388,12 @@ pub struct CameraState {
     /// The last `Cam.SetCameraFromToUp__rrrffff`.
     pub from_to_up: Option<CameraFromToUp>,
     pub from_to_up_calls: u64,
+    /// `PWorld.Frame` at the last such call ([`LevelWorld::script_camera`]).
+    pub from_to_up_frame: Option<i32>,
+    /// Ticks at whose end the camera of such a call stood, and those of them on which
+    /// the override was in as well (counts for reports).
+    pub script_camera_ticks: u64,
+    pub script_camera_ticks_with_override: u64,
     /// The last `Cam.SetDOFAndFog__fff` (as passed).
     pub dof_and_fog: Option<[f32; 3]>,
     pub motion_blur_clears: u64,
@@ -340,12 +456,17 @@ impl LevelWorld {
 
     /// One camera update: the override's blend takes a [`step`]. Called at the end of
     /// each tick ([`crate::LevelScripts::tick_level`]); nothing in a level without a
-    /// PWorld, which has no level camera.
+    /// PWorld, which has no level camera. Also counts the tick when a script wrote the
+    /// camera on it ([`Self::script_camera`]).
     ///
     /// FOUND: the step is the first thing the camera's apply function does (0x6eb960).
     /// INFERRED: once per tick, after the scripts (which of the two camera update
     /// functions that call it runs in a level frame, and where, was not read).
     pub fn step_camera(&mut self) {
+        // Written on this tick (its frame count has not gone up yet).
+        let script = self.camera.from_to_up_frame == Some(self.pworld.frame)
+            && self.script_camera().is_some();
+        self.camera.script_camera_ticks += u64::from(script);
         if self.world.is_none() {
             return;
         }
@@ -353,16 +474,85 @@ impl LevelWorld {
         o.blend = step(o.blend, o.target, o.rate);
         o.blend_max = o.blend_max.max(o.blend);
         o.ticks_in += u64::from(o.is_in());
+        let both = script && o.is_in();
+        self.camera.script_camera_ticks_with_override += u64::from(both);
+    }
+
+    /// The camera a script wrote with `Cam.SetCameraFromToUp__rrrffff`, while it stands:
+    /// from the call until the end of the tick after it. A script that wants the camera
+    /// calls every tick, so the camera stands as long as it does; one tick without a
+    /// call and the display has its own camera back. `None` also for a call without a
+    /// direction ([`ScriptCamera::of`]).
+    ///
+    /// FOUND: the call writes the render camera at once and nothing blends it.
+    /// INFERRED: how long it stands. The engine code that writes the render camera in a
+    /// frame without such a call was not read; a level camera would write it on its
+    /// next update. The tick is counted by `PWorld.Frame`, which goes up at the end of
+    /// [`crate::LevelScripts::tick_level`].
+    pub fn script_camera(&self) -> Option<ScriptCamera> {
+        let c = &self.camera;
+        let frame = c.from_to_up_frame?;
+        // 0: made on the tick in progress, or on the last one before its frame count
+        // went up. 1: made on the tick that just ended.
+        let age = self.pworld.frame.wrapping_sub(frame);
+        if !(0..=1).contains(&age) {
+            return None;
+        }
+        ScriptCamera::of(c.from_to_up.as_ref()?, frame)
+    }
+
+    /// The camera a display should draw the frame with when a script has a say in it,
+    /// given the follow camera it would draw with otherwise (eye and view direction,
+    /// level units). `None`: the display's own camera stands.
+    ///
+    /// 1. A camera written with `SetCameraFromToUp` this frame ([`Self::script_camera`]):
+    ///    that camera outright, with its up vector and its lens. FOUND: no blend.
+    /// 2. Else, while the override is in ([`Self::camera_pose`]): the follow camera
+    ///    mixed with the override, world +Y up, the override's lens.
+    ///
+    /// INFERRED: the order of the two. The first writes the render camera itself; the
+    /// second is the level camera's own update, and which of the two writes last in a
+    /// frame that has both was not read. No level of the measuring runs has both
+    /// ([`CameraState::script_camera_ticks_with_override`]).
+    pub fn display_camera(
+        &self,
+        follow_eye: [f32; 3],
+        follow_dir: [f32; 3],
+    ) -> Option<DisplayCamera> {
+        if let Some(script) = self.script_camera() {
+            return Some(DisplayCamera {
+                source: CameraSource::Script,
+                pose: script.pose,
+                up: script.up,
+                fov_y_deg: script.fov_y_deg(),
+                near: script.near,
+                far: script.far,
+            });
+        }
+        let pose = self.camera_pose(follow_eye, follow_dir)?;
+        Some(DisplayCamera {
+            source: CameraSource::Override,
+            pose,
+            up: [0., 1., 0.],
+            fov_y_deg: Some(OVERRIDE_FOV_DEG),
+            near: OVERRIDE_NEAR,
+            far: OVERRIDE_FAR,
+        })
     }
 
     /// `Cam.GetCameraMatrix__`: the render camera's matrix. The view a display wrote
-    /// ([`CameraState::view`]) when there is one. Without one: the default follow camera
+    /// ([`CameraState::view`]) when there is one. Without one: the matrix a script wrote
+    /// with `SetCameraFromToUp` while that camera stands (FOUND: the call writes the
+    /// matrix this native copies out); else the default follow camera
     /// ([`Self::default_follow_pose`]) under the override, and the identity when there
     /// is no player either (INFERRED stand-ins; they only decide where a scoreboard's
     /// zoom starts from).
     pub fn camera_matrix(&self) -> [f32; 16] {
         if let Some(view) = &self.camera.view {
             return view.camera;
+        }
+        if let Some(script) = self.script_camera() {
+            return script.matrix();
         }
         match self.default_follow_pose() {
             Some(follow) => self
@@ -542,6 +732,201 @@ mod tests {
         .matrix();
         assert!(close3([down[0], down[1], down[2]], [1., 0., 0.]));
         assert!(close3([down[8], down[9], down[10]], [0., 1., 0.]));
+    }
+
+    fn call(from: [f32; 3], to: [f32; 3], up: [f32; 3], params: [f32; 4]) -> CameraFromToUp {
+        CameraFromToUp {
+            from: [from[0], from[1], from[2], 1.],
+            to: [to[0], to[1], to[2], 1.],
+            up: [up[0], up[1], up[2], 0.],
+            params,
+        }
+    }
+
+    #[test]
+    fn a_script_camera_is_an_eye_a_direction_an_up_vector_and_a_lens() {
+        // Made-up numbers: an eye, a point 5 away along (0, 3, -4), near, far, the
+        // value that is kept only, and a field of view of one radian.
+        let lens = [10., 100_000., 0.25, 1.];
+        let c = ScriptCamera::of(
+            &call([100., 20., 500.], [100., 320., 100.], [0., 1., 0.], lens),
+            7,
+        )
+        .unwrap();
+        assert_eq!(c.pose.eye, [100., 20., 500.]);
+        assert!(close3(c.pose.direction, [0., 0.6, -0.8]));
+        assert_eq!(
+            (c.near, c.far, c.lens_value, c.fov_y, c.frame),
+            (10., 100_000., 0.25, 1., 7)
+        );
+        assert!(close(c.fov_y_deg().unwrap(), 57.295_78));
+        // The matrix: right, up, backward, eye; axes of length 1 at right angles.
+        let m = c.matrix();
+        let col = |n: usize| [m[n * 4], m[n * 4 + 1], m[n * 4 + 2]];
+        assert!(close3(col(0), [1., 0., 0.]));
+        assert!(close3(col(1), [0., 0.8, 0.6]));
+        assert!(close3(col(2), [0., -0.6, 0.8]));
+        assert_eq!(col(3), [100., 20., 500.]);
+        assert_eq!([m[3], m[7], m[11], m[15]], [0., 0., 0., 1.]);
+        // With world +Y as up it is the matrix of the pose alone.
+        assert_eq!(m, c.pose.matrix());
+        // The up vector as given: +X as up rolls the camera a quarter turn.
+        let rolled = ScriptCamera::of(&call([0.; 3], [0., 0., -1.], [1., 0., 0.], lens), 0)
+            .unwrap()
+            .matrix();
+        assert!(close3([rolled[0], rolled[1], rolled[2]], [0., -1., 0.]));
+        assert!(close3([rolled[4], rolled[5], rolled[6]], [1., 0., 0.]));
+        // An up vector that need not be of length 1 or at a right angle to the view.
+        let leaning = ScriptCamera::of(&call([0.; 3], [0., 0., -1.], [0., 3., -3.], lens), 0)
+            .unwrap()
+            .matrix();
+        assert!(close3([leaning[4], leaning[5], leaning[6]], [0., 1., 0.]));
+        // No up vector, or one along the view: world +Y, and +X as the right when the
+        // camera looks along Y.
+        let straight = call([0.; 3], [0., 0., -1.], [0.; 3], lens);
+        assert_eq!(ScriptCamera::of(&straight, 0).unwrap().matrix(), IDENTITY);
+        let along = call([0.; 3], [0., 0., -1.], [0., 0., 5.], lens);
+        assert_eq!(ScriptCamera::of(&along, 0).unwrap().matrix(), IDENTITY);
+        let down = ScriptCamera::of(&call([0.; 3], [0., -9., 0.], [0., 1., 0.], lens), 0)
+            .unwrap()
+            .matrix();
+        assert!(close3([down[0], down[1], down[2]], [1., 0., 0.]));
+        // No direction: the eye is the point looked at, or is not a number.
+        assert_eq!(
+            ScriptCamera::of(&call([1., 2., 3.], [1., 2., 3.], [0., 1., 0.], lens), 0),
+            None
+        );
+        assert_eq!(
+            ScriptCamera::of(
+                &call([f32::NAN, 0., 0.], [1., 2., 3.], [0., 1., 0.], lens),
+                0
+            ),
+            None
+        );
+        // A field of view no lens can have gives no field of view, and still a pose.
+        for fov in [0., -1., std::f32::consts::PI, 4., f32::NAN] {
+            let c = ScriptCamera::of(
+                &call([0.; 3], [0., 0., -1.], [0., 1., 0.], [1., 2., 0., fov]),
+                0,
+            );
+            assert_eq!(c.unwrap().fov_y_deg(), None, "{fov}");
+        }
+    }
+
+    #[test]
+    fn a_script_camera_stands_for_its_tick_and_goes_before_the_override() {
+        use lbp_script_vm::natives::World;
+        let mut w = LevelWorld {
+            world: Some(0),
+            ..Default::default()
+        };
+        w.pworld.frame = 500;
+        let follow = ([0., 0., 1000.], [0., 0., -1.]);
+        let tick = |w: &mut LevelWorld| {
+            w.step_camera();
+            w.advance_frame();
+        };
+        // Nothing set: the display's own camera stands.
+        assert_eq!(w.script_camera(), None);
+        assert_eq!(w.display_camera(follow.0, follow.1), None);
+        // An override, fully in after one tick at the rate 1.
+        w.set_override_camera([50., 0., 0., 1.], [1., 0., 0., 0.])
+            .unwrap();
+        w.set_override_camera_activation(true, 1.).unwrap();
+        tick(&mut w);
+        let over = w.display_camera(follow.0, follow.1).unwrap();
+        assert_eq!(over.source, CameraSource::Override);
+        assert_eq!(over.pose.eye, [50., 0., 0.]);
+        assert_eq!(
+            (over.fov_y_deg, over.near, over.far, over.up),
+            (
+                Some(OVERRIDE_FOV_DEG),
+                OVERRIDE_NEAR,
+                OVERRIDE_FAR,
+                [0., 1., 0.]
+            )
+        );
+        // A script writes the camera on this tick: it is the camera at once, with its
+        // own up vector and lens, whatever the override says.
+        let lens = [10., 100_000., 0., 1.];
+        w.set_camera(call([0., 10., 20.], [0., 10., -80.], [1., 0., 0.], lens))
+            .unwrap();
+        let script = w.script_camera().unwrap();
+        assert_eq!((script.frame, script.pose.eye), (501, [0., 10., 20.]));
+        let shown = w.display_camera(follow.0, follow.1).unwrap();
+        assert_eq!(shown.source, CameraSource::Script);
+        assert_eq!(shown.pose, script.pose);
+        assert_eq!(shown.up, [1., 0., 0.]);
+        assert!(close(shown.fov_y_deg.unwrap(), 57.295_78));
+        assert_eq!((shown.near, shown.far), (10., 100_000.));
+        assert_eq!(shown.matrix(), script.matrix());
+        // `GetCameraMatrix` without a view answers with the matrix the call wrote.
+        assert_eq!(w.camera_matrix(), script.matrix());
+        // After the tick it still stands: this is what a display draws.
+        tick(&mut w);
+        assert_eq!(
+            w.display_camera(follow.0, follow.1).map(|c| c.source),
+            Some(CameraSource::Script)
+        );
+        assert_eq!(
+            (
+                w.camera.script_camera_ticks,
+                w.camera.script_camera_ticks_with_override
+            ),
+            (1, 1)
+        );
+        // A tick without a call: the override has the camera again, and the last call's
+        // values are still there to read.
+        tick(&mut w);
+        assert_eq!(w.script_camera(), None);
+        assert_eq!(
+            w.display_camera(follow.0, follow.1).map(|c| c.source),
+            Some(CameraSource::Override)
+        );
+        assert!(w.camera.from_to_up.is_some());
+        assert_eq!(w.camera.script_camera_ticks, 1);
+        assert_ne!(w.camera_matrix(), script.matrix());
+        // The override out as well: nothing.
+        w.set_override_camera_activation(false, 1.).unwrap();
+        tick(&mut w);
+        assert_eq!(w.display_camera(follow.0, follow.1), None);
+        // A call every tick keeps the camera, and each tick is counted once.
+        for n in 0..3 {
+            let to = [0., 10., -80. - n as f32];
+            w.set_camera(call([0., 10., 20.], to, [0., 1., 0.], lens))
+                .unwrap();
+            tick(&mut w);
+            assert!(w.script_camera().is_some());
+        }
+        assert_eq!(
+            (
+                w.camera.script_camera_ticks,
+                w.camera.script_camera_ticks_with_override,
+                w.camera.from_to_up_calls
+            ),
+            (4, 1, 4)
+        );
+        // A call without a direction is no camera; a field of view no lens can have
+        // leaves the display its own.
+        w.set_camera(call([1.; 3], [1.; 3], [0., 1., 0.], lens))
+            .unwrap();
+        assert_eq!(w.display_camera(follow.0, follow.1), None);
+        w.set_camera(call(
+            [0.; 3],
+            [0., 0., -1.],
+            [0., 1., 0.],
+            [10., 20., 0., 0.],
+        ))
+        .unwrap();
+        let odd = w.display_camera(follow.0, follow.1).unwrap();
+        assert_eq!((odd.source, odd.fov_y_deg), (CameraSource::Script, None));
+        // A level without a PWorld has no level camera, and still the render camera.
+        let mut bare = LevelWorld::default();
+        bare.set_camera(call([0.; 3], [0., 0., -1.], [0., 1., 0.], lens))
+            .unwrap();
+        bare.step_camera();
+        assert!(bare.script_camera().is_some());
+        assert_eq!(bare.camera.script_camera_ticks, 1);
     }
 
     /// A camera at (0, 0, 1000) looking down -z, 60 degrees, 16:9.

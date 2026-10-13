@@ -4546,3 +4546,99 @@ fn d271_a_thread_that_waits_on_video_and_voice_over_ends_and_sets_its_flags() {
     assert_eq!(host.world.media.voice_over_requests(), 1);
     assert_eq!(host.calls["Audio.IsVoiceOverPlaying__"], 1);
 }
+
+/// D272: a camera written with `Cam.SetCameraFromToUp` is the camera a display draws
+/// with for as long as it is written each tick, and the world Thing a script moves takes
+/// the level with it. Made-up numbers.
+#[test]
+fn d272_a_written_camera_stands_for_its_tick_and_the_world_thing_moves_the_level() {
+    use lbp_runtime::{CameraSource, DisplayChange};
+    // The world Thing has a stored place of its own.
+    let mut things = level();
+    things[0].data.pos = Some(Pos {
+        bone_of: None,
+        anim_hash: 0,
+        world: translation(5., 0., 0.),
+    });
+    let mut vm = Vm::default();
+    let mut host = Bindings::new(LevelWorld::from_things(&things));
+    let mut level = LevelScripts::new(&vm, &host.world);
+    let v = |x: f32, y: f32, z: f32, w: f32| Value::Vec4([x, y, z, w]);
+    let f = Value::Float;
+    // What a script that wants the camera does each tick.
+    let write = |w: &mut LevelWorld, eye_z: f32| {
+        let args = [
+            v(0., 10., eye_z, 1.),
+            v(0., 10., -80., 1.),
+            v(0., 1., 0., 0.),
+            f(10.),
+            f(1e5),
+            f(0.),
+            f(1.),
+        ];
+        let r = native(w, "Cam", "SetCameraFromToUp__rrrffff", &args);
+        assert_eq!(r, Ok(Value::Void));
+    };
+    let follow = ([0., 0., 1000.], [0., 0., -1.]);
+    let shown = |w: &LevelWorld| w.display_camera(follow.0, follow.1);
+    assert_eq!(shown(&host.world), None);
+    for n in 0..3 {
+        let eye_z = 20. + n as f32;
+        write(&mut host.world, eye_z);
+        level.tick_level(&mut vm, &mut host, 1000);
+        let camera = shown(&host.world).unwrap();
+        assert_eq!(camera.source, CameraSource::Script);
+        assert_eq!(camera.pose.eye, [0., 10., eye_z]);
+        assert_eq!(camera.pose.direction, [0., 0., -1.]);
+        assert_eq!((camera.near, camera.far), (10., 1e5));
+        assert!((camera.fov_y_deg.unwrap() - 57.295_78).abs() < 1e-3);
+    }
+    // The matrix a script reads back is the one the call wrote.
+    assert_eq!(
+        native(&mut host.world, "Cam", "GetCameraMatrix__", &[]),
+        Ok(Value::Mat44(translation(0., 10., 22.)))
+    );
+    // One tick without the call and the display has its own camera again.
+    level.tick_level(&mut vm, &mut host, 1000);
+    assert_eq!(shown(&host.world), None);
+    assert_eq!(host.world.script_camera(), None);
+    let c = &host.world.camera;
+    assert_eq!(
+        (
+            c.from_to_up_calls,
+            c.script_camera_ticks,
+            c.script_camera_ticks_with_override
+        ),
+        (3, 3, 0)
+    );
+    assert_eq!(c.from_to_up.unwrap().from, [0., 10., 22., 1.]);
+
+    // The world Thing: where the level file has it, the level is not moved.
+    assert_eq!(host.world.world_thing_moved(), Some(identity()));
+    host.world.take_display_dirty();
+    // A script moves it: twice the size, at (1, 2, 3).
+    let mut to = identity();
+    (to[0], to[5], to[10]) = (2., 2., 2.);
+    to[12..15].copy_from_slice(&[1., 2., 3.]);
+    let moved = native(
+        &mut host.world,
+        "Thing",
+        "SetWorldPosition__m",
+        &[Value::Thing(Some(0)), Value::Mat44(to)],
+    );
+    assert_eq!(moved, Ok(Value::Void));
+    // From the stored place (5, 0, 0): the matrix that scales by 2 and puts the stored
+    // origin's point where the new matrix has it.
+    let by = host.world.world_thing_moved().unwrap();
+    let mut want = to;
+    want[12..15].copy_from_slice(&[1. - 10., 2., 3.]);
+    assert_eq!(by, want);
+    let dirty = host.world.take_display_dirty();
+    assert!(dirty.contains(&(0, DisplayChange::TRANSFORM)), "{dirty:?}");
+    // No world Thing, or one without a place: nothing to hang a level under.
+    assert_eq!(LevelWorld::default().world_thing_moved(), None);
+    assert_eq!(
+        LevelWorld::from_things(&self::level()).world_thing_moved(),
+        None
+    );
+}

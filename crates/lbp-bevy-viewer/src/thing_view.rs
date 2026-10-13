@@ -9,8 +9,9 @@
 //! Followed: the render mesh's visibility, its tint, and the Thing's world matrix (the
 //! mesh and the Thing's decorations). Not followed, and counted: a Thing that has no
 //! draw entity of its own (a shape, which is merged with others into a shared mesh; a
-//! Thing with no mesh), and a new editor colour of a mesh or colour of a shape, which
-//! the scene builds into the material when the level is loaded.
+//! Thing with no mesh), a new editor colour of a mesh or colour of a shape, which the
+//! scene builds into the material when the level is loaded, and (D272) another mesh on a
+//! Thing's PRenderMesh, which would need that mesh loaded while the scene is up.
 use crate::dual::{self, ViewerMaterial};
 use bevy::prelude::*;
 use lbp_runtime::{pack_colour, DisplayChange, LevelWorld, WHITE};
@@ -96,6 +97,9 @@ pub struct Followed {
     pub not_placed: usize,
     /// Tints that change only the alpha (red, green and blue stay white): not drawn.
     pub tint_alpha_not_drawn: usize,
+    /// Things whose PRenderMesh shows another mesh than the level file's: the scene
+    /// keeps the file's mesh.
+    pub mesh_not_drawn: usize,
 }
 
 impl Followed {
@@ -112,6 +116,7 @@ impl Followed {
         self.colour_not_drawn += o.colour_not_drawn;
         self.not_placed += o.not_placed;
         self.tint_alpha_not_drawn += o.tint_alpha_not_drawn;
+        self.mesh_not_drawn += o.mesh_not_drawn;
     }
 
     /// Whether anything in the scene was changed.
@@ -121,7 +126,7 @@ impl Followed {
 
     pub fn line(&self) -> String {
         format!(
-            "listed {}, with a draw entity {}; hidden {}, shown {}, tinted {}, tint taken off {}, placed {} ({} entities); not followed: no draw entity {}, editor or shape colour {}, tint of alpha only {}, no placement {}",
+            "listed {}, with a draw entity {}; hidden {}, shown {}, tinted {}, tint taken off {}, placed {} ({} entities); not followed: no draw entity {}, editor or shape colour {}, tint of alpha only {}, no placement {}, another mesh {}",
             self.listed,
             self.drawn,
             self.hidden,
@@ -133,7 +138,8 @@ impl Followed {
             self.not_drawn,
             self.colour_not_drawn,
             self.tint_alpha_not_drawn,
-            self.not_placed
+            self.not_placed,
+            self.mesh_not_drawn
         )
     }
 }
@@ -175,6 +181,8 @@ pub type Parts<'a> = (
 ///   clean-up reach it.
 /// - Place: every entity of the Thing is moved by the matrix that takes the Thing from
 ///   its stored world matrix to the one it has now.
+/// - Mesh: a Thing whose PRenderMesh shows another mesh than the level file's keeps the
+///   file's mesh in the scene, and is counted.
 pub fn apply(
     world: &LevelWorld,
     list: &[(u32, DisplayChange)],
@@ -199,6 +207,7 @@ pub fn apply(
             || packed(now.shape_colour) != packed(was.shape_colour)
             || tint_of(now.shape_tint) != tint_of(was.shape_tint);
         done.colour_not_drawn += usize::from(change.colour && other_colour);
+        done.mesh_not_drawn += usize::from(change.mesh && now.mesh != was.mesh);
         let Some(list) = things.entities.get(&thing).filter(|l| !l.is_empty()) else {
             done.not_drawn += 1;
             continue;

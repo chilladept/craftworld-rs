@@ -277,6 +277,21 @@ impl LevelWorld {
         }
     }
 
+    /// The matrix that takes the level's world Thing (the Thing with the PWorld) from
+    /// the place the level file gives it to its place now ([`ThingDisplay::moved_from`]):
+    /// the identity until a script moves it. `None` for a level without a world Thing,
+    /// a world Thing without a world matrix, or a stored matrix without an inverse.
+    ///
+    /// For a display that draws a whole level under its world Thing, as the Pod's
+    /// planets level is drawn (docs/level-scripts.md, part 23). The Things that hang
+    /// under the world Thing in the Thing tree are moved by the world itself and are on
+    /// the dirty list: a display must not move those twice.
+    pub fn world_thing_moved(&self) -> Option<[f32; 16]> {
+        let thing = self.world?;
+        self.thing_display(thing)?
+            .moved_from(&self.display_at_load(thing)?)
+    }
+
     /// The Things whose display values changed since this was last called, in Thing
     /// order, with what changed. A value written back to what it was before the last
     /// call is still listed: the list says what to look at again, the values say what to

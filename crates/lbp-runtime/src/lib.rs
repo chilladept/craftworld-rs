@@ -2269,6 +2269,7 @@ impl World for LevelWorld {
     fn set_camera(&mut self, camera: CameraFromToUp) -> Result<(), String> {
         self.camera.from_to_up = Some(camera);
         self.camera.from_to_up_calls += 1;
+        self.camera.from_to_up_frame = Some(self.pworld.frame);
         Ok(())
     }
     fn set_dof_and_fog(&mut self, values: [f32; 3]) -> Result<(), String> {

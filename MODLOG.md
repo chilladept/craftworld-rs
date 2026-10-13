@@ -1,5 +1,29 @@
 # Development log
 
+## 2026-10-13 - D272 the Pod's camera and its moving world
+
+RScript plan stage 6 (the Pod), PR 3. The planets level's world script writes the camera itself each tick
+(`Cam.SetCameraFromToUp`, bound and kept since part 6) and moves its world Thing each tick; nothing drew by
+either. FOUND (EBOOT 01.33, scoping notes): the native (0x2e9798) writes the render camera directly from
+eye, point and up, no blend; its floats are near, far, one value not read, and the field of view in
+radians. Runtime (`camera.rs`): `ScriptCamera`, `LevelWorld::script_camera` (stands for the tick it was
+written on), `LevelWorld::display_camera` (a written camera outright; else the follow camera under an
+override; else the display's own), `CameraPose::matrix_with_up`; `display.rs`:
+`LevelWorld::world_thing_moved`. Viewer (`level_play.rs`): `script_camera` applies the answer (eye, turn,
+field of view); `follow_world` places the root of the planets level from the moved world Thing (with
+`--pod-camera N`, no `--pod-shell`); with the shell layer the viewer keeps its own Pod camera (said once).
+New QA option `--level-scripts-hold-at N`. No native is new (249). MEASURED, 378 levels, 60 ticks (plain /
+trigger visit / pulsed): equal to D271 (Things stopped by a fault 3 / 3 / 3, unbound natives called
+41 / 73 / 73, unbound calls 61,480 / 862,986 / 868,663); `SetCameraFromToUp` 60 / 60 / 62 calls in 1
+level, 0 levels with a written camera and an override at once. pod_planets: eye (-500, -2000, 2000) after
+tick 1, (0, -250, 1130) from tick 452 on, 57.3 degrees. Captures (no focus taken) at ticks 30, 200, 440,
+600: from a steep look up at the ceiling to a level view of the room with Earth and Moon near the middle;
+washed out by the viewer's fog under `--preview-lighting`, clear under the default lighting. INFERRED: how
+long a written camera stands, that it goes before an override, vertical field of view, the level drawn
+under its world Thing. Left out: the shell layer under the script's camera, Earth and Moon by their own
+scripts, the pod's mesh swap in the scene (counted), depth of field and fog. Nothing compared against the
+game. +0 viewable, +0 Complete. `docs/level-scripts.md` part 23.
+
 ## 2026-10-13 - D271 video, voice-over and progression flags
 
 RScript plan stage 6 (the Pod), PR 2. The planets level's intro thread (451 ticks of zoom, then a wait on

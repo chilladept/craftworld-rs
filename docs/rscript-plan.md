@@ -241,6 +241,24 @@ UI (`UpdateUI__`) and photo natives are not planned.
   calls it, a function reached only through a table slot; not found who calls that
   slot and when). Not bound: `Video.PressedStartButton__`. Follows: PR 3 the viewer's
   Pod camera, PR 4 the pod computer is entered.
+- Stage 6, PR 3 (D272, part 23): the viewer shows what the planets level's script does.
+  `Cam.SetCameraFromToUp` was bound and kept since part 6; FOUND: it writes the render
+  camera directly (eye, point, up; near, far, one value not read, field of view in
+  radians), no blend. The runtime now says which camera a frame is drawn with
+  (`LevelWorld::display_camera`): a camera a script wrote on the last tick, outright;
+  else the follow camera under an override; else the display's own. The viewer puts
+  its camera there (`level_play.rs`), and with `--pod-camera N` hangs the planets level
+  under a root that follows the script-moved world Thing
+  (`LevelWorld::world_thing_moved`). No native is new (249). Over 378 levels the runs
+  equal D271 (Things stopped by a fault 3 / 3 / 3, unbound natives called 41 / 73 / 73);
+  one level writes the camera and none has a written camera and an override at once.
+  Captures of the intro at ticks 30, 200, 440 and at rest (tick 452 on: eye (0, -250,
+  1130), 57.3 degrees). INFERRED: a written camera stands for one tick and goes before
+  an override; the field of view is vertical; the whole level is drawn under its world
+  Thing (measured before in the running game, the engine code not read). Left out:
+  the pod shell layer under the script's camera (with `--pod-shell` the viewer keeps
+  its own Pod camera), Earth and Moon by their own scripts, the pod's mesh swap in the
+  scene (counted), depth of field and fog. Follows: PR 4 the pod computer is entered.
 
 ## Rules
 
