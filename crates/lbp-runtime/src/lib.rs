@@ -56,9 +56,12 @@ pub struct ThingState {
     pub inputs: Vec<Option<InputWire>>,
     /// The game's "deactivated" byte (Thing+0x7f): while set, the switch pass forces the
     /// Thing's outputs off ([`LevelWorld::update_switch`]). FOUND: the game derives it
-    /// from the microchip or circuit board holding the Thing. Nothing sets it here yet
-    /// ([`LevelWorld::set_deactivated`]).
+    /// from the microchip or circuit board holding the Thing
+    /// ([`LevelWorld::recompute_deactivated`]).
     pub deactivated: bool,
+    /// PMicrochip: the chip's circuit-board Thing. The components on the board are the
+    /// board's children.
+    pub circuit_board: Option<u32>,
 }
 
 /// A PSwitch at run time: the stored settings and its outputs. The switch pass
@@ -70,7 +73,20 @@ pub struct SwitchState {
     pub behavior: i32,
     /// In stored order; `None` for an output the level file leaves null.
     pub outputs: Vec<Option<SwitchOutputState>>,
+    /// ManualActivation as stored. The live value is [`SwitchMemory::manual`].
     pub manual_activation: SwitchInput,
+    /// ActivationHoldTime as stored: a timer's length in ticks.
+    pub activation_hold_time: i32,
+    /// BulletsRequired: the port count of an AND or OR gate, a counter's target.
+    pub bullets_required: i32,
+    /// The AND / OR output mode (stored in the RandomOffTimeMin slot).
+    pub gate_mode: i32,
+    pub team_filter: i32,
+    pub include_touching: i32,
+    /// RetardedOldJoint: the output deadband of [`compute_output`].
+    pub old_joint: bool,
+    /// CrappyOldLbp1Switch as stored (census only; see `force`).
+    pub old_lbp1_switch: bool,
     /// Re-fire flag (PSwitch+0xe3): the next update hands `true` to the targets of every
     /// output that is on, changed or not, and clears the flag. What sets it in the game
     /// is not established; nothing sets it here.
@@ -253,6 +269,9 @@ pub struct LevelWorld {
     /// is replaced by ternary 1 and activation 1.0 (`on`) or ternary 0 and activation 0.0,
     /// with the stored player. The deactivated forcing still applies. Not a game feature.
     pub switch_pulse: Option<bool>,
+    /// Set once the deactivated flags have their start values
+    /// ([`LevelWorld::prepare_switches`]).
+    pub switches_prepared: bool,
 }
 
 /// VM value for a stored script field; `None` for a field the instance does not store.
@@ -369,8 +388,26 @@ impl LevelWorld {
                             })
                             .collect(),
                         manual_activation: signal(&s.manual_activation),
-                        ..Default::default()
+                        activation_hold_time: s.activation_hold_time,
+                        bullets_required: s.bullets_required,
+                        gate_mode: s.random_off_time_min,
+                        team_filter: s.team_filter,
+                        include_touching: s.include_touching,
+                        old_joint: s.retarded_old_joint,
+                        old_lbp1_switch: s.crappy_old_lbp1_switch,
+                        force: false,
+                        memory: SwitchMemory {
+                            updates: 0,
+                            manual: signal(&s.manual_activation),
+                            count: s.bullets_detected,
+                            timer: s.timer_count,
+                        },
                     }),
+                    circuit_board: t
+                        .data
+                        .microchip
+                        .and_then(|m| m.circuit_board)
+                        .and_then(handle),
                     ..Default::default()
                 })
                 .collect(),
@@ -1414,8 +1451,8 @@ pub struct ReactionReport {
     pub without_script: usize,
     /// Visited targets whose script is not on the list ([`reaction_for_script`]).
     pub not_whitelisted: BTreeMap<u32, usize>,
-    /// Listed scripts whose Thing has a PSwitch that takes the object kind
-    /// ([`reaction_shadowed_by_switch`]); no call.
+    /// Listed scripts whose Thing gets its object kind from a part tested before the
+    /// script ([`kind_before_script`]); no call.
     pub shadowed_by_switch: BTreeMap<u32, usize>,
     /// Listed scripts whose class is not loaded or has no code for the function.
     pub no_function: BTreeMap<u32, usize>,
@@ -1669,6 +1706,7 @@ impl LevelScripts {
         budget: u64,
     ) -> StepReport {
         let mut report = StepReport::default();
+        host.world.prepare_switches();
         for switch in host.world.switch_order().to_vec() {
             for v in host.world.update_switch(switch) {
                 let r = &mut report.reactions;
@@ -1683,7 +1721,7 @@ impl LevelScripts {
                     *r.not_whitelisted.entry(guid).or_default() += 1;
                     continue;
                 };
-                if reaction_shadowed_by_switch(target.and_then(|t| t.switch.as_ref())) {
+                if target.is_some_and(|t| kind_before_script(t).is_some()) {
                     *r.shadowed_by_switch.entry(guid).or_default() += 1;
                     continue;
                 }

@@ -1116,3 +1116,88 @@ fn stage3b_switch_reactions_go_to_listed_scripts_only() {
     assert_eq!(t.reactions.to_stopped, [(18256, 1)].into());
     assert!(t.reactions.calls_b.is_empty());
 }
+
+/// Things 0 and 1: batteries, both on, wired to ports 0 and 1 of an AND gate (Thing 2);
+/// the gate feeds an inverted NOT gate (Thing 3), which feeds Thing 4, a listed script.
+fn gate_chain_level() -> Vec<ThingRecord> {
+    let signal = |on: bool| SwitchSignal {
+        activation: f32::from(u8::from(on)),
+        ternary: i32::from(on),
+        player: -1,
+    };
+    let part = |switch_type, on, target: (usize, i32)| Switch {
+        switch_type,
+        outputs: vec![Some(SwitchOutput {
+            signal: signal(on),
+            targets: vec![(Some(target.0), target.1)],
+        })],
+        manual_activation: signal(on),
+        bullets_required: 2,
+        ..Default::default()
+    };
+    let mut t: Vec<ThingRecord> = (0..5)
+        .map(|index| ThingRecord {
+            index,
+            ..Default::default()
+        })
+        .collect();
+    t[0].data.switch = Some(part(28, true, (2, 0)));
+    t[1].data.switch = Some(part(28, true, (2, 1)));
+    t[2].data.switch = Some(part(14, true, (3, 0)));
+    t[3].data.switch = Some(Switch {
+        inverted: true,
+        ..part(23, false, (4, 0))
+    });
+    t[4].data.script = Some(ScriptPart {
+        script: Some(desc(18256)),
+        fields: vec![field("count", ScriptValue::Int(-1))],
+    });
+    t
+}
+
+#[test]
+fn stage3b_a_gate_chain_fires_the_reaction_true_then_false() {
+    use lbp_runtime::REACTION_B;
+    let mut vm = Vm::default();
+    vm.load(reactor("Listed", REACTION_B, 1, 4), Some(18256));
+    let mut host = Bindings::new(LevelWorld::from_things(&gate_chain_level()));
+    let mut level = LevelScripts::new(&vm, &host.world);
+    let count = |host: &mut Bindings<LevelWorld>| {
+        host.world
+            .get_member(MemberKind::Thing, &Value::Thing(Some(4)), "X", "count")
+            .unwrap()
+    };
+    let set_battery = |host: &mut Bindings<LevelWorld>, on: bool| {
+        let manual = &mut host.world.things[1].switch.as_mut().unwrap().memory.manual;
+        (manual.activation, manual.ternary) = (f32::from(u8::from(on)), i32::from(on));
+    };
+    // The stored state is settled: both batteries on, AND on, NOT off. Nothing fires.
+    for _ in 0..2 {
+        let t = level.tick_level(&mut vm, &mut host, 1000);
+        assert_eq!(t.reactions, Default::default());
+    }
+    assert_eq!(count(&mut host), Value::Int(-1));
+    // One battery off: the AND falls and the NOT rises within the same pass.
+    set_battery(&mut host, false);
+    let t = level.tick_level(&mut vm, &mut host, 1000);
+    assert!(t.faults.is_empty(), "{:?}", t.faults);
+    // Visited: the gate's port (falling), the NOT's port (falling), the script (rising).
+    assert_eq!(
+        (t.reactions.targets_visited, t.reactions.targets_on),
+        (3, 1)
+    );
+    assert_eq!(t.reactions.calls_b, [(18256, 1)].into());
+    assert_eq!(count(&mut host), Value::Bool(true));
+    // Held: no call.
+    let t = level.tick_level(&mut vm, &mut host, 1000);
+    assert_eq!(t.reactions, Default::default());
+    // Back on: the NOT falls, the script gets false.
+    set_battery(&mut host, true);
+    let t = level.tick_level(&mut vm, &mut host, 1000);
+    assert_eq!(
+        (t.reactions.targets_visited, t.reactions.targets_on),
+        (3, 2)
+    );
+    assert_eq!(t.reactions.calls_b, [(18256, 1)].into());
+    assert_eq!(count(&mut host), Value::Bool(false));
+}
