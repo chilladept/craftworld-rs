@@ -3,8 +3,9 @@
 //! `LevelScripts` schedule as the `level_scripts` example: `OnCreate__` on the first
 //! tick, then each tick resume suspended scripts and run `Update__`. With `--play-sackboy`
 //! the Sackboy is the player the level's triggers test, so their `Enter`, `Inside` and
-//! `Leave` scripts run as he walks. A small window shows the counts. Nothing the scripts
-//! change is drawn yet; this is the clock and the counts.
+//! `Leave` scripts run as he walks. A small window shows the counts. Of what the scripts
+//! change, the open messages are drawn (part 17, `speech_overlay.rs`): speech bubbles at
+//! their Things and the subtitle. The rest is the clock and the counts.
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts, EguiPrimaryContextPass};
 use lbp_catalog::{attachment::AttachedSource, LoadControl};
@@ -34,6 +35,8 @@ struct Play {
     hide_ui: bool,
     /// The play-mode Sackboy's Thing in the script world, once he exists.
     player: Option<u32>,
+    /// Messages that entered the list and messages closed, at the last printed line.
+    messages_printed: (u64, u64),
 }
 
 fn value(all: &[String], flag: &str) -> Option<String> {
@@ -87,9 +90,21 @@ pub fn install(app: &mut App) -> Result<(), String> {
             let bytes = level_scene::read_level_bytes(&source, &key, &control)?;
             let report = lbp_level::read(&bytes, lbp_level::Limits::default(), &|| false)
                 .map_err(|e| e.to_string())?;
-            let world = LevelWorld::from_things(&report.things);
-            let header =
-                format!("Level scripts: {identity}; scripts loaded {loaded} (not read {not_read})");
+            let mut world = LevelWorld::from_things(&report.things);
+            // The English tables, patch first, as the `level_scripts` example loads them
+            // (INFERRED that these are the tables loaded while a level plays). A table
+            // that cannot be read is left out: the scripts then give their own text for
+            // a missing key and a bubble shows no close prompt.
+            let (strings, _) = lbp_preview::story::load_strings(&source, &catalog, &control);
+            world.translations = [strings.patch, strings.base]
+                .into_iter()
+                .flatten()
+                .map(std::sync::Arc::new)
+                .collect();
+            let header = format!(
+                "Level scripts: {identity}; scripts loaded {loaded} (not read {not_read}); translation tables {}",
+                world.translations.len()
+            );
             Ok((vm, world, header))
         })
         .map_err(|e| format!("level scripts thread: {e}"))?
@@ -120,10 +135,11 @@ pub fn install(app: &mut App) -> Result<(), String> {
         header,
         hide_ui,
         player: None,
+        messages_printed: (0, 0),
     })
     .insert_resource(Time::<Fixed>::from_hz(f64::from(TICK_HZ)))
     .add_systems(FixedUpdate, tick)
-    .add_systems(EguiPrimaryContextPass, window);
+    .add_systems(EguiPrimaryContextPass, (speech, window));
     Ok(())
 }
 
@@ -167,6 +183,54 @@ fn tick(
     p.ticks_with_faults += usize::from(!r.faults.is_empty());
     note(p, &r);
     p.totals.absorb(r);
+    print_messages(p);
+}
+
+/// One line per tick on which a message entered the list or was closed: the check of the
+/// message display that needs no screenshot.
+fn print_messages(p: &mut Play) {
+    let m = &p.host.world.messages;
+    let sum = m.totals();
+    let now = (sum.opened + sum.replaced, m.closed);
+    if now == p.messages_printed {
+        return;
+    }
+    p.messages_printed = now;
+    let o = p.host.world.message_overlay();
+    let anchors: Vec<(u32, [f32; 3])> = o.bubbles.iter().map(|b| (b.anchor, b.position)).collect();
+    println!(
+        "Messages at tick {}: open {}, opened {}, written over {}, closed {}; drawn: bubbles {} at (Thing, place) {anchors:?}, subtitle {}; not drawn: prompts {}, empty {}, unplaced {}",
+        p.scripts.ticks,
+        m.open.len(),
+        sum.opened,
+        sum.replaced,
+        m.closed,
+        o.bubbles.len(),
+        u8::from(o.subtitle.is_some()),
+        o.prompts_not_drawn,
+        o.empty_not_drawn,
+        o.unplaced_not_drawn
+    );
+}
+
+/// Draws the open messages over the scene (also under `--qa-hide-ui`: they are part of
+/// the level, not a panel). The anchor goes from level units to display units by the
+/// level's display matrix and to the screen through the camera.
+fn speech(
+    mut contexts: EguiContexts,
+    play: NonSend<Play>,
+    display: Option<Res<crate::sackboy_play::LevelDisplay>>,
+    cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+) -> Result {
+    let (Some(display), Ok((camera, camera_at))) = (display, cameras.single()) else {
+        return Ok(());
+    };
+    let overlay = play.host.world.message_overlay();
+    crate::speech_overlay::draw(contexts.ctx_mut()?, &overlay, |at| {
+        let at = display.0.transform_point3(Vec3::from(at));
+        camera.world_to_viewport(camera_at, at).ok().map(Into::into)
+    });
+    Ok(())
 }
 
 fn line(r: &StepReport) -> String {
@@ -206,6 +270,18 @@ fn window(mut contexts: EguiContexts, play: NonSend<Play>) -> Result {
             ui.label(format!(
                 "Triggers ({}): enter {enter} ({e} run), inside {inside} ({i} run), leave {leave} ({l} run)",
                 if play.player.is_some() { "player in play" } else { "no player" }
+            ));
+            let messages = &play.host.world.messages;
+            let sum = messages.totals();
+            let shown = play.host.world.message_overlay();
+            ui.label(format!(
+                "Messages: open {} (drawn: bubbles {}, subtitle {}); opened {}, written over {}, closed {}",
+                messages.open.len(),
+                shown.bubbles.len(),
+                u8::from(shown.subtitle.is_some()),
+                sum.opened,
+                sum.replaced,
+                messages.closed
             ));
             let mut unbound: Vec<_> = play.host.unbound.iter().collect();
             unbound.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));

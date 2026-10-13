@@ -3048,3 +3048,78 @@ fn d265_the_messaging_natives_open_and_close_the_worlds_messages() {
         (14, 11, 2, 1)
     );
 }
+
+#[test]
+fn d266_the_overlay_reads_the_worlds_messages_and_tables() {
+    use lbp_resource::translation::lams_key;
+    use lbp_runtime::{display_text, CLOSE_PROMPT_KEY};
+    let mut w = LevelWorld::from_things(&chip_level());
+    let manager = "GameMessagingManager";
+    let six = "__Q6StringQ6StringQ5Thingbib";
+    let say = |w: &mut LevelWorld, form: &str, args: &[Value]| {
+        let name = format!("Messaging_NewTriggerMessage{form}{six}");
+        assert_eq!(native(w, manager, &name, args), Ok(Value::Void), "{name}");
+    };
+    // No table: the viewer has no prompt string, and nothing to draw yet.
+    assert_eq!(w.close_prompt(), None);
+    assert_eq!(w.message_overlay(), Default::default());
+    // A prompt bubble from Thing 8 and one without a prompt from Thing 3 on its chip
+    // (Thing 1), with made-up markup; a bubble with no text; a subtitle.
+    let marked = "Hello <em>there</em><br>friend";
+    say(
+        &mut w,
+        "",
+        &bubble(marked, Some("ACTOR_TAG"), Some(8), [false, false], 0),
+    );
+    say(
+        &mut w,
+        "NoPrompt",
+        &bubble("Press <icon cross>", None, Some(3), [false, false], 0),
+    );
+    say(
+        &mut w,
+        "Think",
+        &bubble("", None, Some(8), [false, false], 0),
+    );
+    let subtitle = [
+        Value::Str("<i>Spoken</i> line".into()),
+        Value::Thing(Some(8)),
+        Value::Bool(false),
+        Value::Bool(true),
+    ];
+    let name = "Messaging_NewTriggerMessageSubtitles__Q6StringQ5Thingbb";
+    native(&mut w, manager, name, &subtitle).unwrap();
+    let o = w.message_overlay();
+    let drawn: Vec<_> = o
+        .bubbles
+        .iter()
+        .map(|b| (b.anchor, b.position, b.text.as_str()))
+        .collect();
+    assert_eq!(
+        drawn,
+        [
+            (8, [1., 2., 3.], "Hello there\nfriend"),
+            (1, [50., 0., 0.], "Press [cross]"),
+        ]
+    );
+    // The tag is in no table yet: no name and no prompt line.
+    assert_eq!((&o.bubbles[0].name, &o.bubbles[0].prompt), (&None, &None));
+    assert_eq!(o.subtitle.as_deref(), Some("Spoken line"));
+    assert_eq!((o.empty_not_drawn, o.prompts_not_drawn), (1, 0));
+    // The message keeps the text as the script passed it.
+    assert_eq!(w.messages.open[0].text, marked);
+    assert_eq!(display_text(marked), o.bubbles[0].text);
+
+    // With a table the prompt bubble gets the close prompt's string, patch table first.
+    let base = translation_table(&[(CLOSE_PROMPT_KEY, "Shut"), (lams_key("OTHER"), "x")]);
+    w.translations = vec![base.clone()];
+    assert_eq!(w.close_prompt(), Some("Shut"));
+    w.translations = vec![translation_table(&[(CLOSE_PROMPT_KEY, "Go away")]), base];
+    assert_eq!(w.close_prompt(), Some("Go away"));
+    let o = w.message_overlay();
+    assert_eq!(o.bubbles[0].prompt.as_deref(), Some("Go away"));
+    assert_eq!(o.bubbles[1].prompt, None);
+    // The anchor moves, and the bubble with it.
+    w.things[8].world_matrix.as_mut().unwrap()[12] = 70.;
+    assert_eq!(w.message_overlay().bubbles[0].position, [70., 2., 3.]);
+}

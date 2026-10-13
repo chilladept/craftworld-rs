@@ -26,10 +26,12 @@ use lbp_script_vm::{ClassId, Host, MemberKind, ObjectId, Step, Task, Value, Vm};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+mod message_view;
 mod messages;
 mod sensors;
 mod switches;
 pub mod transform;
+pub use message_view::*;
 pub use messages::*;
 pub use switches::*;
 
