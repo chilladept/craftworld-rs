@@ -2565,7 +2565,7 @@ fn d263_game_state_queries_and_the_scoring_slot_test() {
 #[test]
 fn d263_recorded_calls_keep_their_arguments_for_a_later_stage() {
     use lbp_runtime::{EngineRequest, KEPT_REQUESTS, MAX_REQUESTS};
-    use lbp_script_vm::natives::RECORDED_ONLY;
+    use lbp_script_vm::natives::{MESSAGING, RECORDED_ONLY};
     let mut things = level();
     things[0].data.world = Some(WorldPart {
         frame: 9,
@@ -2655,17 +2655,43 @@ fn d263_recorded_calls_keep_their_arguments_for_a_later_stage() {
             "SetGlobalSettingsAudioTo__ifffffffffff",
             audio.clone(),
         ),
+        (
+            manager,
+            "Messaging_NewTriggerMessageCaption__Q6StringQ6StringQ5Thingbib",
+            message.clone(),
+        ),
+        (
+            manager,
+            "Messaging_NewTriggerMessageCaptionNoPrompt__Q6StringQ6StringQ5Thingbib",
+            message.clone(),
+        ),
+        (
+            manager,
+            "Messaging_NewTriggerMessageThink__Q6StringQ6StringQ5Thingbib",
+            message.clone(),
+        ),
+        (
+            manager,
+            "Messaging_NewTriggerMessageThinkNoPrompt__Q6StringQ6StringQ5Thingbib",
+            message.clone(),
+        ),
     ];
     for (class, name, args) in &calls {
         assert_eq!(native(&mut w, class, name, args), Ok(Value::Void), "{name}");
-        assert!(RECORDED_ONLY.contains(&(*class, *name)), "{name}");
+        // The messaging natives run the message list; the others are recorded only.
+        let messaging = *class == manager && MESSAGING.contains(name);
+        assert_ne!(
+            messaging,
+            RECORDED_ONLY.contains(&(*class, *name)),
+            "{name}"
+        );
     }
-    // With the 13 of stage 4 these are all the recorded-only natives.
-    assert_eq!(calls.len() + 13, RECORDED_ONLY.len());
+    // With the 13 of stage 4 these are all the recorded-only and messaging natives.
+    assert_eq!(calls.len() + 13, RECORDED_ONLY.len() + MESSAGING.len());
     // Every call is counted once by name.
     assert_eq!(w.engine_calls.len(), calls.len());
     assert!(w.engine_calls.values().all(|n| *n == 1));
-    // Ten of them are kept with their arguments, in call order, with the frame.
+    // Fourteen of them are kept with their arguments, in call order, with the frame.
     let kept: Vec<&str> = w.requests.iter().map(|r| r.name).collect();
     assert_eq!(kept, KEPT_REQUESTS);
     assert_eq!(
@@ -2794,4 +2820,231 @@ fn d264_sensors_read_the_level_parts() {
     w.move_player(p, [1005., 0., 0.], (-1., 1.));
     w.update_switches();
     assert_eq!(out(&w, 3).ternary, 0);
+}
+
+/// The six arguments of a bubble native.
+fn bubble(
+    text: &str,
+    actor: Option<&str>,
+    thing: Option<u32>,
+    flags: [bool; 2],
+    pos: i32,
+) -> Vec<Value> {
+    vec![
+        Value::Str(text.into()),
+        actor.map_or(Value::Object(None), |a| Value::Str(a.into())),
+        Value::Thing(thing),
+        Value::Bool(flags[0]),
+        Value::Int(pos),
+        Value::Bool(flags[1]),
+    ]
+}
+
+#[test]
+fn d265_the_messaging_natives_open_and_close_the_worlds_messages() {
+    use lbp_resource::translation::lams_key;
+    use lbp_runtime::{BubbleStyle, MessageKind, CLOSE_PROMPT_KEY};
+    let mut things = chip_level();
+    things[0].data.world = Some(WorldPart {
+        frame: 40,
+        ..Default::default()
+    });
+    let mut w = LevelWorld::from_things(&things);
+    let manager = "GameMessagingManager";
+    let six = "__Q6StringQ6StringQ5Thingbib";
+    let say = |w: &mut LevelWorld, form: &str, args: &[Value]| {
+        let name = format!("Messaging_NewTriggerMessage{form}{six}");
+        assert_eq!(native(w, manager, &name, args), Ok(Value::Void), "{name}");
+    };
+    let event = |w: &mut LevelWorld, m: i32, e: i32, t: Option<u32>| {
+        let args = [
+            Value::Int(m),
+            Value::Int(e),
+            Value::Thing(t),
+            Value::Bool(false),
+        ];
+        native(w, manager, "Messaging_NewGameEvent__iiQ5Thingb", &args).unwrap();
+    };
+    w.translations = vec![translation_table(&[(
+        lams_key("ACTOR_TAG"),
+        "Made-up Name",
+    )])];
+
+    // A bubble with a prompt from Thing 8, which has its own position. The actor name is
+    // a tag of the loaded table (the level slot's type is 0).
+    say(
+        &mut w,
+        "",
+        &bubble("Hello there", Some("ACTOR_TAG"), Some(8), [true, false], 7),
+    );
+    let m = w.messages.open[0].clone();
+    assert_eq!(
+        (m.kind, m.style),
+        (MessageKind::Bubble, BubbleStyle::Speech)
+    );
+    assert_eq!((m.message_type(), m.id), (1, 1));
+    assert_eq!(
+        (m.text.as_str(), m.actor.as_deref()),
+        ("Hello there", Some("Made-up Name"))
+    );
+    assert_eq!((m.thing, m.anchor, m.bubble_pos), (Some(8), Some(8), 7));
+    assert!(m.triggered_once && !m.prevent_close && m.has_close_prompt());
+    assert_eq!((m.frame, m.age(45)), (40, 5));
+    assert_eq!(w.message_position(&m), Some([1., 2., 3.]));
+    assert_eq!(CLOSE_PROMPT_KEY, 0xfc6e3b66);
+    // The same Thing asks again: dropped. The request is still kept.
+    say(
+        &mut w,
+        "",
+        &bubble("Again", None, Some(8), [false, false], 0),
+    );
+    assert_eq!(w.messages.open.len(), 1);
+    assert_eq!((w.requests.len(), w.messages.totals().duplicate), (2, 1));
+
+    // A bubble without a prompt from Thing 3 on a chip: placed by the chip, Thing 1. A
+    // tag in no table and a null name give no actor; prevent close is kept.
+    say(
+        &mut w,
+        "NoPrompt",
+        &bubble("On a chip", Some("NO_SUCH_TAG"), Some(3), [false, true], 0),
+    );
+    let m = w.messages.open[1].clone();
+    assert_eq!((m.kind, m.message_type()), (MessageKind::BubbleNoPrompt, 2));
+    assert_eq!(
+        (m.thing, m.anchor, m.actor.as_deref()),
+        (Some(3), Some(1), None)
+    );
+    assert!(m.prevent_close && !m.has_close_prompt());
+    assert_eq!(m.actor_tag.as_deref(), Some("NO_SUCH_TAG"));
+    assert_eq!(w.message_position(&m), Some([50., 0., 0.]));
+    // Another Thing's bubble without a prompt takes its place; the prompt bubble stays.
+    say(
+        &mut w,
+        "NoPrompt",
+        &bubble("Second", None, Some(6), [false, false], 0),
+    );
+    let texts: Vec<&str> = w.messages.open.iter().map(|m| m.text.as_str()).collect();
+    assert_eq!(texts, ["Hello there", "Second"]);
+    assert_eq!(
+        (w.messages.open[1].id, w.messages.open[1].anchor),
+        (2, Some(4))
+    );
+
+    // The caption and think forms are types of their own, with and without a prompt.
+    for (form, kind, style, ty) in [
+        ("Caption", MessageKind::Bubble, BubbleStyle::Caption, 0x5d),
+        (
+            "CaptionNoPrompt",
+            MessageKind::BubbleNoPrompt,
+            BubbleStyle::Caption,
+            0x5e,
+        ),
+        ("Think", MessageKind::Bubble, BubbleStyle::Think, 0x5f),
+        (
+            "ThinkNoPrompt",
+            MessageKind::BubbleNoPrompt,
+            BubbleStyle::Think,
+            0x60,
+        ),
+    ] {
+        say(
+            &mut w,
+            form,
+            &bubble(form, None, Some(8), [false, false], 0),
+        );
+        let m = w.messages.open.last().unwrap();
+        assert_eq!(
+            (m.kind, m.style, m.message_type()),
+            (kind, style, ty),
+            "{form}"
+        );
+        assert_eq!(m.text, form);
+    }
+    assert_eq!(w.messages.open.len(), 6);
+
+    // Subtitles: (text, Thing, flag, has voice). A second one is written over the first.
+    let subtitles = |w: &mut LevelWorld, text: &str, thing: u32| {
+        let args = [
+            Value::Str(text.into()),
+            Value::Thing(Some(thing)),
+            Value::Bool(false),
+            Value::Bool(true),
+        ];
+        let name = "Messaging_NewTriggerMessageSubtitles__Q6StringQ5Thingbb";
+        native(w, manager, name, &args).unwrap();
+    };
+    subtitles(&mut w, "Line one", 8);
+    subtitles(&mut w, "Line two", 6);
+    let m = w.messages.open.last().unwrap();
+    assert_eq!(
+        (m.kind, m.text.as_str(), m.has_voice),
+        (MessageKind::Subtitles, "Line two", true)
+    );
+    // A level-link prompt has no text.
+    let link = [Value::Thing(Some(8))];
+    native(
+        &mut w,
+        manager,
+        "Messaging_NewLevelLinkPrompt__Q5Thing",
+        &link,
+    )
+    .unwrap();
+    assert_eq!(w.messages.open.len(), 8);
+    let m = w.messages.open.last().unwrap();
+    assert_eq!((m.kind, m.anchor), (MessageKind::LevelLinkPrompt, Some(8)));
+    assert!(m.text.is_empty());
+
+    // A script closes its own messages: event 3 on manager 4 with its Thing. Thing 8
+    // has the prompt bubble, the four caption and think bubbles and the link prompt.
+    event(&mut w, 0, 3, Some(8));
+    event(&mut w, 4, 2, Some(8));
+    assert_eq!(w.messages.open.len(), 8);
+    event(&mut w, 4, 3, Some(8));
+    let left: Vec<_> = w.messages.open.iter().map(|m| (m.kind, m.thing)).collect();
+    assert_eq!(
+        left,
+        [
+            (MessageKind::BubbleNoPrompt, Some(6)),
+            (MessageKind::Subtitles, Some(6)),
+        ]
+    );
+    assert_eq!((w.messages.closed, w.messages.events_elsewhere), (6, 1));
+    // A wormhole prompt about no Thing: no anchor and no position.
+    let hole = [Value::Thing(None)];
+    native(
+        &mut w,
+        manager,
+        "Messaging_NewWormHolePrompt__Q5Thing",
+        &hole,
+    )
+    .unwrap();
+    let m = w.messages.open.last().unwrap();
+    assert_eq!(
+        (m.kind, m.thing, m.anchor),
+        (MessageKind::WormHolePrompt, None, None)
+    );
+    assert!(w.message_position(m).is_none());
+    // Thing 8 may speak again, and gets a new id.
+    say(
+        &mut w,
+        "",
+        &bubble("Back", None, Some(8), [false, false], 0),
+    );
+    assert_eq!(w.messages.open.last().unwrap().id, 10);
+    // In a slot of another type the actor name is shown as passed.
+    w.level_slot_id = (2, 5);
+    say(
+        &mut w,
+        "Think",
+        &bubble("Hm", Some("ACTOR_TAG"), Some(8), [false, false], 0),
+    );
+    assert_eq!(
+        w.messages.open.last().unwrap().actor.as_deref(),
+        Some("ACTOR_TAG")
+    );
+    let sum = w.messages.totals();
+    assert_eq!(
+        (sum.requested, sum.opened, sum.replaced, sum.duplicate),
+        (14, 11, 2, 1)
+    );
 }

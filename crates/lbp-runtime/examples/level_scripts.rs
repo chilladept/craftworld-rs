@@ -38,12 +38,17 @@
 //! translation tables (the two GUIDs the story browser reads) are handed to every level
 //! world, patch first, so `LAMS.IsInLams__i` and `Translate__i` answer from them;
 //! `translation_tables` says what was loaded. `play_all.requests_kept` counts the recorded
-//! calls kept with their arguments, by name. Names and counts only; no bytecode. Output: a NEW JSON file under
+//! calls kept with their arguments, by name. `play_all.messages` counts what the messaging
+//! natives did to the world's message list: requests, messages opened, written over and
+//! dropped by type, their text (a string of a loaded table, another string, empty), actor
+//! names, anchors, messages closed and those open at the end.
+//! Names and counts only; no bytecode. Output: a NEW JSON file under
 //! ignored `local-analysis/`. Counting unit: Thing with a PScript part (instances) or
 //! distinct script class (function names).
 use lbp_catalog::{attachment::AttachedSource, LoadControl};
 use lbp_runtime::{
-    instances, LevelScripts, LevelWorld, Outcome, ReactionReport, Runner, StepReport,
+    instances, BubbleStyle, LevelScripts, LevelWorld, MessageKind, Outcome, ReactionReport, Runner,
+    StepReport,
 };
 use lbp_script_vm::natives::Bindings;
 use lbp_script_vm::Vm;
@@ -610,6 +615,150 @@ fn outputs_changed(world: &LevelWorld, active: bool) -> BTreeMap<i32, usize> {
     changed
 }
 
+/// What a play run did to the message list (`LevelWorld::messages`). Units: one call of a
+/// messaging native (request); one message that entered the list, new or written over
+/// another (the text, actor and anchor counts); one message (the rest).
+#[derive(Default, Clone)]
+struct MessageSums {
+    /// By type: requests, opened as a new message, written over another, dropped as a
+    /// duplicate.
+    by_type: BTreeMap<&'static str, [u64; 4]>,
+    /// Bubbles and subtitles that entered the list, by text: a string of a loaded
+    /// translation table, another string, empty.
+    text: [u64; 3],
+    /// Entered with an actor name argument; with a name to show.
+    actors: [u64; 2],
+    /// Entered with an anchor Thing; without one.
+    anchors: [u64; 2],
+    pushed_out: u64,
+    closed: u64,
+    events_without_effect: u64,
+    events_elsewhere: u64,
+    open_at_end: u64,
+    /// Entered messages past the log's limit (not in the text, actor and anchor counts).
+    not_logged: u64,
+}
+
+fn message_type_name(kind: MessageKind, style: BubbleStyle) -> &'static str {
+    match (kind, style) {
+        (MessageKind::Bubble, BubbleStyle::Speech) => "bubble",
+        (MessageKind::Bubble, BubbleStyle::Caption) => "caption",
+        (MessageKind::Bubble, BubbleStyle::Think) => "think",
+        (MessageKind::BubbleNoPrompt, BubbleStyle::Speech) => "bubble_no_prompt",
+        (MessageKind::BubbleNoPrompt, BubbleStyle::Caption) => "caption_no_prompt",
+        (MessageKind::BubbleNoPrompt, BubbleStyle::Think) => "think_no_prompt",
+        (MessageKind::Subtitles, _) => "subtitles",
+        (MessageKind::LevelLinkPrompt, _) => "level_link_prompt",
+        (MessageKind::WormHolePrompt, _) => "wormhole_prompt",
+    }
+}
+
+impl MessageSums {
+    fn of(world: &LevelWorld) -> Self {
+        let m = &world.messages;
+        let mut s = MessageSums {
+            pushed_out: m.pushed_out,
+            closed: m.closed,
+            events_without_effect: m.events_without_effect,
+            events_elsewhere: m.events_elsewhere,
+            open_at_end: m.open.len() as u64,
+            ..Default::default()
+        };
+        for ((kind, style), c) in &m.by_type {
+            s.by_type.insert(
+                message_type_name(*kind, *style),
+                [c.requested, c.opened, c.replaced, c.duplicate],
+            );
+        }
+        let sum = m.totals();
+        s.not_logged = (sum.opened + sum.replaced).saturating_sub(m.log.len() as u64);
+        if m.log.is_empty() {
+            return s;
+        }
+        let table: std::collections::HashSet<&str> = world
+            .translations
+            .iter()
+            .flat_map(|t| t.entries.iter().filter_map(|e| e.text.as_deref()))
+            .collect();
+        for e in &m.log {
+            let prompt = matches!(
+                e.kind,
+                MessageKind::LevelLinkPrompt | MessageKind::WormHolePrompt
+            );
+            if !prompt {
+                let i = match e.text.as_str() {
+                    "" => 2,
+                    t if table.contains(t) => 0,
+                    _ => 1,
+                };
+                s.text[i] += 1;
+            }
+            s.actors[0] += u64::from(e.actor_tag.is_some());
+            s.actors[1] += u64::from(e.actor.is_some());
+            s.anchors[usize::from(e.anchor.is_none())] += 1;
+        }
+        s
+    }
+
+    fn entered(&self) -> u64 {
+        self.by_type.values().map(|c| c[1] + c[2]).sum()
+    }
+
+    fn add(&mut self, o: &MessageSums) {
+        for (name, c) in &o.by_type {
+            let sum = self.by_type.entry(name).or_default();
+            for i in 0..4 {
+                sum[i] += c[i];
+            }
+        }
+        for i in 0..3 {
+            self.text[i] += o.text[i];
+        }
+        for i in 0..2 {
+            self.actors[i] += o.actors[i];
+            self.anchors[i] += o.anchors[i];
+        }
+        self.pushed_out += o.pushed_out;
+        self.closed += o.closed;
+        self.events_without_effect += o.events_without_effect;
+        self.events_elsewhere += o.events_elsewhere;
+        self.open_at_end += o.open_at_end;
+        self.not_logged += o.not_logged;
+    }
+
+    fn json(&self) -> serde_json::Value {
+        let by_type: BTreeMap<_, _> = self
+            .by_type
+            .iter()
+            .map(|(name, c)| {
+                let row = serde_json::json!({
+                    "requested": c[0], "opened": c[1], "written_over": c[2], "duplicate": c[3],
+                });
+                (*name, row)
+            })
+            .collect();
+        serde_json::json!({
+            "unit": "request (a messaging native call); message entered (opened or written over another)",
+            "by_type": by_type,
+            "requested": self.by_type.values().map(|c| c[0]).sum::<u64>(),
+            "entered": self.entered(),
+            "text_in_a_loaded_table": self.text[0],
+            "text_other": self.text[1],
+            "text_empty": self.text[2],
+            "actor_names_passed": self.actors[0],
+            "actor_names_shown": self.actors[1],
+            "anchored": self.anchors[0],
+            "without_anchor": self.anchors[1],
+            "entered_not_logged": self.not_logged,
+            "pushed_out_when_full": self.pushed_out,
+            "closed": self.closed,
+            "events_without_effect": self.events_without_effect,
+            "events_for_another_manager": self.events_elsewhere,
+            "open_at_end": self.open_at_end,
+        })
+    }
+}
+
 /// One level played: the report and what `--all` adds up.
 struct Played {
     json: serde_json::Value,
@@ -630,6 +779,7 @@ struct Played {
     scoreboard_requests: usize,
     /// Recorded calls kept with their arguments (`LevelWorld::requests`), by name.
     requests: BTreeMap<&'static str, u64>,
+    messages: MessageSums,
     /// Global-settings slots that hold a Thing UID at the end.
     global_settings_held: usize,
     /// Switch outputs whose signal at the end differs from the stored one, by switch type.
@@ -691,6 +841,7 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
     world.add_class_defaults(vm);
     world.progression_flags = opts.flags.clone();
     world.pod_computer_in_use = opts.in_use_from == Some(0);
+    world.messages.log_limit = lbp_runtime::MAX_REQUESTS;
     let loaded: Vec<_> = world.things.iter().map(|t| t.world_matrix).collect();
     let mut host = Bindings::new(world);
     host.default_unbound = !opts.strict;
@@ -867,6 +1018,7 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
     for r in &host.world.requests {
         *requests.entry(r.name).or_default() += 1;
     }
+    let messages = MessageSums::of(&host.world);
     let mut json = serde_json::json!({
         "instances": level.instances.len(),
         "ticks": level.ticks,
@@ -927,6 +1079,7 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
     json["sensors"] = serde_json::json!(sensor_count);
     json["sensors_unlike_stored"] = serde_json::json!(sensors_unlike);
     json["sensors_unlike_stored_ternary"] = serde_json::json!(sensors_unlike_ternary);
+    json["messages"] = messages.json();
     sum.absorb(visit);
     sum.absorb(pulse);
     Played {
@@ -949,6 +1102,7 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
         engine_faults: engine_faults.len(),
         scoreboard_requests: host.world.scoreboard_requests.len(),
         requests,
+        messages,
         global_settings_held: host
             .world
             .pworld
@@ -987,6 +1141,9 @@ struct PlayTotals {
     scoreboard_requests: usize,
     levels_with_scoreboard_requests: usize,
     requests: BTreeMap<&'static str, u64>,
+    messages: MessageSums,
+    levels_with_message_requests: usize,
+    levels_with_messages: usize,
     global_settings_held: usize,
     faults: BTreeMap<String, (u64, usize)>,
     thread_faults: BTreeMap<String, (u64, usize)>,
@@ -1037,6 +1194,9 @@ impl PlayTotals {
         for (name, n) in &p.requests {
             *self.requests.entry(name).or_default() += n;
         }
+        self.messages.add(&p.messages);
+        self.levels_with_message_requests += usize::from(!p.messages.by_type.is_empty());
+        self.levels_with_messages += usize::from(p.messages.entered() > 0);
         self.global_settings_held += p.global_settings_held;
         if let Some(f) = &p.first_tick {
             self.first_reactions.absorb(f.reactions.clone());
@@ -1145,6 +1305,10 @@ impl PlayTotals {
         doc["sensors"] = serde_json::json!(self.sensors);
         doc["sensors_unlike_stored"] = serde_json::json!(self.sensors_unlike);
         doc["sensors_unlike_stored_ternary"] = serde_json::json!(self.sensors_unlike_ternary);
+        doc["messages"] = self.messages.json();
+        doc["messages"]["levels_with_a_request"] =
+            serde_json::json!(self.levels_with_message_requests);
+        doc["messages"]["levels_with_a_message"] = serde_json::json!(self.levels_with_messages);
         doc
     }
 }

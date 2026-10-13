@@ -346,7 +346,8 @@ pub trait World {
     /// A call whose effect is display, HUD, network or game flow that nothing here models
     /// yet: the world records it (by `name`, with the Thing it is about and the arguments
     /// as passed) and nothing else happens. The natives bound this way are
-    /// [`RECORDED_ONLY`].
+    /// [`RECORDED_ONLY`]. The messaging natives ([`MESSAGING`]) come the same way, and a
+    /// world with a message list opens and closes its messages by them.
     fn engine_call(
         &mut self,
         _name: &'static str,
@@ -708,7 +709,7 @@ fn bool_query(w: &mut dyn World, native: &str) -> Result<Value, String> {
     }
 }
 
-/// A [`RECORDED_ONLY`] native: hands the call to [`World::engine_call`].
+/// A [`RECORDED_ONLY`] or [`MESSAGING`] native: hands the call to [`World::engine_call`].
 fn recorded(
     w: &mut dyn World,
     name: &'static str,
@@ -2074,10 +2075,10 @@ const TABLE: &[(&str, &str, NativeFn)] = &[
     ("Game", "GetGlobalSettingsWaterBits__", |w, _| {
         Ok(Value::Float(w.global_setting_value(GS_WATER_BITS)?))
     }),
-    // ---- D263: recorded only ([`RECORDED_ONLY`]) ----
+    // ---- D263, D265: messaging ([`MESSAGING`]) ----
     // The messaging natives go to one of the game's five message managers, which does
     // nothing when the Thing already has a message of that type; the world keeps each
-    // request with its arguments.
+    // request with its arguments and runs its message list by them.
     //
     // FOUND (0x64b010 -> 0x7382e0, message type 1). Declared static
     // `void Messaging_NewTriggerMessage(String, String, Thing, bool, s32, bool)`: text,
@@ -2098,6 +2099,43 @@ const TABLE: &[(&str, &str, NativeFn)] = &[
         |w, c| {
             let t = thing(param(c, 2)?)?;
             recorded(w, "Messaging_NewTriggerMessageNoPrompt", t, c.params)
+        },
+    ),
+    // FOUND (0x64ac74 -> 0x737f64, message type 0x5d). The caption form: the same six
+    // arguments, declared as `Messaging_NewTriggerMessage`.
+    (
+        "GameMessagingManager",
+        "Messaging_NewTriggerMessageCaption__Q6StringQ6StringQ5Thingbib",
+        |w, c| {
+            let t = thing(param(c, 2)?)?;
+            recorded(w, "Messaging_NewTriggerMessageCaption", t, c.params)
+        },
+    ),
+    // FOUND (0x64abc8 -> 0x737d7c, message type 0x5e).
+    (
+        "GameMessagingManager",
+        "Messaging_NewTriggerMessageCaptionNoPrompt__Q6StringQ6StringQ5Thingbib",
+        |w, c| {
+            let t = thing(param(c, 2)?)?;
+            recorded(w, "Messaging_NewTriggerMessageCaptionNoPrompt", t, c.params)
+        },
+    ),
+    // FOUND (0x64ab1c -> 0x737be8, message type 0x5f). The think form.
+    (
+        "GameMessagingManager",
+        "Messaging_NewTriggerMessageThink__Q6StringQ6StringQ5Thingbib",
+        |w, c| {
+            let t = thing(param(c, 2)?)?;
+            recorded(w, "Messaging_NewTriggerMessageThink", t, c.params)
+        },
+    ),
+    // FOUND (0x64aa70 -> 0x737a00, message type 0x60).
+    (
+        "GameMessagingManager",
+        "Messaging_NewTriggerMessageThinkNoPrompt__Q6StringQ6StringQ5Thingbib",
+        |w, c| {
+            let t = thing(param(c, 2)?)?;
+            recorded(w, "Messaging_NewTriggerMessageThinkNoPrompt", t, c.params)
         },
     ),
     // FOUND (0x64aedc -> 0x737320, message type 3). Declared static
@@ -2143,6 +2181,7 @@ const TABLE: &[(&str, &str, NativeFn)] = &[
             recorded(w, "Messaging_NewGameEvent", t, c.params)
         },
     ),
+    // ---- D263: recorded only ([`RECORDED_ONLY`]) ----
     // FOUND (0x64a948 -> 0x4b6d24). Declared static
     // `void RegisterOverlayCallback(Thing, String)` on HUD: the HUD pass will call the
     // named script function on the Thing. Nothing calls it here yet.
@@ -2280,7 +2319,7 @@ pub const STATE_QUERIES: [(&str, &str); 24] = [
 /// ([`World::engine_call`], or a counter for the audio ones): the engine would draw, play
 /// or send something that nothing models yet. Reports count calls to them apart from the
 /// other bound natives.
-pub const RECORDED_ONLY: [(&str, &str); 29] = [
+pub const RECORDED_ONLY: [(&str, &str); 23] = [
     ("Audio", "PlaySound__Q5ThingQ7StringA"),
     ("Audio", "SetInteractiveMusic__ggffiQ5Thing"),
     ("Audio", "SetInteractiveMusicStereoPairVolume__giff"),
@@ -2294,27 +2333,6 @@ pub const RECORDED_ONLY: [(&str, &str); 29] = [
     ("Trigger_Speech_Bubble", "NotifyNpcsOfMouthEnd__"),
     ("NoJoinMarker", "SetGameNoJoin__"),
     ("Game", "GotoScoreboard__b"),
-    (
-        "GameMessagingManager",
-        "Messaging_NewTriggerMessage__Q6StringQ6StringQ5Thingbib",
-    ),
-    (
-        "GameMessagingManager",
-        "Messaging_NewTriggerMessageNoPrompt__Q6StringQ6StringQ5Thingbib",
-    ),
-    (
-        "GameMessagingManager",
-        "Messaging_NewTriggerMessageSubtitles__Q6StringQ5Thingbb",
-    ),
-    (
-        "GameMessagingManager",
-        "Messaging_NewLevelLinkPrompt__Q5Thing",
-    ),
-    (
-        "GameMessagingManager",
-        "Messaging_NewWormHolePrompt__Q5Thing",
-    ),
-    ("GameMessagingManager", "Messaging_NewGameEvent__iiQ5Thingb"),
     ("HUD", "RegisterOverlayCallback__Q5ThingQ6String"),
     ("HUD", "PreloadGlyphs__Q11Fonts.EFontQ6String"),
     ("Game", "TrackSpeechKey__Q6String"),
@@ -2325,6 +2343,22 @@ pub const RECORDED_ONLY: [(&str, &str); 29] = [
     ("Gooey", "PerFrameUpdate__Q18Game.EPlayerNumberi"),
     ("Gooey", "SetStylesheetScalingFactor__f"),
     ("Game", "SetGlobalSettingsAudioTo__ifffffffffff"),
+];
+
+/// The `GameMessagingManager` natives that open or close a message. They return nothing
+/// and reach the world through [`World::engine_call`], as the recorded-only natives do,
+/// but a level world runs its message list by them (docs/level-scripts.md part 16).
+pub const MESSAGING: [&str; 10] = [
+    "Messaging_NewTriggerMessage__Q6StringQ6StringQ5Thingbib",
+    "Messaging_NewTriggerMessageNoPrompt__Q6StringQ6StringQ5Thingbib",
+    "Messaging_NewTriggerMessageCaption__Q6StringQ6StringQ5Thingbib",
+    "Messaging_NewTriggerMessageCaptionNoPrompt__Q6StringQ6StringQ5Thingbib",
+    "Messaging_NewTriggerMessageThink__Q6StringQ6StringQ5Thingbib",
+    "Messaging_NewTriggerMessageThinkNoPrompt__Q6StringQ6StringQ5Thingbib",
+    "Messaging_NewTriggerMessageSubtitles__Q6StringQ5Thingbb",
+    "Messaging_NewLevelLinkPrompt__Q5Thing",
+    "Messaging_NewWormHolePrompt__Q5Thing",
+    "Messaging_NewGameEvent__iiQ5Thingb",
 ];
 
 /// Natives the VM itself handles; they never reach a host.
@@ -2382,6 +2416,12 @@ mod tests {
         }
         for (class, mangled) in RECORDED_ONLY {
             assert!(lookup(class, mangled).is_some(), "{mangled}");
+        }
+        for mangled in MESSAGING {
+            assert!(
+                lookup("GameMessagingManager", mangled).is_some(),
+                "{mangled}"
+            );
         }
         // The identity needs no world.
         assert_eq!(

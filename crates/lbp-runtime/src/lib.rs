@@ -26,9 +26,11 @@ use lbp_script_vm::{ClassId, Host, MemberKind, ObjectId, Step, Task, Value, Vm};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+mod messages;
 mod sensors;
 mod switches;
 pub mod transform;
+pub use messages::*;
 pub use switches::*;
 
 /// One Thing as the runtime sees it.
@@ -385,6 +387,9 @@ pub struct LevelWorld {
     /// [`MAX_REQUESTS`]; the calls past that are counted in `requests_dropped`.
     pub requests: Vec<EngineRequest>,
     pub requests_dropped: u64,
+    /// The speech bubbles, subtitles and prompts that are open, by the game's rules for
+    /// its message list ([`Messages`]); the messaging natives feed it.
+    pub messages: Messages,
     /// The names of the level's tags and tag sensors; a [`TagKey`] holds an index.
     pub tag_names: Vec<String>,
     /// The world's tag map as the last switch pass left it
@@ -406,7 +411,7 @@ pub struct EngineRequest {
 }
 
 /// The recorded calls whose arguments are kept in [`LevelWorld::requests`].
-pub const KEPT_REQUESTS: [&str; 10] = [
+pub const KEPT_REQUESTS: [&str; 14] = [
     "Messaging_NewTriggerMessage",
     "Messaging_NewTriggerMessageNoPrompt",
     "Messaging_NewTriggerMessageSubtitles",
@@ -417,6 +422,10 @@ pub const KEPT_REQUESTS: [&str; 10] = [
     "TrackSpeechKey",
     "NotifyNpcsOfMouthStart",
     "SetGlobalSettingsAudioTo",
+    "Messaging_NewTriggerMessageCaption",
+    "Messaging_NewTriggerMessageCaptionNoPrompt",
+    "Messaging_NewTriggerMessageThink",
+    "Messaging_NewTriggerMessageThinkNoPrompt",
 ];
 
 /// Most requests [`LevelWorld::requests`] keeps.
@@ -1842,7 +1851,8 @@ impl World for LevelWorld {
     /// kept on their Thing (nothing draws by them yet) and a scoreboard request in
     /// [`LevelWorld::scoreboard_requests`]. A null Thing is counted and nothing more, as
     /// the game does nothing for it. The calls of [`KEPT_REQUESTS`] are kept with their
-    /// arguments in [`LevelWorld::requests`], and `SetAnimLoop` on its Thing.
+    /// arguments in [`LevelWorld::requests`], and `SetAnimLoop` on its Thing. The
+    /// messaging calls also go to the message list ([`LevelWorld::messages`]).
     fn engine_call(
         &mut self,
         name: &'static str,
@@ -1865,6 +1875,7 @@ impl World for LevelWorld {
                 self.requests_dropped += 1;
             }
         }
+        self.message_call(name, thing, args);
         let Some(thing) = thing else { return Ok(()) };
         let t = self.thing_mut(thing)?;
         match (name, args.first()) {
