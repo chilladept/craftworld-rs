@@ -1,7 +1,7 @@
 //! Rt PC check (docs/level-scripts.md): which scripts levels use and how they run.
 //!
 //! level_scripts SNAPSHOT GAME-DIRS LEVEL-PATH NEW-JSON [--entry=NAME]... [--ticks=N]
-//! level_scripts SNAPSHOT GAME-DIRS LEVEL-PATH NEW-JSON --play=TICKS [--flags=N,..]
+//! level_scripts SNAPSHOT GAME-DIRS LEVEL-PATH NEW-JSON --play=TICKS [--flags=MASK,..]
 //!     [--puter-in-use=TICK]
 //! level_scripts SNAPSHOT GAME-DIRS --all NEW-JSON [--play=TICKS] [--strict]
 //!     [--visit-triggers] [--pulse-switches]
@@ -575,7 +575,8 @@ fn add_level(vm: &Vm, world: &LevelWorld, t: &mut Totals) -> serde_json::Value {
 /// What one `--play` run is given.
 struct PlayOptions {
     ticks: u64,
-    flags: BTreeSet<i32>,
+    /// The profile's word of progression flags at the start (`--flags`).
+    flags: u32,
     in_use_from: Option<u64>,
     strict: bool,
     visit: bool,
@@ -1185,6 +1186,123 @@ impl PodSums {
     }
 }
 
+/// Video and voice-over requests, the other audio calls of part 22 and the progression
+/// flags over a run. For one level the level counts are 0 or 1.
+#[derive(Default, Clone)]
+struct MediaSums {
+    video_requests: u64,
+    levels_video: usize,
+    video_stops: u64,
+    voice_over_requests: u64,
+    levels_voice_over: usize,
+    voice_over_stops: u64,
+    mix_overlays_set: u64,
+    mix_overlays_removed: u64,
+    levels_mix_overlay: usize,
+    /// Levels whose scripts set a progression flag that was clear.
+    levels_flags_changed: usize,
+    /// Script threads started and run to their end.
+    threads_started: usize,
+    threads_done: usize,
+    levels_thread: usize,
+}
+
+impl MediaSums {
+    fn of(world: &LevelWorld, log: &TickLog) -> Self {
+        let m = &world.media;
+        let (set, removed) = (
+            m.mix_overlays_set.values().sum::<u64>(),
+            m.mix_overlays_removed.values().sum::<u64>(),
+        );
+        MediaSums {
+            video_requests: m.video_requests(),
+            levels_video: usize::from(m.video_requests() > 0),
+            video_stops: m.video_stops,
+            voice_over_requests: m.voice_over_requests(),
+            levels_voice_over: usize::from(m.voice_over_requests() > 0),
+            voice_over_stops: m.voice_over_stops,
+            mix_overlays_set: set,
+            mix_overlays_removed: removed,
+            levels_mix_overlay: usize::from(set + removed > 0),
+            levels_flags_changed: usize::from(!log.flag_changes.is_empty()),
+            threads_started: log.threads_started,
+            threads_done: log.threads_done,
+            levels_thread: usize::from(log.threads_started > 0),
+        }
+    }
+
+    fn add(&mut self, o: &MediaSums) {
+        self.video_requests += o.video_requests;
+        self.levels_video += o.levels_video;
+        self.video_stops += o.video_stops;
+        self.voice_over_requests += o.voice_over_requests;
+        self.levels_voice_over += o.levels_voice_over;
+        self.voice_over_stops += o.voice_over_stops;
+        self.mix_overlays_set += o.mix_overlays_set;
+        self.mix_overlays_removed += o.mix_overlays_removed;
+        self.levels_mix_overlay += o.levels_mix_overlay;
+        self.levels_flags_changed += o.levels_flags_changed;
+        self.threads_started += o.threads_started;
+        self.threads_done += o.threads_done;
+        self.levels_thread += o.levels_thread;
+    }
+
+    fn json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "unit": "native call; level; script thread. Nothing plays: a request is kept and the script is told that nothing started",
+            "video_requests": self.video_requests,
+            "levels_with_a_video_request": self.levels_video,
+            "video_stops": self.video_stops,
+            "voice_over_requests": self.voice_over_requests,
+            "levels_with_a_voice_over_request": self.levels_voice_over,
+            "voice_over_stops": self.voice_over_stops,
+            "mix_overlays_set": self.mix_overlays_set,
+            "mix_overlays_removed": self.mix_overlays_removed,
+            "levels_with_a_mix_overlay_call": self.levels_mix_overlay,
+            "levels_where_a_script_set_a_progression_flag": self.levels_flags_changed,
+            "threads_started": self.threads_started,
+            "threads_done": self.threads_done,
+            "levels_with_a_thread": self.levels_thread,
+        })
+    }
+}
+
+/// Most ticks [`TickLog`] lists of a kind.
+const MAX_LOGGED_TICKS: usize = 64;
+
+/// Which ticks of a run started or ended a script thread, and which changed the
+/// profile's progression flags. A tick's number is the count of ticks run when it ended
+/// (the first tick is 1); the create step is tick 0.
+#[derive(Default)]
+struct TickLog {
+    flags: u32,
+    threads_started: usize,
+    threads_done: usize,
+    started: Vec<u64>,
+    done: Vec<u64>,
+    /// (tick, the word after it).
+    flag_changes: Vec<(u64, u32)>,
+}
+
+impl TickLog {
+    fn note(&mut self, tick: u64, r: &StepReport, world: &LevelWorld) {
+        self.threads_started += r.threads_started;
+        self.threads_done += r.threads_done;
+        if r.threads_started > 0 && self.started.len() < MAX_LOGGED_TICKS {
+            self.started.push(tick);
+        }
+        if r.threads_done > 0 && self.done.len() < MAX_LOGGED_TICKS {
+            self.done.push(tick);
+        }
+        if world.progression_flags != self.flags {
+            self.flags = world.progression_flags;
+            if self.flag_changes.len() < MAX_LOGGED_TICKS {
+                self.flag_changes.push((tick, self.flags));
+            }
+        }
+    }
+}
+
 /// One level played: the report and what `--all` adds up.
 struct Played {
     json: serde_json::Value,
@@ -1210,6 +1328,7 @@ struct Played {
     display: DisplaySums,
     camera: CameraSums,
     pod: PodSums,
+    media: MediaSums,
     /// Global-settings slots that hold a Thing UID at the end.
     global_settings_held: usize,
     /// Switch outputs whose signal at the end differs from the stored one, by switch type.
@@ -1269,9 +1388,13 @@ const VISIT_AWAY: f32 = 1.0e7;
 /// Runs the `LevelScripts` schedule on one level whose objects are bound to `vm`.
 fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played {
     world.add_class_defaults(vm);
-    world.progression_flags = opts.flags.clone();
+    world.progression_flags = opts.flags;
     world.pod_computer_in_use = opts.in_use_from == Some(0);
     world.messages.log_limit = lbp_runtime::MAX_REQUESTS;
+    let mut log = TickLog {
+        flags: opts.flags,
+        ..Default::default()
+    };
     let loaded: Vec<_> = world.things.iter().map(|t| t.world_matrix).collect();
     let mut host = Bindings::new(world);
     host.default_unbound = !opts.strict;
@@ -1292,6 +1415,7 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
         }
     };
     note_faults(&created);
+    log.note(0, &created, &host.world);
     let camera_json = |c: &lbp_runtime::CameraState| {
         serde_json::json!({
             "from_to_up": c.from_to_up.map(|c| serde_json::json!({
@@ -1331,6 +1455,7 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
             host.world.pod_computer_in_use = true;
         }
         let t = level.tick_level(vm, &mut host, BUDGET_PER_CALL);
+        log.note(level.ticks, &t, &host.world);
         settings.note(&host.world);
         ticks_with_faults += usize::from(!t.faults.is_empty());
         note_faults(&t);
@@ -1365,6 +1490,7 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
                 host.world
                     .move_player(player, [s[0] + dx, s[1], s[2]], (s[2] - 1., s[2] + 1.));
                 let t = level.tick_level(vm, &mut host, BUDGET_PER_CALL);
+                log.note(level.ticks, &t, &host.world);
                 settings.note(&host.world);
                 ticks_with_faults += usize::from(!t.faults.is_empty());
                 note_faults(&t);
@@ -1397,6 +1523,7 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
                 host.world
                     .move_player(player, [s[0] + dx, s[1], s[2]], (s[2] - 1., s[2] + 1.));
                 let t = level.tick_level(vm, &mut host, BUDGET_PER_CALL);
+                log.note(level.ticks, &t, &host.world);
                 settings.note(&host.world);
                 ticks_with_faults += usize::from(!t.faults.is_empty());
                 note_faults(&t);
@@ -1413,6 +1540,7 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
         for on in [true, false] {
             host.world.switch_pulse = Some(on);
             let t = level.tick_level(vm, &mut host, BUDGET_PER_CALL);
+            log.note(level.ticks, &t, &host.world);
             settings.note(&host.world);
             ticks_with_faults += usize::from(!t.faults.is_empty());
             note_faults(&t);
@@ -1557,6 +1685,36 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
             }))
         }).collect::<Vec<_>>(),
     });
+    let media = MediaSums::of(&host.world, &log);
+    json["media"] = media.json();
+    let m = &host.world.media;
+    json["media"]["videos"] = serde_json::json!(m
+        .videos
+        .iter()
+        .map(|v| serde_json::json!({
+            "thing": v.thing, "guid": v.guid, "flag": v.flag, "frame": v.frame,
+        }))
+        .collect::<Vec<_>>());
+    json["media"]["voice_overs"] = serde_json::json!(m
+        .voice_overs
+        .iter()
+        .map(|v| { serde_json::json!({"name": v.name, "flags": v.flags, "frame": v.frame}) })
+        .collect::<Vec<_>>());
+    json["media"]["mix_overlays_set_by_name"] = serde_json::json!(m.mix_overlays_set);
+    json["media"]["mix_overlays_removed_by_name"] = serde_json::json!(m.mix_overlays_removed);
+    json["progression_flags"] = serde_json::json!({
+        "unit": "bit mask of the profile's word; a tick's number is the count of ticks run when it ended, 0 is the create step",
+        "at_start": opts.flags,
+        "at_end": host.world.progression_flags,
+        "changes": log.flag_changes.iter().map(|(tick, word)| {
+            serde_json::json!({"tick": tick, "flags": word})
+        }).collect::<Vec<_>>(),
+    });
+    json["thread_ticks"] = serde_json::json!({
+        "unit": "tick on which a script thread started or ran to its end (first 64 of each)",
+        "started": log.started,
+        "done": log.done,
+    });
     json["lighting_in_force_at_load"] = serde_json::json!(host.world.settings_at_load.lighting);
     json["lighting_stored_current"] = serde_json::json!(host.world.pworld.lighting_stored);
     Played {
@@ -1584,6 +1742,7 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
         display,
         camera,
         pod,
+        media,
         global_settings_held: host
             .world
             .pworld
@@ -1629,6 +1788,7 @@ struct PlayTotals {
     display: DisplaySums,
     camera: CameraSums,
     pod: PodSums,
+    media: MediaSums,
     global_settings_held: usize,
     faults: BTreeMap<String, (u64, usize)>,
     thread_faults: BTreeMap<String, (u64, usize)>,
@@ -1686,6 +1846,7 @@ impl PlayTotals {
         self.display.add(&p.display);
         self.camera.add(&p.camera);
         self.pod.add(&p.pod);
+        self.media.add(&p.media);
         self.global_settings_held += p.global_settings_held;
         if let Some(f) = &p.first_tick {
             self.first_reactions.absorb(f.reactions.clone());
@@ -1739,6 +1900,18 @@ impl PlayTotals {
                 let key = format!("{class}.{name}");
                 let n = *self.calls.get(&key)?;
                 Some((key, n))
+            })
+            .collect();
+        // The natives that ask for a video or a sound and get the game's answer for
+        // "nothing started".
+        let requests: Vec<_> = lbp_script_vm::natives::RECORDED_REQUESTS
+            .iter()
+            .filter_map(|(class, name, answer)| {
+                let key = format!("{class}.{name}");
+                let n = *self.calls.get(&key)?;
+                Some(serde_json::json!({
+                    "native": key, "count": n.0, "levels": n.1, "answer": answer,
+                }))
             })
             .collect();
         let mut doc = serde_json::json!({
@@ -1802,6 +1975,8 @@ impl PlayTotals {
         doc["display"] = self.display.json();
         doc["camera"] = self.camera.json();
         doc["pod"] = self.pod.json();
+        doc["media"] = self.media.json();
+        doc["recorded_request_natives"] = serde_json::json!(requests);
         doc
     }
 }
@@ -1823,11 +1998,12 @@ fn run() -> Result<(), String> {
         .map(str::parse)
         .transpose()
         .map_err(|e| format!("--play: {e}"))?;
-    // `--flags=2,5`: LBP2 game progression flags set on the profile (default none).
-    let flags: std::collections::BTreeSet<i32> = all
+    // `--flags=2,0x10`: bit masks ORed into the profile's word of LBP2 game progression
+    // flags (default 0, a fresh profile).
+    let flags: u32 = all
         .iter()
         .find_map(|a| a.strip_prefix("--flags="))
-        .map(|f| f.split(',').map(str::parse).collect::<Result<_, _>>())
+        .map(lbp_runtime::parse_progression_flags)
         .transpose()
         .map_err(|e| format!("--flags: {e}"))?
         .unwrap_or_default();
@@ -1854,7 +2030,7 @@ fn run() -> Result<(), String> {
     if args.len() != 5 {
         return Err(
             "usage: level_scripts SNAPSHOT GAME-DIRS LEVEL-PATH|--all NEW-JSON \
-                    [--entry=NAME]... [--ticks=N] [--play=TICKS] [--flags=N,..] \
+                    [--entry=NAME]... [--ticks=N] [--play=TICKS] [--flags=MASK,..] \
                     [--puter-in-use=TICK] [--strict] [--visit-triggers] \
                     [--pulse-switches]"
                 .into(),
@@ -1870,7 +2046,7 @@ fn run() -> Result<(), String> {
     }
     let play_opts = play.map(|ticks| PlayOptions {
         ticks,
-        flags: flags.clone(),
+        flags,
         in_use_from,
         strict: all.iter().any(|a| a == "--strict"),
         visit: all.iter().any(|a| a == "--visit-triggers"),
@@ -1995,7 +2171,7 @@ fn run() -> Result<(), String> {
     }
     if let (false, Some(mut world)) = (entries.is_empty(), last_world) {
         world.add_class_defaults(&vm);
-        world.progression_flags = flags.clone();
+        world.progression_flags = flags;
         let mut host = Bindings::new(world);
         let found = instances(&vm, &host.world);
         let mut runner = Runner::default();

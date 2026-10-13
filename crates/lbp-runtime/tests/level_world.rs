@@ -861,7 +861,7 @@ fn part6_camera_world_position_and_engine_state() {
         .unwrap()
     };
     assert_eq!(flag(&mut w), Ok(Value::Bool(false)));
-    w.progression_flags.insert(2);
+    w.progression_flags = 2;
     assert_eq!(flag(&mut w), Ok(Value::Bool(true)));
     // Rookie Test natives.
     let me = Value::Thing(Some(1));
@@ -2684,9 +2684,12 @@ fn d263_recorded_calls_keep_their_arguments_for_a_later_stage() {
             "{name}"
         );
     }
-    // With the 11 of stage 4 that are still recorded only and the 2 of D270 (the Pod),
-    // these are all the recorded-only and messaging natives.
-    assert_eq!(calls.len() + 11 + 2, RECORDED_ONLY.len() + MESSAGING.len());
+    // With the 11 of stage 4 that are still recorded only, the 2 of D270 (the Pod) and
+    // the 1 of D271 (a video stop), these are all the recorded-only and messaging natives.
+    assert_eq!(
+        calls.len() + 11 + 2 + 1,
+        RECORDED_ONLY.len() + MESSAGING.len()
+    );
     // Every call is counted once by name.
     assert_eq!(w.engine_calls.len(), calls.len());
     assert!(w.engine_calls.values().all(|n| *n == 1));
@@ -4234,4 +4237,312 @@ fn d270_a_script_swaps_the_pod_mesh_when_its_transition_ends() {
     // The mesh is the file's again: nothing is unlike the level file.
     assert!(host.world.display_changed().is_empty());
     assert_eq!(host.world.pod.mesh_changes, 2);
+}
+
+/// D271: the progression flags are bit masks on one word, and the video and voice-over
+/// natives keep their request and answer that nothing started.
+#[test]
+fn d271_flags_are_bit_masks_and_media_requests_are_kept_and_not_played() {
+    use lbp_runtime::{VideoRequest, VoiceOverRequest, MAX_MEDIA_REQUESTS};
+    use lbp_script_vm::natives::{NO_VIDEO, RECORDED_ONLY, RECORDED_REQUESTS};
+    let mut things = level();
+    things[0].data.world = Some(WorldPart {
+        frame: 40,
+        ..Default::default()
+    });
+    let mut w = LevelWorld::from_things(&things);
+    let (text, flag, int) = (|t: &str| Value::Str(t.into()), Value::Bool, Value::Int);
+    // A fresh profile: no bit is set. A mask is set when all of its bits are.
+    let is_set = |w: &mut LevelWorld, mask: i32| {
+        native(
+            w,
+            "Profile",
+            "IsLBP2GameProgressionFlagSet__i",
+            &[int(mask)],
+        )
+    };
+    let set = |w: &mut LevelWorld, mask: i32| {
+        native(w, "Profile", "SetLBP2GameProgressionFlag__i", &[int(mask)])
+    };
+    assert_eq!(w.progression_flags, 0);
+    for mask in [1, 2, 3, 4] {
+        assert_eq!(is_set(&mut w, mask), Ok(flag(false)), "mask {mask}");
+    }
+    assert_eq!(set(&mut w, 3), Ok(Value::Void));
+    assert_eq!(w.progression_flags, 3);
+    for (mask, on) in [(1, true), (2, true), (3, true), (4, false)] {
+        assert_eq!(is_set(&mut w, mask), Ok(flag(on)), "mask {mask}");
+    }
+    // Two bits of which one is set: not set. Setting is an OR: nothing is cleared.
+    assert_eq!(is_set(&mut w, 6), Ok(flag(false)));
+    assert_eq!(set(&mut w, 0x1ff8), Ok(Value::Void));
+    assert_eq!(w.progression_flags, 0x1ffb);
+    assert_eq!(is_set(&mut w, 6), Ok(flag(false)));
+    assert_eq!(is_set(&mut w, 0x18), Ok(flag(true)));
+    // The top bit is a flag like the others (the script's s32 is the word's bits).
+    assert_eq!(is_set(&mut w, i32::MIN), Ok(flag(false)));
+    assert_eq!(set(&mut w, i32::MIN), Ok(Value::Void));
+    assert_eq!(is_set(&mut w, i32::MIN), Ok(flag(true)));
+    assert_eq!(w.progression_flags, 0x8000_1ffb);
+
+    // A video request: kept as made, and the script is told that no video started.
+    let video = "StartVideo__Q5Thinggb";
+    let start = [Value::Thing(None), int(77), flag(false)];
+    assert_eq!(native(&mut w, "Video", video, &start), Ok(int(NO_VIDEO)));
+    let on_thing = [Value::Thing(Some(1)), Value::Raw(78), flag(true)];
+    assert_eq!(native(&mut w, "Video", video, &on_thing), Ok(int(-1)));
+    assert_eq!(
+        w.media.videos,
+        [
+            VideoRequest {
+                thing: None,
+                guid: 77,
+                flag: false,
+                frame: 40
+            },
+            VideoRequest {
+                thing: Some(1),
+                guid: 78,
+                flag: true,
+                frame: 40
+            },
+        ]
+    );
+    // No video has a handle, so none is playing and none is stepped.
+    for handle in [-1, 0, 78] {
+        let step = [int(handle), flag(false)];
+        assert_eq!(
+            native(&mut w, "Video", "UpdateVideo__ib", &step),
+            Ok(flag(false))
+        );
+    }
+    assert_eq!(
+        native(&mut w, "Video", "IsVideoPlaying__", &[]),
+        Ok(flag(false))
+    );
+    assert_eq!(
+        native(&mut w, "Video", "StopVideo__i", &[int(-1)]),
+        Ok(Value::Void)
+    );
+    assert_eq!(w.media.video_stops, 1);
+
+    // A voice-over request: kept, answered with false, and no line plays afterwards.
+    let request = "RequestVoiceOver__Q7StringAbb";
+    let line = [text("made_up_line"), flag(true), flag(false)];
+    assert_eq!(native(&mut w, "Audio", request, &line), Ok(flag(false)));
+    let null_line = [Value::Object(None), flag(false), flag(true)];
+    assert_eq!(
+        native(&mut w, "Audio", request, &null_line),
+        Ok(flag(false))
+    );
+    assert_eq!(
+        w.media.voice_overs,
+        [
+            VoiceOverRequest {
+                name: Some("made_up_line".into()),
+                flags: [true, false],
+                frame: 40
+            },
+            VoiceOverRequest {
+                name: None,
+                flags: [false, true],
+                frame: 40
+            },
+        ]
+    );
+    assert_eq!(
+        native(&mut w, "Audio", "IsVoiceOverPlaying__", &[]),
+        Ok(flag(false))
+    );
+    assert_eq!(
+        native(&mut w, "Audio", "StopVoiceOver__", &[]),
+        Ok(flag(true))
+    );
+    assert_eq!(w.media.voice_over_stops, 1);
+    let mix = [text("Made Up Mix"), Value::Float(0.2)];
+    for _ in 0..2 {
+        let removed = native(&mut w, "Audio", "RemoveMixOverlay__Q7StringAf", &mix);
+        assert_eq!(removed, Ok(flag(false)));
+    }
+    assert_eq!(
+        native(&mut w, "Audio", "SetMixOverlay__Q7StringAf", &mix),
+        Ok(flag(false))
+    );
+    assert_eq!(w.media.mix_overlays_set["Made Up Mix"], 1);
+    assert_eq!(w.media.mix_overlays_removed["Made Up Mix"], 2);
+    // A profile without the first game's save data.
+    for name in [
+        "HasPlayedLBP1AndUnlockedPod__",
+        "HasPlayedLBP1AndUnlockedMoon__",
+    ] {
+        assert_eq!(native(&mut w, "Profile", name, &[]), Ok(flag(false)));
+    }
+    // Every call is counted by name with the other recorded calls, and none of them
+    // went to the list of kept engine requests or opened a message.
+    for (name, calls) in [
+        ("StartVideo", 2),
+        ("StopVideo", 1),
+        ("RequestVoiceOver", 2),
+        ("StopVoiceOver", 1),
+        ("SetMixOverlay", 1),
+        ("RemoveMixOverlay", 2),
+    ] {
+        assert_eq!(w.engine_calls[name], calls, "{name}");
+    }
+    assert!(w.requests.is_empty() && w.messages.open.is_empty());
+    // The natives that answer are listed apart from the ones that return nothing.
+    assert!(RECORDED_ONLY.contains(&("Video", "StopVideo__i")));
+    for (class, name, _) in RECORDED_REQUESTS {
+        assert!(!RECORDED_ONLY.contains(&(class, name)), "{name}");
+    }
+    assert_eq!(RECORDED_REQUESTS[0], ("Video", video, "-1"));
+    // A wrong argument is an error and nothing is kept for it.
+    assert!(native(&mut w, "Video", video, &start[..2]).is_err());
+    assert!(native(&mut w, "Audio", request, &mix).is_err());
+    assert_eq!((w.media.videos.len(), w.media.voice_overs.len()), (2, 2));
+    // Both lists are bounded; the calls past the bound are counted.
+    for _ in 0..MAX_MEDIA_REQUESTS {
+        native(&mut w, "Video", video, &start).unwrap();
+        native(&mut w, "Audio", request, &line).unwrap();
+    }
+    assert_eq!(w.media.videos.len(), MAX_MEDIA_REQUESTS);
+    assert_eq!(w.media.voice_overs.len(), MAX_MEDIA_REQUESTS);
+    assert_eq!(
+        (w.media.videos_dropped, w.media.voice_overs_dropped),
+        (2, 2)
+    );
+    assert_eq!(w.media.video_requests(), MAX_MEDIA_REQUESTS as u64 + 2);
+    assert_eq!(w.media.voice_over_requests(), MAX_MEDIA_REQUESTS as u64 + 2);
+}
+
+/// `Thread` with a made-up main function shaped like the Pod's intro: it asks for a
+/// video and keeps the handle, asks for a voice-over line, yields five times, waits
+/// while a line plays or the handle is not -1, then sets the progression mask 3.
+/// `Start__` is the one of [`thread_class`].
+fn intro_thread() -> Script {
+    let mut s = thread_class();
+    s.strings_a = [
+        "Thread",
+        "System",
+        "Yield__",
+        "Start__",
+        lbp_runtime::THREAD_MAIN,
+        "StartImpl__",
+        "Video",
+        "Audio",
+        "Profile",
+        "StartVideo__Q5Thinggb",
+        "RequestVoiceOver__Q7StringAbb",
+        "IsVoiceOverPlaying__",
+        "SetLBP2GameProgressionFlag__i",
+        "made_up_line",
+    ]
+    .map(String::from)
+    .to_vec();
+    s.type_refs = [0, 1, 6, 7, 8].map(|name| ty(11, name)).to_vec();
+    let member = |type_ref, name| MemberRef { type_ref, name };
+    s.function_refs = vec![
+        member(0, 5),
+        member(1, 2),
+        member(2, 9),
+        member(3, 10),
+        member(3, 11),
+        member(4, 12),
+    ];
+    let constant =
+        |op: u8, r: u16, bits: u32| u64::from(op) | u64::from(r) << 16 | u64::from(bits) << 32;
+    s.bytecode = vec![
+        i(0xa3, 11, 0, 0, 0),                 //  0 ARG @0 = this
+        i(0xa4, 0, 0, 0, 0),                  //  1 CALL Thread.StartImpl__
+        i(0xa5, 0, 0, 0, 0),                  //  2 RETURN
+        constant(0x06, 4, 0),                 //  3 r4 = null Thing
+        constant(0x03, 8, 77),                //  4 r8 = the video's GUID
+        constant(0x01, 12, 0),                //  5 r12 = false
+        i(0xa3, 10, 4, 0, 0),                 //  6 ARG @0 = r4
+        i(0xa3, 3, 8, 4, 0),                  //  7 ARG @4 = r8
+        i(0xa3, 1, 12, 8, 0),                 //  8 ARG @8 = r12
+        i(0xa4, 3, 16, 2, 0),                 //  9 r16 = CALL Video.StartVideo
+        i(0xa2, 3, 0, 16, 0),                 // 10 WRITE r16 (the handle)
+        constant(0xbc, 20, 13),               // 11 r20 = the line's name
+        constant(0x01, 24, 0x8000_0001),      // 12 r24 = true
+        i(0xa3, 11, 20, 0, 0),                // 13 ARG @0 = r20
+        i(0xa3, 1, 24, 4, 0),                 // 14 ARG @4 = r24
+        i(0xa3, 1, 24, 5, 0),                 // 15 ARG @5 = r24
+        i(0xa4, 0, 0xffff, 3, 0),             // 16 CALL Audio.RequestVoiceOver
+        constant(0x03, 28, 0),                // 17 r28 = 0
+        i(0x0b, 0, 28, 28, 0),                // 18 INCi r28
+        i(0xa4, 0, 0, 1, 0),                  // 19 CALL System.Yield
+        constant(0x03, 32, 5),                // 20 r32 = 5
+        i(0x38, 0, 36, 32, 28),               // 21 r36 = r32 <= r28
+        constant(0xa7, 36, -4i32 as u32),     // 22 BEZ r36 -> 18
+        i(0xa4, 1, 40, 4, 0),                 // 23 r40 = CALL Audio.IsVoiceOverPlaying
+        constant(0x03, 44, -1i32 as u32),     // 24 r44 = -1
+        i(0x3c, 0, 48, 16, 44),               // 25 r48 = r16 != r44
+        i(0xbd, 0, 52, 40, 48),               // 26 r52 = r40 | r48
+        constant(0xa7, 52, 3),                // 27 BEZ r52 -> 30
+        i(0xa4, 0, 0, 1, 0),                  // 28 CALL System.Yield
+        constant(0xa6, 0xffff, -6i32 as u32), // 29 B -> 23
+        constant(0x03, 56, 3),                // 30 r56 = the mask 3
+        i(0xa3, 3, 56, 0, 0),                 // 31 ARG @0 = r56
+        i(0xa4, 0, 0xffff, 5, 0),             // 32 CALL Profile.SetLBP2GameProgressionFlag
+        i(0xa5, 0, 0, 0, 0),                  // 33 RETURN
+    ];
+    let mut main = function(0, 4, 3, 34);
+    main.stack_size = 64;
+    s.function_defs = vec![function(0, 3, 0, 3), main];
+    s
+}
+
+/// D271: a thread shaped like the Pod's intro runs to its end. The video handle it gets
+/// is -1 and no line plays, so its wait ends on the tick after its last yield; the flag
+/// mask it sets is on the profile and its two requests are kept.
+#[test]
+fn d271_a_thread_that_waits_on_video_and_voice_over_ends_and_sets_its_flags() {
+    let mut vm = Vm::default();
+    let thread = vm.load(intro_thread(), Some(0xb25d));
+    vm.load(spawner(), Some(GUID));
+    let t = vm.instantiate(thread).unwrap();
+    let mut world = LevelWorld::from_things(&level());
+    world.things[1]
+        .members
+        .as_mut()
+        .unwrap()
+        .insert("t".into(), Value::Object(Some(t)));
+    let mut host = Bindings::new(world);
+    let mut level = LevelScripts::new(&vm, &host.world);
+    let created = level.create(&mut vm, &mut host, 1000);
+    assert!(
+        created.thread_faults.is_empty(),
+        "{:?}",
+        created.thread_faults
+    );
+    assert_eq!((created.threads_started, created.threads_done), (1, 0));
+    // Both requests are made before the first yield; the handle is the game's -1.
+    assert_eq!(host.world.written, ["Int(-1)"]);
+    assert_eq!(host.world.media.videos.len(), 1);
+    assert_eq!(host.world.media.videos[0].guid, 77);
+    let line = &host.world.media.voice_overs[0];
+    assert_eq!(line.name.as_deref(), Some("made_up_line"));
+    assert_eq!(line.flags, [true, true]);
+    // Four more yields: the thread is still there and no flag is set.
+    for tick in 1..=4 {
+        let r = level.tick_level(&mut vm, &mut host, 1000);
+        assert!(r.thread_faults.is_empty(), "{:?}", r.thread_faults);
+        assert_eq!((r.threads_done, level.threads()), (0, 1), "tick {tick}");
+        assert_eq!(host.world.progression_flags, 0);
+    }
+    // The tick after the last yield: nothing plays, so the wait is over at once.
+    let r = level.tick_level(&mut vm, &mut host, 1000);
+    assert!(r.thread_faults.is_empty(), "{:?}", r.thread_faults);
+    assert_eq!((r.threads_done, level.threads()), (1, 0));
+    assert_eq!(host.world.progression_flags, 3);
+    assert!(host.unbound.is_empty(), "{:?}", host.unbound);
+    // Nothing was started and nothing more is asked for.
+    for _ in 0..3 {
+        let r = level.tick_level(&mut vm, &mut host, 1000);
+        assert_eq!((r.threads_started, r.threads_done), (0, 0));
+    }
+    assert_eq!(host.world.media.video_requests(), 1);
+    assert_eq!(host.world.media.voice_over_requests(), 1);
+    assert_eq!(host.calls["Audio.IsVoiceOverPlaying__"], 1);
 }

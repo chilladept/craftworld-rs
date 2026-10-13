@@ -4971,3 +4971,72 @@ scoreboard's own checkpoint, so the camera goes to the scoreboard at once.
 **+0 newly viewable / +0 newly Complete (reader and runtime feature).**
 Next: stage 6 PR 2 (video, voice-over, progression flags: the intro ends), PR 3 (the viewer's Pod
 camera). `docs/level-scripts.md` part 21.
+
+## D271 video, voice-over and progression flags (2026-10-13)
+- RScript plan stage 6 (`docs/rscript-plan.md`), PR 2. The planets level of the Pod runs an intro
+  thread: 451 ticks of camera zoom, then a wait on "a voice-over line plays or the pod computer has
+  a video handle", then it sets progression flags. It never ended: `Video.StartVideo` was unbound and
+  answered 0, and the script takes any handle but -1 as a playing video.
+- What a recorded request means here: nothing plays. The request (video GUID, voice-over name, flags,
+  frame) is kept in `LevelWorld::media` for a later video or audio system, and the script gets the
+  answer the game gives when nothing started.
+- FOUND in the 01.33 EBOOT through the Ghidra bridge (addresses: handler -> core):
+  - `Video.StartVideo__Q5Thinggb` (0x642340 -> 0x75672c -> 0x67c620): the handle of a started video,
+    -1 when none started. `Video.UpdateVideo__ib` (0x5fb5cc -> 0x67c22c): false for a handle no video
+    has. `Video.StopVideo__i` (0x5f5434 -> 0x67a3d8).
+  - `Audio.RequestVoiceOver__Q7StringAbb` (0x619430 -> 0x2de6b8): false, and nothing starts, while
+    voice-over is off, for a line already heard, or while a line plays that may not be interrupted.
+    `IsVoiceOverPlaying__` (0x2de218): false while none plays. `StopVoiceOver__` (0x2de498): true.
+  - `Audio.SetMixOverlay__Q7StringAf` (0x6194f4 -> 0x2cdb7c) and `RemoveMixOverlay__Q7StringAf`
+    (0x619494 -> 0x2cdaa0), read for this PR: false while the audio system object is null.
+  - `Profile.SetLBP2GameProgressionFlag__i` (0x5f56cc -> 0x15d22c): ORs its argument into one 32-bit
+    word of each local profile. `IsLBP2GameProgressionFlagSet__i` (0x5f6860 -> 0x15d2a8): every bit of
+    the argument is set. So the argument is a bit mask; the intro sets 3, the Pod's scripts test 2.
+  - `Profile.HasPlayedLBP1AndUnlockedPod__` / `...Moon__` (0x740084, 0x7439dc): false without a loaded
+    profile record, else a byte of the record.
+  - `PodComputer.UpdateVideo__` (the script function that sets the pod computer's handle back): the
+    engine calls it from 0x50373c, without a condition at the end of 0x404598. That function has no
+    direct caller (one table slot refers to it); who calls the slot and when was NOT found, so the
+    per-tick call the scoping notes proposed is not added. With -1 handles it would change nothing.
+- Runtime (`lbp-runtime`): `LevelWorld::progression_flags` is one `u32` (was a `BTreeSet<i32>`);
+  `World::progression_flag(mask)`, new `set_progression_flags`; `parse_progression_flags` for
+  `level_scripts --flags=` and the viewer's `--level-scripts-flags` (masks, decimal or `0x`, ORed).
+  New `media.rs` (`MediaState`, `VideoRequest`, `VoiceOverRequest`, `MAX_MEDIA_REQUESTS`). Natives
+  238 -> 249 (`STATE_QUERIES` 26 -> 29, `RECORDED_ONLY` 23 -> 24, new `RECORDED_REQUESTS`: 5 natives
+  with the answer each gives). `level_scripts`: `media`, `progression_flags`, `thread_ticks`,
+  `recorded_request_natives`. Viewer: the parse of the option only (forced by the type).
+- MEASURED (378 levels, 13,547 scripted Things, 60 ticks; plain / `--visit-triggers` / with
+  `--pulse-switches`; `local-analysis/d271-play-all-*.json`):
+  - Things stopped by a fault 3 / 3 / 3 (unchanged; 3 x `Thing.GetCOM__`, TriggerAirStone).
+  - Unbound natives called 44 -> 41 / 78 -> 73 / 78 -> 73; unbound calls 61,483 -> 61,480 /
+    865,266 -> 862,986 / 872,042 -> 868,663; native calls unchanged.
+  - Gone from the unbound list (calls / levels): `Video.StartVideo` 1 / 1, `Audio.RequestVoiceOver`
+    1 / 1, `Profile.HasPlayedLBP1AndUnlockedPod` 1 / 1 (all three runs); with the visit
+    `Audio.RemoveMixOverlay` 2,260 / 114 and 3,355 / 143, `Profile.SetLBP2GameProgressionFlag` 17 / 3
+    and 21 / 3. Nothing new on the list.
+  - Video requests 1 in 1 level, voice-over requests 1 in 1 level, in all three runs; a script sets a
+    progression flag in 0 / 3 / 3 levels. Messages, global settings, display, camera, pod block,
+    trigger events and switch reactions equal to D270.
+  - pod_planets.bin alone, 600 and 1,200 ticks: the intro thread starts on tick 1 and ends on tick
+    452; the flag word goes 0 -> 3 on tick 452; threads started 1, done 1, none started again; 0
+    unbound natives (was 4 natives, 152 calls); 0 faults. With `--puter-in-use=100` the camera ends
+    on the in-use preset, from (0, -300, 900) to (0, 500, -1500). With `--flags=2`: no thread.
+  - pod.bin alone, 60 and 600 ticks: as D270 (unbound `SetPodTransitionTexture` 61 / 601). With
+    `--flags=3`, a visiting player and the pulse: one test further, `Native.GetIsInPadZone` 5 calls.
+- INFERRED: `HasPlayedLBP1AndUnlockedPod` / `Moon` false (a profile without save data of the first
+  game); the debug byte and the build test of the flag test do not hold; `RequestVoiceOver` answers
+  true when a line starts (not used); the names of its two bools.
+- Not bound: `Video.PressedStartButton__` (which pad word holds its bit was not read), and the five
+  of D270 (`SetPodTransitionTexture`, `CurrentLevelIsOurPod`, `GetPlayerColour`, `GetIsInPadZone`,
+  `IsJustClickedByID`).
+- Tests: `lbp-script-vm` `d271_video_voice_over_and_flag_natives`; `lbp-runtime`
+  `progression_flag_masks_are_ored` and two world tests on made-up levels and names, one a thread
+  shaped like the intro that ends and sets its flags (59 unit, 45 world). fmt, the CI clippy line,
+  the CI test set and the Python tests pass; `cargo check` of both viewers and clippy on the Bevy
+  viewer pass; its tests pass but the one that fails on main
+  (`sackboy_play::tests::input_script_steps`).
+- Not tested: the viewer was not started; nothing against the game in RPCS3 (the tick the intro ends
+  on in the game, with its video and line, is not measured).
+**+0 newly viewable / +0 newly Complete (runtime feature).**
+Next: stage 6 PR 3 (the viewer's Pod camera), PR 4 (the pod computer is entered, one session for
+both Pod levels). `docs/level-scripts.md` part 22.

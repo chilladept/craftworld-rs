@@ -1,5 +1,28 @@
 # Development log
 
+## 2026-10-13 - D271 video, voice-over and progression flags
+
+RScript plan stage 6 (the Pod), PR 2. The planets level's intro thread (451 ticks of zoom, then a wait on
+"a voice-over line plays or the pod computer has a video handle") never ended: the unbound
+`Video.StartVideo` answered 0 and the script takes any handle but -1 as a playing video. FOUND (EBOOT 01.33,
+through the Ghidra bridge): `StartVideo` (0x67c620) answers -1 when no video starts; `UpdateVideo`
+(0x67c22c) false for a handle no video has; `Audio.RequestVoiceOver` (0x2de6b8) false when no line starts,
+`IsVoiceOverPlaying` (0x2de218) false while none plays; `SetMixOverlay` / `RemoveMixOverlay` false without
+the audio system object; `Profile.SetLBP2GameProgressionFlag__i` (0x15d22c) ORs a bit mask into one 32-bit
+word of the profile and `IsLBP2GameProgressionFlagSet__i` (0x15d2a8) wants every bit of its mask. Nothing
+plays: a request is kept with its arguments (`LevelWorld::media`, new `lbp-runtime/src/media.rs`) for a
+later video or audio system, and the script gets the game's answer for "nothing started".
+`LevelWorld::progression_flags` is one `u32` (was a set of numbers); `--flags` takes masks. Natives
+238 -> 249 (new list `RECORDED_REQUESTS`). MEASURED, 378 levels, 60 ticks (plain / trigger visit / pulsed):
+Things stopped by a fault stay 3 / 3 / 3; unbound natives called 44 -> 41 / 78 -> 73 / 78 -> 73; unbound
+calls 61,483 -> 61,480 / 865,266 -> 862,986 / 872,042 -> 868,663; video requests 1 and voice-over requests 1
+in 1 level. pod_planets alone, 600 and 1,200 ticks: the thread ends on tick 452, the flag word goes 0 -> 3,
+no thread starts again, 0 unbound natives (was 4, 152 calls). INFERRED: `HasPlayedLBP1AndUnlockedPod` /
+`Moon` false. Not added: the per-tick `PodComputer.UpdateVideo__` call (FOUND who calls it, 0x50373c at the
+end of 0x404598; that function is reached only through a table slot, and who calls the slot and when was
+not found). Not bound: `Video.PressedStartButton__`. Viewer: the parse of `--level-scripts-flags` only.
++0 viewable, +0 Complete. `docs/level-scripts.md` part 22.
+
 ## 2026-10-13 - D270 script names, the pod Thing, the avatar
 
 RScript plan stage 6 (the Pod), PR 1. The Pod is two levels, the shell (`pod.bin`) and the planets view

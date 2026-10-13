@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D270
+# Current state (overwrite each milestone) — after D271
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -11,7 +11,41 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D270 script names, the pod Thing, the avatar (2026-10-13)
+## Latest: D271 video, voice-over and progression flags (2026-10-13)
+- RScript plan stage 6 (the Pod), PR 2. The planets level's intro thread (451 ticks of camera zoom,
+  then a wait on "a voice-over line plays or the pod computer has a video handle") never ended: the
+  unbound `Video.StartVideo` answered 0 and the script takes any handle but -1 as a playing video.
+- Nothing plays. A video or voice-over request is kept with its arguments (`LevelWorld::media`: video
+  GUID, line name, flags, frame) for a later video or audio system; the script gets the game's answer
+  for "nothing started".
+- FOUND in the EBOOT: `Video.StartVideo__Q5Thinggb` (0x67c620) answers -1 when no video starts;
+  `Video.UpdateVideo__ib` (0x67c22c) false for a handle no video has; `Audio.RequestVoiceOver` (0x2de6b8)
+  false when no line starts; `IsVoiceOverPlaying` (0x2de218) false while none plays; `StopVoiceOver`
+  true; `SetMixOverlay` / `RemoveMixOverlay` (0x2cdb7c, 0x2cdaa0) false without the audio system object;
+  `Profile.SetLBP2GameProgressionFlag__i` (0x15d22c) ORs a bit mask into one 32-bit word of the profile
+  and `IsLBP2GameProgressionFlagSet__i` (0x15d2a8) wants every bit of its mask. The intro sets mask 3.
+- Runtime: `LevelWorld::progression_flags` is one `u32` (was a set of numbers); `--flags` and the
+  viewer's `--level-scripts-flags` take masks (`parse_progression_flags`). New
+  `lbp-runtime/src/media.rs` (`MediaState`, `VideoRequest`, `VoiceOverRequest`). Natives 238 -> 249
+  (`STATE_QUERIES` 26 -> 29, `RECORDED_ONLY` 23 -> 24, new `RECORDED_REQUESTS` of 5 with their answers).
+  `level_scripts`: `media`, `progression_flags`, `thread_ticks`. Viewer: the option's parse only.
+- MEASURED (378 levels, 60 ticks; plain / trigger visit / pulsed): Things stopped by a fault 3 / 3 / 3
+  (unchanged); unbound natives called 44 -> 41 / 78 -> 73 / 78 -> 73; unbound calls 61,483 -> 61,480 /
+  865,266 -> 862,986 / 872,042 -> 868,663. Video requests 1 in 1 level, voice-over requests 1 in 1
+  level (all three); mix overlays removed 0 / 2,260 in 114 levels / 3,355 in 143; a script sets a
+  progression flag in 0 / 3 / 3 levels. The rest equals D270.
+- The Pod levels alone: pod_planets, 600 and 1,200 ticks: the thread starts on tick 1 and ends on tick
+  452; the flag word goes 0 -> 3 on tick 452; no thread starts again; 0 unbound natives (was 4, 152
+  calls); the camera rests on the not-in-use preset (the in-use one with `--puter-in-use`). pod.bin is
+  as in D270; with `--flags=3` and a visiting player its update reaches `Native.GetIsInPadZone`.
+- INFERRED: `HasPlayedLBP1AndUnlockedPod` / `Moon` false (no save data of the first game); the debug
+  and build overrides of the flag test are off; `RequestVoiceOver` true when a line starts.
+- Not added: the engine's per-tick `PodComputer.UpdateVideo__` call. FOUND who calls it (0x50373c, at
+  the end of 0x404598, a function reached only through a table slot); who calls that slot and when was
+  not found. Not bound: `Video.PressedStartButton__`. The flag word is per level world: one session
+  for both Pod levels is PR 4. Next: PR 3, the viewer's Pod camera. `docs/level-scripts.md` part 22.
+
+## Before: D270 script names, the pod Thing, the avatar (2026-10-13)
 - RScript plan stage 6 (the Pod), PR 1. The Pod is two levels, `gamedata/levels/pod/pod.bin` (the shell)
   and `gamedata/lbp2/pod/levels/pod_planets.bin` (the planets view); the runtime plays each alone. The
   shell's world script was the one Thing outside TriggerAirStone that stopped on a fault: two unbound

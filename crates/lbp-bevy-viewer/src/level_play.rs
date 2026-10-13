@@ -83,12 +83,11 @@ pub fn install(app: &mut App) -> Result<(), String> {
         return Err("--level-scripts requires --level-guid or --level-path".into());
     }
     let hide_ui = all.iter().any(|a| a == "--qa-hide-ui");
-    // LBP2 game progression flags set on the profile (as `level_scripts --flags`).
+    // Bit masks ORed into the profile's word of LBP2 game progression flags (as
+    // `level_scripts --flags`).
     let flags = value(&all, "--level-scripts-flags")
         .map(|v| {
-            v.split(',')
-                .map(|f| f.trim().parse::<i32>())
-                .collect::<Result<std::collections::BTreeSet<_>, _>>()
+            lbp_runtime::parse_progression_flags(&v)
                 .map_err(|e| format!("--level-scripts-flags: {e}"))
         })
         .transpose()?

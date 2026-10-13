@@ -29,6 +29,7 @@ use std::sync::Arc;
 mod camera;
 mod display;
 mod global_settings;
+mod media;
 mod message_view;
 mod messages;
 mod pod;
@@ -38,6 +39,7 @@ pub mod transform;
 pub use camera::*;
 pub use display::*;
 pub use global_settings::*;
+pub use media::*;
 pub use message_view::*;
 pub use messages::*;
 pub use pod::*;
@@ -317,9 +319,14 @@ pub struct LevelWorld {
     pub gooeys_created: usize,
     /// Interactive-music commands scripts sent, by name.
     pub audio_commands: BTreeMap<String, u64>,
-    /// LBP2 game progression flags set on the profile (`IsLBP2GameProgressionFlagSet__i`).
-    /// Empty = a fresh profile, on which PlanetsWorld starts its intro cutscene thread.
-    pub progression_flags: BTreeSet<i32>,
+    /// The profile's word of LBP2 game progression flags: one bit a flag. FOUND (01.33,
+    /// 0x15d22c, 0x15d2a8): `Profile.SetLBP2GameProgressionFlag__i` ORs its argument
+    /// into the word and `IsLBP2GameProgressionFlagSet__i` is true when every bit of its
+    /// argument is set. 0 = a fresh profile, on which the planets level's world script
+    /// starts its intro thread; the thread sets the mask 3 when it ends.
+    pub progression_flags: u32,
+    /// The video and voice-over requests of the scripts ([`MediaState`]). Nothing plays.
+    pub media: MediaState,
     /// `PodComputer.GetPodComputerInUse__`: a player is at the pod computer ("PuterInUse").
     /// False by default (INFERRED: nobody at the computer when the Pod loads).
     pub pod_computer_in_use: bool,
@@ -1995,8 +2002,9 @@ impl World for LevelWorld {
     /// [`LevelWorld::scoreboard_requests`]. A null Thing is counted and nothing more, as
     /// the game does nothing for it. The calls of [`KEPT_REQUESTS`] are kept with their
     /// arguments in [`LevelWorld::requests`], and `SetAnimLoop` on its Thing. The
-    /// messaging calls also go to the message list ([`LevelWorld::messages`]), and the
-    /// pod computer's two calls leave their value in [`LevelWorld::pod`].
+    /// messaging calls also go to the message list ([`LevelWorld::messages`]), the
+    /// pod computer's two calls leave their value in [`LevelWorld::pod`], and the video
+    /// and voice-over calls are kept in [`LevelWorld::media`].
     fn engine_call(
         &mut self,
         name: &'static str,
@@ -2020,6 +2028,7 @@ impl World for LevelWorld {
             }
         }
         self.message_call(name, thing, args);
+        self.media_call(name, thing, args);
         match (name, args.first()) {
             ("SetFadePodDecorations", Some(Value::Float(f))) => {
                 self.pod.fade = Some(*f);
@@ -2174,6 +2183,12 @@ impl World for LevelWorld {
     /// D270, INFERRED: `Game.IsStartMenuOpen__` and `Pod.IsTakingPhoto__Q5Thing` are
     /// false. Nothing here opens the start menu, and no player has a Popit to take a
     /// photo with.
+    ///
+    /// D271: `Audio.IsVoiceOverPlaying__` is false: no line ever starts
+    /// ([`LevelWorld::media`]), and false is the game's answer while none plays (FOUND).
+    /// `Profile.HasPlayedLBP1AndUnlockedPod__` and `...UnlockedMoon__` are false
+    /// (INFERRED: a profile without save data of the first game, as the fresh profile
+    /// of the progression flags).
     fn state_query(&mut self, native: &str) -> Result<Value, String> {
         Ok(match native {
             "GameMessagingManager.Messaging_ShouldFilterMessageStrings__" => {
@@ -2196,7 +2211,10 @@ impl World for LevelWorld {
             "Game.GetKeyIndex__Q25Gooey.EGooeyNetworkActionQ6String" => Value::Int(-1),
             "ModalOverlay.IsPartyLeaderOverlayActive__"
             | "Game.IsStartMenuOpen__"
-            | "Pod.IsTakingPhoto__Q5Thing" => Value::Bool(false),
+            | "Pod.IsTakingPhoto__Q5Thing"
+            | "Audio.IsVoiceOverPlaying__"
+            | "Profile.HasPlayedLBP1AndUnlockedPod__"
+            | "Profile.HasPlayedLBP1AndUnlockedMoon__" => Value::Bool(false),
             "Game.IsVcrPaused__" | "Game.IsPSNDemoBuild__" => Value::Bool(false),
             "Game.IsTutorialLevel__" => Value::Bool(self.tutorial_level),
             "Game.GetPartyLeadersPlayerNumber__" => {
@@ -2220,9 +2238,16 @@ impl World for LevelWorld {
         *self.audio_commands.entry(name.to_owned()).or_default() += 1;
         Ok(())
     }
-    /// Flags in [`LevelWorld::progression_flags`]; empty is a fresh profile (default).
-    fn progression_flag(&mut self, flag: i32) -> Result<bool, String> {
-        Ok(self.progression_flags.contains(&flag))
+    /// Every bit of the mask is set in [`LevelWorld::progression_flags`]. A mask of 0 is
+    /// set on any profile, as in the game's test.
+    fn progression_flag(&mut self, mask: u32) -> Result<bool, String> {
+        Ok(self.progression_flags & mask == mask)
+    }
+    /// ORs the mask into [`LevelWorld::progression_flags`]. The game also marks the
+    /// profile as changed; nothing is saved here.
+    fn set_progression_flags(&mut self, mask: u32) -> Result<(), String> {
+        self.progression_flags |= mask;
+        Ok(())
     }
     /// [`LevelWorld::pod_computer_in_use`].
     fn pod_computer_in_use(&mut self) -> Result<bool, String> {

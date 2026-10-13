@@ -127,6 +127,11 @@ pub const LOCK_MESH: u32 = 0xeb1;
 pub const POD_MESH: u32 = 0x2f6c;
 pub const POD_PLATFORM_MESH: u32 = 0x23959;
 
+/// What `Video.StartVideo__Q5Thinggb` answers when no video starts (FOUND, 01.33,
+/// 0x67c620). The pod computer's scripts keep the answer as their video handle and take
+/// any other value as "a video is playing".
+pub const NO_VIDEO: i32 = -1;
+
 /// What `PodComputer.GetPlanetsBackgroundGUID__` answers while the planets level is not
 /// loaded (FOUND, 01.33, 0x3fcbb4: the constant returned without that level).
 pub const DEFAULT_PLANETS_BACKGROUND: u32 = 0x1d054;
@@ -426,8 +431,13 @@ pub trait World {
     fn state_query(&mut self, native: &str) -> Result<Value, String> {
         Err(not_available(native))
     }
-    /// `Profile.IsLBP2GameProgressionFlagSet__i` (PlanetsWorld asks for flag 2).
-    fn progression_flag(&mut self, _flag: i32) -> Result<bool, String> {
+    /// `Profile.IsLBP2GameProgressionFlagSet__i`: is every bit of `mask` set in the
+    /// profile's word of LBP2 game progression flags?
+    fn progression_flag(&mut self, _mask: u32) -> Result<bool, String> {
+        Err(not_available("the profile"))
+    }
+    /// `Profile.SetLBP2GameProgressionFlag__i`: sets the bits of `mask` in that word.
+    fn set_progression_flags(&mut self, _mask: u32) -> Result<(), String> {
         Err(not_available("the profile"))
     }
     /// Is a player using the pod computer (`PodComputer.GetPodComputerInUse__`)?
@@ -1549,8 +1559,14 @@ const TABLE: &[(&str, &str, NativeFn)] = &[
         w.audio_command("StopInteractiveMusic", c.params)?;
         Ok(Value::Void)
     }),
+    // FOUND (01.33, 0x5f6860 -> 0x73fa20 -> 0x161eac -> 0x15d2a8). Declared static
+    // `bool IsLBP2GameProgressionFlagSet(s32)` on Profile. The argument is a bit mask:
+    // true when every bit of it is set in one 32-bit word of the profile, the word
+    // `SetLBP2GameProgressionFlag__i` writes. The core also answers true whatever the
+    // word while a debug byte is set, or for the masks 1 and 2 while a build-type word
+    // has one value. INFERRED: neither holds in a played retail game.
     ("Profile", "IsLBP2GameProgressionFlagSet__i", |w, c| {
-        Ok(Value::Bool(w.progression_flag(int(param(c, 0)?)?)?))
+        Ok(Value::Bool(w.progression_flag(int(param(c, 0)?)? as u32)?))
     }),
     ("Planets", "GetCrafteroid__i", |w, c| {
         w.crafteroid(int(param(c, 0)?)?)
@@ -2555,6 +2571,111 @@ const TABLE: &[(&str, &str, NativeFn)] = &[
         boolean(param(c, 0)?)?;
         recorded(w, "RequestHostUsePod", None, c.params)
     }),
+    // ---- D271: video, voice-over and progression flags (docs/level-scripts.md part 22) ----
+    // Nothing here plays a video or a sound. A request is kept by the world with its
+    // arguments, for a later audio or video system, and the script gets the answer the
+    // game gives when nothing started ([`RECORDED_REQUESTS`]).
+    //
+    // FOUND (01.33, 0x642340 -> 0x75672c -> 0x67c620, 0x67c45c). Declared static
+    // `s32 StartVideo(Thing, guid, bool)` on Video. Two script functions call it, both
+    // of the pod computer, and keep the answer as the pod computer's video handle; the
+    // scripts that wait for a video wait while that handle is not -1. The core tries to
+    // start the video: started, it returns the video's handle; not started, -1. Here no
+    // video starts, so the answer is always the game's -1.
+    ("Video", "StartVideo__Q5Thinggb", |w, c| {
+        let t = thing(param(c, 0)?)?;
+        guid(param(c, 1)?)?;
+        boolean(param(c, 2)?)?;
+        w.engine_call("StartVideo", t, c.params)?;
+        Ok(Value::Int(NO_VIDEO))
+    }),
+    // FOUND (01.33, 0x5fb5cc -> 0x7566ec -> 0x67c22c, 0x679438). Declared static
+    // `bool UpdateVideo(s32, bool)` on Video. One script function calls it, with the pod
+    // computer's video handle, and sets that handle to -1 on false. The core looks for
+    // the video with the handle: none, false; else it steps the video and returns false
+    // once it has ended. No video has a handle here (`StartVideo` hands none out), so
+    // the answer is the game's false for every handle.
+    ("Video", "UpdateVideo__ib", |_, c| {
+        int(param(c, 0)?)?;
+        boolean(param(c, 1)?)?;
+        Ok(Value::Bool(false))
+    }),
+    // FOUND (01.33, 0x5f5434 -> 0x67a3d8). Declared static `void StopVideo(s32)` on
+    // Video: stops the video with that handle, if there is one. Recorded only.
+    ("Video", "StopVideo__i", |w, c| {
+        int(param(c, 0)?)?;
+        recorded(w, "StopVideo", None, c.params)
+    }),
+    // FOUND (01.33, 0x619430 -> 0x7324fc -> 0x2df200 -> 0x2de6b8). Declared static
+    // `bool RequestVoiceOver(StringA, bool, bool)` on Audio: the name of a line and two
+    // flags. Ten script functions call it; the ones the measuring runs reach drop the
+    // answer. The core answers false, and starts nothing, while voice-over is switched
+    // off (one global), for a line the profile has heard when the second flag is false,
+    // and while a line plays that the first flag does not let it interrupt; else it
+    // starts the line's sound. Here no line starts: the game's false. INFERRED: the
+    // answer is true when a line starts (the end of the core was not read).
+    ("Audio", "RequestVoiceOver__Q7StringAbb", |w, c| {
+        opt_text(param(c, 0)?)?;
+        boolean(param(c, 1)?)?;
+        boolean(param(c, 2)?)?;
+        w.engine_call("RequestVoiceOver", None, c.params)?;
+        Ok(Value::Bool(false))
+    }),
+    // FOUND (01.33, 0x5f8fdc -> 0x2de218). Declared static `bool IsVoiceOverPlaying()`
+    // on Audio: false unless voice-over is switched on, the kept sound handle is valid
+    // and its sound is playing. The Pod's threads wait on it. A state query: false,
+    // since no line ever starts.
+    ("Audio", "IsVoiceOverPlaying__", |w, _| {
+        bool_query(w, "Audio.IsVoiceOverPlaying__")
+    }),
+    // FOUND (01.33, 0x5f9018 -> 0x2de498). Declared static `bool StopVoiceOver()` on
+    // Audio: stops the line that plays and returns true, always.
+    ("Audio", "StopVoiceOver__", |w, c| {
+        w.engine_call("StopVoiceOver", None, c.params)?;
+        Ok(Value::Bool(true))
+    }),
+    // FOUND (01.33, 0x6194f4 -> 0x73255c -> 0x2cdb7c). Declared static
+    // `bool SetMixOverlay(StringA, f32)` on Audio: the name of a mix and a float.
+    // False while the audio system object (one global pointer) is null; else the
+    // audio system's own answer, which was not read. Here there is no audio system: the
+    // game's false.
+    ("Audio", "SetMixOverlay__Q7StringAf", |w, c| {
+        opt_text(param(c, 0)?)?;
+        float(param(c, 1)?)?;
+        w.engine_call("SetMixOverlay", None, c.params)?;
+        Ok(Value::Bool(false))
+    }),
+    // FOUND (01.33, 0x619494 -> 0x73252c -> 0x2cdaa0). Declared static
+    // `bool RemoveMixOverlay(StringA, f32)` on Audio: as `SetMixOverlay`, false without
+    // the audio system object. The speech-bubble script calls it when a bubble closes
+    // and drops the answer.
+    ("Audio", "RemoveMixOverlay__Q7StringAf", |w, c| {
+        opt_text(param(c, 0)?)?;
+        float(param(c, 1)?)?;
+        w.engine_call("RemoveMixOverlay", None, c.params)?;
+        Ok(Value::Bool(false))
+    }),
+    // FOUND (01.33, 0x5f56cc -> 0x73fe44 -> 0x163a4c -> 0x15d22c). Declared static
+    // `void SetLBP2GameProgressionFlag(s32)` on Profile. The argument is a bit mask:
+    // the core ORs it into one 32-bit word of each local profile and marks the profile
+    // changed. The Pod's intro thread sets a mask of two bits when it ends, and the
+    // planets level's world script starts that thread only while one of them is clear.
+    ("Profile", "SetLBP2GameProgressionFlag__i", |w, c| {
+        w.set_progression_flags(int(param(c, 0)?)? as u32)?;
+        Ok(Value::Void)
+    }),
+    // FOUND (01.33, 0x5f6958 -> 0x740084; 0x5f68e0 -> 0x7439dc). Declared static
+    // `bool HasPlayedLBP1AndUnlockedPod()` and `...UnlockedMoon()` on Profile: false
+    // without a loaded profile record in one of two states, else one byte the record
+    // answers with. The Pod's intro thread picks its voice-over line by the first and
+    // the flags it sets by the second. State queries. INFERRED: false, a profile
+    // without save data of the first game.
+    ("Profile", "HasPlayedLBP1AndUnlockedPod__", |w, _| {
+        bool_query(w, "Profile.HasPlayedLBP1AndUnlockedPod__")
+    }),
+    ("Profile", "HasPlayedLBP1AndUnlockedMoon__", |w, _| {
+        bool_query(w, "Profile.HasPlayedLBP1AndUnlockedMoon__")
+    }),
     // ---- the game's own test scripts ----
     ("Test", "Check__bQ7StringAi", |w, c| {
         let ok = boolean(param(c, 0)?)?;
@@ -2590,7 +2711,7 @@ const TABLE: &[(&str, &str, NativeFn)] = &[
 ];
 
 /// The natives bound through [`World::state_query`], with their return type.
-pub const STATE_QUERIES: [(&str, &str); 26] = [
+pub const STATE_QUERIES: [(&str, &str); 29] = [
     ("Game.IsNonInteractive__", "bool"),
     ("Game.GetNumPendingLinks__", "s32"),
     ("Game.GetNumAvatars__", "s32"),
@@ -2626,13 +2747,16 @@ pub const STATE_QUERIES: [(&str, &str); 26] = [
     ("Game.GetNumKnownItemsCollectedAtStart__", "s32"),
     ("Game.IsStartMenuOpen__", "bool"),
     ("Pod.IsTakingPhoto__Q5Thing", "bool"),
+    ("Audio.IsVoiceOverPlaying__", "bool"),
+    ("Profile.HasPlayedLBP1AndUnlockedPod__", "bool"),
+    ("Profile.HasPlayedLBP1AndUnlockedMoon__", "bool"),
 ];
 
 /// Bound natives that return nothing and whose whole effect here is a record in the world
 /// ([`World::engine_call`], or a counter for the audio ones): the engine would draw, play
 /// or send something that nothing models yet. Reports count calls to them apart from the
 /// other bound natives.
-pub const RECORDED_ONLY: [(&str, &str); 23] = [
+pub const RECORDED_ONLY: [(&str, &str); 24] = [
     ("Audio", "PlaySound__Q5ThingQ7StringA"),
     ("Audio", "SetInteractiveMusic__ggffiQ5Thing"),
     ("Audio", "SetInteractiveMusicStereoPairVolume__giff"),
@@ -2656,6 +2780,20 @@ pub const RECORDED_ONLY: [(&str, &str); 23] = [
     ("Game", "SetGlobalSettingsAudioTo__ifffffffffff"),
     ("PodComputer", "SetFadePodDecorations__f"),
     ("PodComputer", "RequestHostUsePod__b"),
+    ("Video", "StopVideo__i"),
+];
+
+/// Bound natives that ask the engine to play something and return an answer. Nothing
+/// plays here: the world keeps the call ([`World::engine_call`]) and the script gets the
+/// answer the game gives when nothing started, or the one answer the game has. The third
+/// entry is that answer as the script sees it. Reports count calls to them apart from
+/// the other bound natives, as they do for [`RECORDED_ONLY`].
+pub const RECORDED_REQUESTS: [(&str, &str, &str); 5] = [
+    ("Video", "StartVideo__Q5Thinggb", "-1"),
+    ("Audio", "RequestVoiceOver__Q7StringAbb", "false"),
+    ("Audio", "StopVoiceOver__", "true"),
+    ("Audio", "SetMixOverlay__Q7StringAf", "false"),
+    ("Audio", "RemoveMixOverlay__Q7StringAf", "false"),
 ];
 
 /// The `GameMessagingManager` natives that open or close a message. They return nothing
@@ -2729,6 +2867,10 @@ mod tests {
         }
         for (class, mangled) in RECORDED_ONLY {
             assert!(lookup(class, mangled).is_some(), "{mangled}");
+        }
+        for (class, mangled, _) in RECORDED_REQUESTS {
+            assert!(lookup(class, mangled).is_some(), "{mangled}");
+            assert!(!RECORDED_ONLY.contains(&(class, mangled)), "{mangled}");
         }
         for mangled in MESSAGING {
             assert!(
@@ -3051,8 +3193,132 @@ mod tests {
                 "RequestHostUsePod None [Bool(true)]",
             ]
         );
-        // The table: 225 natives before these thirteen.
-        assert_eq!(bound().count(), 238);
+    }
+
+    #[test]
+    fn d271_video_voice_over_and_flag_natives() {
+        let video = "StartVideo__Q5Thinggb";
+        let start = [Value::Thing(None), Value::Int(77), Value::Bool(false)];
+        let line = [
+            Value::Str("made_up_line".into()),
+            Value::Bool(true),
+            Value::Bool(true),
+        ];
+        let mix = [Value::Str("Made Up Mix".into()), Value::Float(0.2)];
+        // A world without the state says so.
+        assert!(call("Video", video, &start).is_err());
+        assert!(call("Video", "StopVideo__i", &[Value::Int(3)]).is_err());
+        assert!(call("Audio", "RequestVoiceOver__Q7StringAbb", &line).is_err());
+        assert!(call("Audio", "IsVoiceOverPlaying__", &[]).is_err());
+        assert!(call("Audio", "StopVoiceOver__", &[]).is_err());
+        assert!(call("Audio", "SetMixOverlay__Q7StringAf", &mix).is_err());
+        assert!(call("Audio", "RemoveMixOverlay__Q7StringAf", &mix).is_err());
+        let mask = [Value::Int(3)];
+        assert!(call("Profile", "SetLBP2GameProgressionFlag__i", &mask).is_err());
+        assert!(call("Profile", "IsLBP2GameProgressionFlagSet__i", &mask).is_err());
+        assert!(call("Profile", "HasPlayedLBP1AndUnlockedPod__", &[]).is_err());
+        assert!(call("Profile", "HasPlayedLBP1AndUnlockedMoon__", &[]).is_err());
+        // No world is asked: no video has a handle.
+        for handle in [-1, 0, 7] {
+            let args = [Value::Int(handle), Value::Bool(false)];
+            assert_eq!(
+                call("Video", "UpdateVideo__ib", &args),
+                Ok(Value::Bool(false))
+            );
+        }
+        assert!(call("Video", "UpdateVideo__ib", &[Value::Int(0), Value::Int(0)]).is_err());
+
+        /// A world with a flag word and a list of the calls it was handed.
+        #[derive(Default)]
+        struct Media(u32, Vec<String>);
+        impl World for Media {
+            fn progression_flag(&mut self, mask: u32) -> Result<bool, String> {
+                Ok(self.0 & mask == mask)
+            }
+            fn set_progression_flags(&mut self, mask: u32) -> Result<(), String> {
+                self.0 |= mask;
+                Ok(())
+            }
+            fn state_query(&mut self, native: &str) -> Result<Value, String> {
+                self.1.push(format!("query {native}"));
+                Ok(Value::Bool(false))
+            }
+            fn engine_call(
+                &mut self,
+                name: &'static str,
+                thing: Option<u32>,
+                args: &[Value],
+            ) -> Result<(), String> {
+                self.1.push(format!("{name} {thing:?} {}", args.len()));
+                Ok(())
+            }
+        }
+        let mut w = Media::default();
+        let mut go =
+            |class: &str, m: &str, args: &[Value]| dispatch(&mut w, class, m, args).unwrap();
+        // The answers are the game's for "nothing started".
+        assert_eq!(go("Video", video, &start), Ok(Value::Int(NO_VIDEO)));
+        let on_thing = [Value::Thing(Some(4)), Value::Raw(77), Value::Bool(true)];
+        assert_eq!(go("Video", video, &on_thing), Ok(Value::Int(-1)));
+        let no_thing = [Value::Int(1), Value::Int(77), Value::Bool(true)];
+        assert!(go("Video", video, &no_thing).is_err());
+        assert!(go("Video", video, &start[..2]).is_err());
+        assert_eq!(
+            go("Video", "StopVideo__i", &[Value::Int(-1)]),
+            Ok(Value::Void)
+        );
+        let request = "RequestVoiceOver__Q7StringAbb";
+        assert_eq!(go("Audio", request, &line), Ok(Value::Bool(false)));
+        let null_line = [Value::Object(None), Value::Bool(false), Value::Bool(false)];
+        assert_eq!(go("Audio", request, &null_line), Ok(Value::Bool(false)));
+        assert!(go("Audio", request, &mix).is_err());
+        assert_eq!(
+            go("Audio", "IsVoiceOverPlaying__", &[]),
+            Ok(Value::Bool(false))
+        );
+        assert_eq!(go("Audio", "StopVoiceOver__", &[]), Ok(Value::Bool(true)));
+        for name in ["SetMixOverlay__Q7StringAf", "RemoveMixOverlay__Q7StringAf"] {
+            assert_eq!(go("Audio", name, &mix), Ok(Value::Bool(false)), "{name}");
+            assert!(go("Audio", name, &line).is_err(), "{name}");
+        }
+        // The flag natives take a bit mask.
+        let set = "SetLBP2GameProgressionFlag__i";
+        let is_set = "IsLBP2GameProgressionFlagSet__i";
+        assert_eq!(
+            go("Profile", is_set, &[Value::Int(2)]),
+            Ok(Value::Bool(false))
+        );
+        assert_eq!(go("Profile", set, &mask), Ok(Value::Void));
+        for (m, on) in [(1, true), (2, true), (3, true), (4, false), (6, false)] {
+            let answer = go("Profile", is_set, &[Value::Int(m)]);
+            assert_eq!(answer, Ok(Value::Bool(on)), "mask {m}");
+        }
+        assert!(go("Profile", set, &[Value::Bool(true)]).is_err());
+        for name in [
+            "HasPlayedLBP1AndUnlockedPod__",
+            "HasPlayedLBP1AndUnlockedMoon__",
+        ] {
+            assert_eq!(go("Profile", name, &[]), Ok(Value::Bool(false)), "{name}");
+        }
+        assert_eq!(
+            w.1,
+            [
+                "StartVideo None 3",
+                "StartVideo Some(4) 3",
+                "StopVideo None 1",
+                "RequestVoiceOver None 3",
+                "RequestVoiceOver None 3",
+                "query Audio.IsVoiceOverPlaying__",
+                "StopVoiceOver None 0",
+                "SetMixOverlay None 2",
+                "RemoveMixOverlay None 2",
+                "query Profile.HasPlayedLBP1AndUnlockedPod__",
+                "query Profile.HasPlayedLBP1AndUnlockedMoon__",
+            ]
+        );
+        assert_eq!(w.0, 3);
+        // The table: 238 natives before these eleven.
+        assert_eq!(bound().count(), 249);
     }
 
     #[test]

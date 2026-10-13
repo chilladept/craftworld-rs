@@ -221,6 +221,26 @@ UI (`UpdateUI__`) and photo natives are not planned.
   established): `SetPodTransitionTexture`, `CurrentLevelIsOurPod`, `GetPlayerColour`,
   `GetIsInPadZone`, `IsJustClickedByID`. Follows: PR 2 video, voice-over and
   progression flags (the intro ends), PR 3 the viewer's Pod camera.
+- Stage 6, PR 2 (D271, part 22): video, voice-over and progression flags. The planets
+  level's intro thread never ended: the unbound `Video.StartVideo` answered 0 and the
+  script takes any video handle but -1 as "a video is playing". FOUND: `StartVideo`
+  answers -1 when no video starts; `RequestVoiceOver` answers false when no line
+  starts and `IsVoiceOverPlaying` is false while none plays; the two flag natives take
+  a bit mask on one 32-bit word of the profile (set is an OR, the test wants every
+  bit); the mix overlay natives answer false without an audio system. Nothing plays:
+  a video or voice-over request is kept with its arguments (`LevelWorld::media`, new
+  `lbp-runtime/src/media.rs`) for a later video or audio system, and the script gets
+  the game's answer for "nothing started". `LevelWorld::progression_flags` is one
+  `u32` (it was a set of numbers); `--flags` takes masks. Natives 238 -> 249. The
+  intro now ends on tick 452 (451 ticks of zoom), sets the mask 3 and is not started
+  again; no unbound native is called in the planets level. Over 378 levels: Things
+  stopped by a fault stay 3 / 3 / 3; unbound natives called 44 -> 41 / 78 -> 73 /
+  78 -> 73, unbound calls 61,483 -> 61,480 / 865,266 -> 862,986 / 872,042 -> 868,663.
+  INFERRED: `HasPlayedLBP1AndUnlockedPod` / `Moon` false (no save data of the first
+  game). Not added: the engine's per-tick `PodComputer.UpdateVideo__` call (FOUND who
+  calls it, a function reached only through a table slot; not found who calls that
+  slot and when). Not bound: `Video.PressedStartButton__`. Follows: PR 3 the viewer's
+  Pod camera, PR 4 the pod computer is entered.
 
 ## Rules
 
