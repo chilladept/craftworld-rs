@@ -41,14 +41,17 @@
 //! calls kept with their arguments, by name. `play_all.messages` counts what the messaging
 //! natives did to the world's message list: requests, messages opened, written over and
 //! dropped by type, their text (a string of a loaded table, another string, empty), actor
-//! names, anchors, messages closed and those open at the end.
+//! names, anchors, messages closed and those open at the end. `play_all.global_settings`
+//! counts the per-tick `ApplyGlobalSettings__` calls by setting type, the slots cleared,
+//! and by type the levels and ticks on which the setting in force was not the one in force
+//! when the level was read.
 //! Names and counts only; no bytecode. Output: a NEW JSON file under
 //! ignored `local-analysis/`. Counting unit: Thing with a PScript part (instances) or
 //! distinct script class (function names).
 use lbp_catalog::{attachment::AttachedSource, LoadControl};
 use lbp_runtime::{
-    instances, BubbleStyle, LevelScripts, LevelWorld, MessageKind, Outcome, ReactionReport, Runner,
-    StepReport,
+    instances, BubbleStyle, GlobalSettingsReport, LevelScripts, LevelWorld, MessageKind, Outcome,
+    ReactionReport, Runner, StepReport, GLOBAL_SETTINGS, GLOBAL_SETTING_NAMES,
 };
 use lbp_script_vm::natives::Bindings;
 use lbp_script_vm::Vm;
@@ -759,6 +762,124 @@ impl MessageSums {
     }
 }
 
+/// The global settings over a play run. Units: tick; level; `ApplyGlobalSettings__` call.
+/// "Unlike" compares the setting in force (`WorldState::settings_in_force`) with the one
+/// in force when the level was read, by setting type. For one level the level counts are
+/// 0 or 1.
+#[derive(Default, Clone)]
+struct SettingsSums {
+    ticks: u64,
+    /// Ticks after which the type was unlike; any type.
+    ticks_unlike: [u64; GLOBAL_SETTINGS],
+    ticks_any_unlike: u64,
+    /// Levels with such a tick; any type.
+    levels_unlike: [usize; GLOBAL_SETTINGS],
+    levels_any_unlike: usize,
+    /// Levels where the type was unlike after the last tick; any type.
+    levels_unlike_at_end: [usize; GLOBAL_SETTINGS],
+    levels_any_unlike_at_end: usize,
+    /// Ticks after which lighting or darkness, the two values of the lighting group the
+    /// viewer shows, was unlike; levels with such a tick.
+    ticks_light_unlike: u64,
+    levels_light_unlike: usize,
+    /// The global-settings pass of every tick.
+    applied: GlobalSettingsReport,
+    /// Levels with a call, by type; any type.
+    levels_with_call: [usize; GLOBAL_SETTINGS],
+    levels_with_any_call: usize,
+    /// Levels whose stored current lighting values (PWorld `lighting` to `darkness`) are
+    /// not the stored from / target / blend factor taken together; of those, the levels
+    /// where lighting or darkness is one of the values.
+    levels_stored_lighting_unlike_blend: usize,
+    levels_stored_light_unlike_blend: usize,
+}
+
+impl SettingsSums {
+    /// After one tick.
+    fn note(&mut self, world: &LevelWorld) {
+        let unlike = world.settings_unlike_load();
+        self.ticks += 1;
+        for (n, u) in self.ticks_unlike.iter_mut().zip(unlike) {
+            *n += u64::from(u);
+        }
+        self.ticks_any_unlike += u64::from(unlike.contains(&true));
+        let light = |s: &lbp_runtime::SettingsInForce| s.light().map(f32::to_bits);
+        let now = world.pworld.settings_in_force();
+        self.ticks_light_unlike += u64::from(light(&now) != light(&world.settings_at_load));
+    }
+
+    /// After the last tick, with the summed pass report.
+    fn finish(&mut self, world: &LevelWorld, applied: &GlobalSettingsReport) {
+        let unlike = world.settings_unlike_load();
+        self.levels_unlike = self.ticks_unlike.map(|n| usize::from(n > 0));
+        self.levels_unlike_at_end = unlike.map(usize::from);
+        self.levels_with_call = applied.calls.map(|n| usize::from(n > 0));
+        self.levels_any_unlike = usize::from(self.ticks_any_unlike > 0);
+        self.levels_light_unlike = usize::from(self.ticks_light_unlike > 0);
+        self.levels_any_unlike_at_end = usize::from(unlike.contains(&true));
+        self.levels_with_any_call = usize::from(applied.total_calls() > 0);
+        self.applied = applied.clone();
+        let (stored, start) = (
+            world.pworld.lighting_stored,
+            world.settings_at_load.lighting,
+        );
+        let differs = |i: usize| stored[i].to_bits() != start[i].to_bits();
+        self.levels_stored_lighting_unlike_blend = usize::from((0..5).any(differs));
+        self.levels_stored_light_unlike_blend = usize::from(differs(0) || differs(4));
+    }
+
+    fn add(&mut self, o: &SettingsSums) {
+        self.ticks += o.ticks;
+        self.ticks_any_unlike += o.ticks_any_unlike;
+        self.levels_any_unlike += o.levels_any_unlike;
+        self.levels_any_unlike_at_end += o.levels_any_unlike_at_end;
+        self.levels_with_any_call += o.levels_with_any_call;
+        self.ticks_light_unlike += o.ticks_light_unlike;
+        self.levels_light_unlike += o.levels_light_unlike;
+        for kind in 0..GLOBAL_SETTINGS {
+            self.ticks_unlike[kind] += o.ticks_unlike[kind];
+            self.levels_unlike[kind] += o.levels_unlike[kind];
+            self.levels_unlike_at_end[kind] += o.levels_unlike_at_end[kind];
+            self.levels_with_call[kind] += o.levels_with_call[kind];
+        }
+        self.applied.absorb(o.applied.clone());
+        self.levels_stored_lighting_unlike_blend += o.levels_stored_lighting_unlike_blend;
+        self.levels_stored_light_unlike_blend += o.levels_stored_light_unlike_blend;
+    }
+
+    fn json(&self) -> serde_json::Value {
+        let by_type: BTreeMap<_, _> = (0..GLOBAL_SETTINGS)
+            .map(|kind| {
+                let row = serde_json::json!({
+                    "apply_calls": self.applied.calls[kind],
+                    "levels_with_an_apply_call": self.levels_with_call[kind],
+                    "ticks_unlike_load": self.ticks_unlike[kind],
+                    "levels_unlike_load": self.levels_unlike[kind],
+                    "levels_unlike_load_at_end": self.levels_unlike_at_end[kind],
+                });
+                (GLOBAL_SETTING_NAMES[kind], row)
+            })
+            .collect();
+        serde_json::json!({
+            "unit": "tick; level; ApplyGlobalSettings__ call; unlike = the setting in force is not the one in force when the level was read (audio is not kept, so never unlike)",
+            "ticks": self.ticks,
+            "by_type": by_type,
+            "apply_calls": self.applied.total_calls(),
+            "levels_with_an_apply_call": self.levels_with_any_call,
+            "slot_turns_without_the_function": self.applied.no_function,
+            "slot_turns_of_a_stopped_thing": self.applied.to_stopped,
+            "slots_cleared": self.applied.slots_cleared,
+            "ticks_any_unlike_load": self.ticks_any_unlike,
+            "levels_any_unlike_load": self.levels_any_unlike,
+            "levels_any_unlike_load_at_end": self.levels_any_unlike_at_end,
+            "ticks_lighting_or_darkness_unlike_load": self.ticks_light_unlike,
+            "levels_lighting_or_darkness_unlike_load": self.levels_light_unlike,
+            "levels_stored_current_lighting_group_unlike_stored_blend": self.levels_stored_lighting_unlike_blend,
+            "levels_stored_current_lighting_or_darkness_unlike_stored_blend": self.levels_stored_light_unlike_blend,
+        })
+    }
+}
+
 /// One level played: the report and what `--all` adds up.
 struct Played {
     json: serde_json::Value,
@@ -780,6 +901,7 @@ struct Played {
     /// Recorded calls kept with their arguments (`LevelWorld::requests`), by name.
     requests: BTreeMap<&'static str, u64>,
     messages: MessageSums,
+    settings: SettingsSums,
     /// Global-settings slots that hold a Thing UID at the end.
     global_settings_held: usize,
     /// Switch outputs whose signal at the end differs from the stored one, by switch type.
@@ -878,6 +1000,7 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
             s.is_some_and(|s| matches!(s.switch_type, 3 | 4))
         })
         .collect();
+    let mut settings = SettingsSums::default();
     let (mut unlike, mut unlike_ternary) = (BTreeSet::new(), BTreeSet::new());
     let mut note_sensors = |world: &LevelWorld| {
         for &i in &sensors {
@@ -900,6 +1023,7 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
             host.world.pod_computer_in_use = true;
         }
         let t = level.tick_level(vm, &mut host, BUDGET_PER_CALL);
+        settings.note(&host.world);
         ticks_with_faults += usize::from(!t.faults.is_empty());
         note_faults(&t);
         note_sensors(&host.world);
@@ -933,6 +1057,7 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
                 host.world
                     .move_player(player, [s[0] + dx, s[1], s[2]], (s[2] - 1., s[2] + 1.));
                 let t = level.tick_level(vm, &mut host, BUDGET_PER_CALL);
+                settings.note(&host.world);
                 ticks_with_faults += usize::from(!t.faults.is_empty());
                 note_faults(&t);
                 note_sensors(&host.world);
@@ -964,6 +1089,7 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
                 host.world
                     .move_player(player, [s[0] + dx, s[1], s[2]], (s[2] - 1., s[2] + 1.));
                 let t = level.tick_level(vm, &mut host, BUDGET_PER_CALL);
+                settings.note(&host.world);
                 ticks_with_faults += usize::from(!t.faults.is_empty());
                 note_faults(&t);
                 note_sensors(&host.world);
@@ -979,6 +1105,7 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
         for on in [true, false] {
             host.world.switch_pulse = Some(on);
             let t = level.tick_level(vm, &mut host, BUDGET_PER_CALL);
+            settings.note(&host.world);
             ticks_with_faults += usize::from(!t.faults.is_empty());
             note_faults(&t);
             pulse.absorb(t);
@@ -996,6 +1123,7 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
             "trigger_events_without_script": r.events_without_script,
             "trigger_events_to_stopped": r.events_to_stopped,
             "switch_reactions": reactions_json(&r.reactions),
+            "global_settings_apply_calls": r.global_settings.total_calls(),
         })
     };
     let mut unbound: Vec<_> = host.unbound.iter().collect();
@@ -1082,6 +1210,10 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
     json["messages"] = messages.json();
     sum.absorb(visit);
     sum.absorb(pulse);
+    settings.finish(&host.world, &sum.global_settings);
+    json["global_settings"] = settings.json();
+    json["lighting_in_force_at_load"] = serde_json::json!(host.world.settings_at_load.lighting);
+    json["lighting_stored_current"] = serde_json::json!(host.world.pworld.lighting_stored);
     Played {
         json,
         instances: level.instances.len(),
@@ -1103,6 +1235,7 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
         scoreboard_requests: host.world.scoreboard_requests.len(),
         requests,
         messages,
+        settings,
         global_settings_held: host
             .world
             .pworld
@@ -1144,6 +1277,7 @@ struct PlayTotals {
     messages: MessageSums,
     levels_with_message_requests: usize,
     levels_with_messages: usize,
+    settings: SettingsSums,
     global_settings_held: usize,
     faults: BTreeMap<String, (u64, usize)>,
     thread_faults: BTreeMap<String, (u64, usize)>,
@@ -1197,6 +1331,7 @@ impl PlayTotals {
         self.messages.add(&p.messages);
         self.levels_with_message_requests += usize::from(!p.messages.by_type.is_empty());
         self.levels_with_messages += usize::from(p.messages.entered() > 0);
+        self.settings.add(&p.settings);
         self.global_settings_held += p.global_settings_held;
         if let Some(f) = &p.first_tick {
             self.first_reactions.absorb(f.reactions.clone());
@@ -1309,6 +1444,7 @@ impl PlayTotals {
         doc["messages"]["levels_with_a_request"] =
             serde_json::json!(self.levels_with_message_requests);
         doc["messages"]["levels_with_a_message"] = serde_json::json!(self.levels_with_messages);
+        doc["global_settings"] = self.settings.json();
         doc
     }
 }

@@ -3123,3 +3123,176 @@ fn d266_the_overlay_reads_the_worlds_messages_and_tables() {
     w.things[8].world_matrix.as_mut().unwrap()[12] = 70.;
     assert_eq!(w.message_overlay().bubbles[0].position, [70., 2., 3.]);
 }
+
+/// `Tweaker`, a made-up global-settings script: `ApplyGlobalSettings__` adds `step` to
+/// its member `t` and writes that as the blend factor of the lighting group.
+fn tweaker() -> Script {
+    let mut s = lamp();
+    s.class_name = "Tweaker".into();
+    s.super_class = None;
+    s.strings_a = [
+        "Tweaker",
+        "Game",
+        "t",
+        "step",
+        lbp_runtime::APPLY_GLOBAL_SETTINGS,
+        "SetGlobalSettingsBlendFactor__Q24Game.EGlobalSettingsTypef",
+    ]
+    .map(String::from)
+    .to_vec();
+    s.type_refs = vec![ty(10, 0), ty(10, 1)];
+    s.field_refs = vec![
+        MemberRef {
+            type_ref: 0,
+            name: 2,
+        },
+        MemberRef {
+            type_ref: 0,
+            name: 3,
+        },
+    ];
+    s.function_refs = vec![MemberRef {
+        type_ref: 1,
+        name: 5,
+    }];
+    s.bytecode = vec![
+        i(0x95, 4, 4, 0, 0),                    // r4 = thing(r0).t
+        i(0x95, 4, 8, 0, 1),                    // r8 = thing(r0).step
+        i(0x3d, 4, 4, 4, 8),                    // r4 = r4 + r8 (ADDf)
+        i(0x97, 4, 4, 0, 0),                    // thing(r0).t = r4
+        u64::from(0x03u8) | 12 << 16 | 5 << 32, // r12 = 5, the lighting group
+        i(0xa3, 3, 12, 0, 0),                   // ARG @0 = r12
+        i(0xa3, 4, 4, 4, 0),                    // ARG @4 = r4
+        i(0xa4, 0, 0xffff, 0, 0),               // CALL Game.SetGlobalSettingsBlendFactor
+        i(0xa5, 0, 0, 0, 0),                    // RETURN
+    ];
+    let mut f = function(0, 4, 0, 9);
+    f.stack_size = 32;
+    s.function_defs = vec![f];
+    s
+}
+
+/// D267: the world update calls `ApplyGlobalSettings__` on the Thing of each
+/// global-settings slot, every tick; the settings in force follow.
+#[test]
+fn d267_the_slot_holders_apply_their_global_settings_each_tick() {
+    use lbp_runtime::{GlobalSettingsReport, SlotHolder, APPLY_GLOBAL_SETTINGS};
+    // Thing 1 (UID 7, a Tweaker) holds the lighting slot. Slot 1: Thing 3 (UID 9), whose
+    // script has no such function. Slot 2: a UID of no Thing. Slot 6: Thing 2 (UID 8),
+    // which has no script. Slot 0 is empty but stores a priority.
+    let mut things = level();
+    things.push(ThingRecord {
+        index: 3,
+        uid: Some(9),
+        ..Default::default()
+    });
+    things[2].uid = Some(8);
+    things[1].data.script = Some(ScriptPart {
+        script: Some(desc(GUID)),
+        fields: vec![
+            field("t", ScriptValue::Float(0.)),
+            field("step", ScriptValue::Float(0.25)),
+        ],
+    });
+    things[3].data.script = Some(ScriptPart {
+        script: Some(desc(BASE)),
+        fields: vec![field("count", ScriptValue::Int(0))],
+    });
+    things[0].data.world = Some(WorldPart {
+        global_settings_thing_uids: vec![0, 9, 40, 0, 0, 7, 8],
+        global_settings_thing_priority: vec![3, 1, 1, 0, 0, 1, 2],
+        gravity: 2.,
+        lighting: [0.2, 0., 0., 0., 0.],
+        gs_from: [0.2, 0., 0., 0., 0.],
+        gs_target: [1., 0., 0., 0., 0.5],
+        gs_blend: 0.,
+        ..Default::default()
+    });
+    let mut vm = Vm::default();
+    vm.load(tweaker(), Some(GUID));
+    vm.load(reactor("Mute", "Tick", 1, 4), Some(BASE));
+    let mut host = Bindings::new(LevelWorld::from_things(&things));
+    let at_load = host.world.settings_at_load;
+    assert_eq!(at_load.lighting, [0.2, 0., 0., 0., 0.]);
+    assert_eq!(at_load.gravity, 2.);
+    assert_eq!(host.world.pworld.lighting_stored, at_load.lighting);
+    assert_eq!(host.world.settings_unlike_load(), [false; 8]);
+    let mut level = LevelScripts::new(&vm, &host.world);
+
+    // The first tick: the empty slot loses its priority, the two slots without a
+    // scripted Thing are cleared, the Tweaker is called once.
+    let t = level.tick_level(&mut vm, &mut host, 1000);
+    assert!(t.faults.is_empty(), "{:?}", t.faults);
+    let mut want = GlobalSettingsReport {
+        no_function: 1,
+        slots_cleared: 2,
+        ..Default::default()
+    };
+    want.calls[5] = 1;
+    assert_eq!(t.global_settings, want);
+    assert!(host.unbound.is_empty(), "{:?}", host.unbound);
+    let p = &host.world.pworld;
+    assert_eq!(p.global_settings_thing_uids, [0, 9, 0, 0, 0, 7, 0, 0]);
+    assert_eq!(p.global_settings_thing_priority, [0, 1, 0, 0, 0, 1, 0, 0]);
+    assert_eq!(p.lighting_blend, 0.25);
+    let now = p.settings_in_force();
+    assert_eq!(now.lighting, [0.4, 0., 0., 0., 0.125]);
+    assert_eq!(now.light(), [0.4, 0.125]);
+    // Only the lighting group is unlike the level file; the stored values are kept.
+    let mut unlike = [false; 8];
+    unlike[5] = true;
+    assert_eq!(host.world.settings_unlike_load(), unlike);
+    assert_eq!(host.world.settings_at_load, at_load);
+    assert_eq!(host.world.pworld.lighting_stored, [0.2, 0., 0., 0., 0.]);
+
+    // Every later tick calls again: nothing left to clear, the blend goes on.
+    want.slots_cleared = 0;
+    for step in 2..=4 {
+        let t = level.tick_level(&mut vm, &mut host, 1000);
+        assert_eq!(t.global_settings, want, "tick {step}");
+        assert_eq!(host.world.pworld.lighting_blend, 0.25 * step as f32);
+    }
+    assert_eq!(
+        host.world.pworld.settings_in_force().lighting,
+        [1., 0., 0., 0., 0.5]
+    );
+    assert_eq!(level.stopped.len(), 0);
+
+    // The pass alone, slot by slot: the holder, an empty slot, a slot out of range.
+    assert_eq!(host.world.global_settings_holder(5), SlotHolder::Thing(1));
+    assert_eq!(host.world.global_settings_holder(0), SlotHolder::Empty);
+    assert_eq!(host.world.global_settings_holder(8), SlotHolder::Empty);
+    let t = level.apply_global_settings(&mut vm, &mut host, 1000);
+    assert_eq!((t.global_settings.total_calls(), t.done), (1, 1));
+    assert_eq!(host.world.pworld.lighting_blend, 1.25);
+
+    // The holder's UID goes to a Thing without a script: the slot is cleared.
+    host.world.things[1].uid = Some(70);
+    host.world.things[2].uid = Some(7);
+    assert_eq!(host.world.global_settings_holder(5), SlotHolder::Cleared);
+    assert_eq!(host.world.pworld.global_settings_thing_uids[5], 0);
+    assert_eq!(host.world.pworld.global_settings_thing_priority[5], 0);
+    assert_eq!(host.world.global_settings_holder(5), SlotHolder::Empty);
+
+    // A holder stopped by a fault is not called and keeps its slot.
+    host.world.things[1].uid = Some(7);
+    host.world.things[2].uid = Some(8);
+    host.world.pworld.global_settings_thing_uids[5] = 7;
+    level.stopped.insert(1);
+    let t = level.tick_level(&mut vm, &mut host, 1000);
+    assert_eq!(
+        (
+            t.global_settings.to_stopped,
+            t.global_settings.total_calls()
+        ),
+        (1, 0)
+    );
+    assert_eq!(host.world.pworld.lighting_blend, 1.25);
+    assert_eq!(host.world.pworld.global_settings_thing_uids[5], 7);
+    assert!(vm.has_code(vm.class_by_guid(GUID).unwrap(), APPLY_GLOBAL_SETTINGS));
+
+    // A level without a PWorld has no slots.
+    let mut bare = LevelWorld::from_things(&[ThingRecord::default()]);
+    assert_eq!(bare.global_settings_holder(5), SlotHolder::Empty);
+    assert_eq!(bare.settings_unlike_load(), [false; 8]);
+}

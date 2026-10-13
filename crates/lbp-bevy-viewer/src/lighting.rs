@@ -404,6 +404,30 @@ pub struct LightingState {
     /// Lighting was applied last time (so turning it off restores materials).
     pub applied: bool,
     pub lines: Vec<String>,
+    /// D267: what the level's light was built from, when it follows the PWorld lighting
+    /// (P3m), so a played level can be lit again when a script changes that.
+    pub level: Option<LevelRelight>,
+}
+
+/// D267: a level's light source for the PWorld lighting rule (P3m,
+/// `LevelSettings::at_lighting`): the main block and the presets as stored, and the frame
+/// `from_settings` was given (bounds centre in level units, display units per level unit).
+pub struct LevelRelight {
+    pub main: LevelSettings,
+    pub presets: Vec<LevelSettings>,
+    pub centre: Vec3,
+    pub scale: f32,
+    /// PWorld (lighting, darkness) the shown light was built from at load.
+    pub stored: [f32; 2],
+}
+
+impl LevelRelight {
+    /// The level's light at that PWorld lighting and darkness.
+    pub fn light(&self, lighting: f32, darkness: f32) -> PreviewLight {
+        let (settings, _) =
+            LevelSettings::at_lighting(&self.main, &self.presets, lighting, darkness);
+        PreviewLight::from_settings(&settings, self.centre, self.scale)
+    }
 }
 
 /// Summary lines (panel and QA log). `unlit` of `total` draw entities kept unlit.

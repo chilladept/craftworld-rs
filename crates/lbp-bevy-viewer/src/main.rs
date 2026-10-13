@@ -675,7 +675,7 @@ fn options() -> Result<Viewer, String> {
         if flag == "--help" {
             println!("lbp-bevy-viewer --snapshot FILE --game-dir DIRECTORY [--select-guid HEX]\n--play-animation HEX: play an animation on the selected mesh\n--animation-frame N: hold that running frame instead of playing (QA captures)\n--skinning gpu|cpu: Bevy joint skinning (default) or the CPU reference path\n--model-up z|y: single-mesh model up axis (default z: Z-up, front -Y, shown upright facing the camera; y: raw axes)\n--browse-query TEXT; --show-unavailable: browser filters\n--animation-base: local animation base-row snapshot (not game time; also levels)\n--no-animation-base, --no-instance-default: turn off the D188 single-mesh defaults (animation base values; white instance color 1,1,1,1 when no Thing supplies one) and the D191 level defaults (animation base values; each Thing's editorColor as its instance color, inferred)\n--instance-rgba R,G,B,A: supplied linear instance color (overrides the white default)\n--synthetic: authored depth/UV/repeat/clamp scene\n--synthetic-groups: authored mixed material groups\n--synthetic-affine: authored UV scale/offset/reflection\n--qa-capture NEW_PNG_UNDER_LOCAL_ANALYSIS: capture then exit (window shown without taking focus)
 --no-activate: show the window without taking focus or the foreground (interactive runs)
---qa-hide-ui: draw no panels (clean captures)\n--window-16-9: 1280x720 window (the game's 16:9 frame; RPCS3 comparisons)\n--preview-lighting: key + ambient preview lighting (not game lighting; levels use their stored settings, approximate)\n--lighting-preset N|main: with a level, light from its stored preset N instead of the main settings (P2l; --lbp-lighting defaults to preset 0 when one is stored, main forces the main block)\n--lbp-lighting: preview lighting shaped like the community brdf.cg reconstruction (hemisphere ambient, sun, two rims, squared combine; unfitted stored values, uniform mapping inferred, P2l); on by default in level mode (P2w), --no-lbp-lighting draws levels unlit, --preview-lighting keeps the older Lambert preview\n--no-glow: skip material glow (output port 4; P3h A/B)\n--no-baked-ao: skip the backdrop lightmap baked AO under --lbp-lighting (P3k A/B)\n--bump-gloss / --no-bump-gloss: material bump maps (output port 3) and static gloss colours (port 2) under --lbp-lighting, on with it by default (P2q; offsets and frame inferred)\n{CENSUS_FLAGS_HELP}\n--print-census: print the corpus-count panel text and exit (no window)\n--ui-demo: authored UI layer demo (no game data; other options ignored)\n--slot-browser: story slot browser over --snapshot/--game-dir (--slot-browser-report prints counts and exits; --slot-browser-slots adds one line per slot)\n--text-browser: .trans tables (search by text, tag or key) and font glyph sheets (--text-browser-report prints counts and exits)\n--ui-script CLASS: run one of your UI scripts headlessly (stub natives) and draw the frame tree it builds; --ui-script-function NAME (default UpdateUI__Q5Gooey), --ui-script-report prints counts and the outline (--qa-hide-ui draws the tree without the count lines)\n--pod-menu CLASS: the Pod main menu as pills on a globe and moon (placeholder spheres; pill positions from the RPCS3 reference), Up/Down/Enter; with a level, the pills over the level view\n--pod-camera N: with a level, home view that puts Thing N (the Pod globe) where the RPCS3 frame has it\n--pod-shell HEX: with --pod-camera, the Pod shell level (000027b9) as a layer over the view; Space or gamepad Square opens/closes the Puter (camera dolly), Esc or Circle closes; --pod-game-camera: the planets view through the game's own camera (presets, vfov 57.3 deg), World transform and main-menu Earth/Moon placement instead of the globe fit (P2k);\n--pod-open: start open; the side panels show the room wall art 0001f3b9 (inferred; --no-pod-wall: plain); --pod-t T: start at opening progress T (0-1, mid-dolly captures); --pod-shell-camera FX,FY,FZ,TX,TY,TZ: closed shell eye from the game camera preset (shell level units); --select-guid HEX (Sackboy 0000043f) stands in front of the DualShock, --play-animation HEX plays on him, --pod-hold-animation HEX while the Puter is open; --pod-figure-data: closed spot from the shell's data (checkpoint + spawn offset, dropped to the floor) instead of the RPCS3 fit (both are reported)\n--puter-screen CLASS: in the 3D view, that UI script's frame tree on a screen quad (arrows/Enter focus); --puter-function NAME, --puter-at X,Y,Z[,WIDTH] (display units, facing +Z; default 1.1,0,0,1.2)\n--popit: inventory browser over the disc plans (--popit-report prints counts; add --popit-decode-icons to measure icon decoding)\n--level-guid HEX | --level-path MAP_PATH: level scene mode (RENDER_MESH Things at POS)\n--level-placement inverse-bind|pos-only: POS Things at POS x inverse bind of bone 0 (default, D120) or POS only (D113)\n--shape-bevels: with a level, bevelled shapes (geometry inferred, unverified; default straight)\n--per-bone-placement: with a level, models with boneThings place each vertex by its bone's Thing (P2m; inferred rigid skinning; default bone 0 rule, but on under --pod-game-camera unless --no-per-bone-placement)\n--runtime-texture MESH:SLOT:TEXTURE (hex GUIDs, slot 0-7, repeatable): with a level (and --pod-shell), draw Solid groups of that mesh whose material lists SLOT as unrendered with TEXTURE (UV0, Repeat, untinted; inferred, game binding unconfirmed)\n--level-report: with a level, print scene counts and exit (no window)\n--level-focus-thing N: with a level, frame the view on Thing N (reader order)\n--level-scripts: with a level, run its scripts at 30 Hz (OnCreate__, then Update__ each tick) and show the counts, with the open speech bubbles and the subtitle drawn as plain boxes; --level-scripts-flags N,..: progression flags set on the profile\n--play-sackboy: with a level, its shapes as a physics world and Sackboy at the first checkpoint, drawn as his mesh (0000043f unless --select-guid) with stand/walk/lane/jump/land clips picked from his state (rules inferred; --play-animation HEX plays one clip instead) (arrows walk and change lanes, Space jumps, I/K/L/J moods happy/sad/angry/scared; camera follows); --play-sackboy-at X,Y,Z spawn; --play-sackboy-input r:40,rj:12,-:30 scripted keys (l r j b f, mood presses U D R L) with the position printed each tick; --qa-record DIR,START,END[,SPEED] (QA only) saves one PNG per scripted tick START..END into a new local-analysis DIR, game time at SPEED (default 0.25), then exits\nLeft drag orbit; right/middle drag pan; wheel zoom; R reset; F frame.");
+--qa-hide-ui: draw no panels (clean captures)\n--window-16-9: 1280x720 window (the game's 16:9 frame; RPCS3 comparisons)\n--preview-lighting: key + ambient preview lighting (not game lighting; levels use their stored settings, approximate)\n--lighting-preset N|main: with a level, light from its stored preset N instead of the main settings (P2l; --lbp-lighting defaults to preset 0 when one is stored, main forces the main block)\n--lbp-lighting: preview lighting shaped like the community brdf.cg reconstruction (hemisphere ambient, sun, two rims, squared combine; unfitted stored values, uniform mapping inferred, P2l); on by default in level mode (P2w), --no-lbp-lighting draws levels unlit, --preview-lighting keeps the older Lambert preview\n--no-glow: skip material glow (output port 4; P3h A/B)\n--no-baked-ao: skip the backdrop lightmap baked AO under --lbp-lighting (P3k A/B)\n--bump-gloss / --no-bump-gloss: material bump maps (output port 3) and static gloss colours (port 2) under --lbp-lighting, on with it by default (P2q; offsets and frame inferred)\n{CENSUS_FLAGS_HELP}\n--print-census: print the corpus-count panel text and exit (no window)\n--ui-demo: authored UI layer demo (no game data; other options ignored)\n--slot-browser: story slot browser over --snapshot/--game-dir (--slot-browser-report prints counts and exits; --slot-browser-slots adds one line per slot)\n--text-browser: .trans tables (search by text, tag or key) and font glyph sheets (--text-browser-report prints counts and exits)\n--ui-script CLASS: run one of your UI scripts headlessly (stub natives) and draw the frame tree it builds; --ui-script-function NAME (default UpdateUI__Q5Gooey), --ui-script-report prints counts and the outline (--qa-hide-ui draws the tree without the count lines)\n--pod-menu CLASS: the Pod main menu as pills on a globe and moon (placeholder spheres; pill positions from the RPCS3 reference), Up/Down/Enter; with a level, the pills over the level view\n--pod-camera N: with a level, home view that puts Thing N (the Pod globe) where the RPCS3 frame has it\n--pod-shell HEX: with --pod-camera, the Pod shell level (000027b9) as a layer over the view; Space or gamepad Square opens/closes the Puter (camera dolly), Esc or Circle closes; --pod-game-camera: the planets view through the game's own camera (presets, vfov 57.3 deg), World transform and main-menu Earth/Moon placement instead of the globe fit (P2k);\n--pod-open: start open; the side panels show the room wall art 0001f3b9 (inferred; --no-pod-wall: plain); --pod-t T: start at opening progress T (0-1, mid-dolly captures); --pod-shell-camera FX,FY,FZ,TX,TY,TZ: closed shell eye from the game camera preset (shell level units); --select-guid HEX (Sackboy 0000043f) stands in front of the DualShock, --play-animation HEX plays on him, --pod-hold-animation HEX while the Puter is open; --pod-figure-data: closed spot from the shell's data (checkpoint + spawn offset, dropped to the floor) instead of the RPCS3 fit (both are reported)\n--puter-screen CLASS: in the 3D view, that UI script's frame tree on a screen quad (arrows/Enter focus); --puter-function NAME, --puter-at X,Y,Z[,WIDTH] (display units, facing +Z; default 1.1,0,0,1.2)\n--popit: inventory browser over the disc plans (--popit-report prints counts; add --popit-decode-icons to measure icon decoding)\n--level-guid HEX | --level-path MAP_PATH: level scene mode (RENDER_MESH Things at POS)\n--level-placement inverse-bind|pos-only: POS Things at POS x inverse bind of bone 0 (default, D120) or POS only (D113)\n--shape-bevels: with a level, bevelled shapes (geometry inferred, unverified; default straight)\n--per-bone-placement: with a level, models with boneThings place each vertex by its bone's Thing (P2m; inferred rigid skinning; default bone 0 rule, but on under --pod-game-camera unless --no-per-bone-placement)\n--runtime-texture MESH:SLOT:TEXTURE (hex GUIDs, slot 0-7, repeatable): with a level (and --pod-shell), draw Solid groups of that mesh whose material lists SLOT as unrendered with TEXTURE (UV0, Repeat, untinted; inferred, game binding unconfirmed)\n--level-report: with a level, print scene counts and exit (no window)\n--level-focus-thing N: with a level, frame the view on Thing N (reader order)\n--level-scripts: with a level, run its scripts at 30 Hz (OnCreate__, then Update__ each tick) and show the counts, with the open speech bubbles and the subtitle drawn as plain boxes and the level lit again when a script changes the global lighting or darkness; --level-scripts-flags N,..: progression flags set on the profile\n--play-sackboy: with a level, its shapes as a physics world and Sackboy at the first checkpoint, drawn as his mesh (0000043f unless --select-guid) with stand/walk/lane/jump/land clips picked from his state (rules inferred; --play-animation HEX plays one clip instead) (arrows walk and change lanes, Space jumps, I/K/L/J moods happy/sad/angry/scared; camera follows); --play-sackboy-at X,Y,Z spawn; --play-sackboy-input r:40,rj:12,-:30 scripted keys (l r j b f, mood presses U D R L) with the position printed each tick; --qa-record DIR,START,END[,SPEED] (QA only) saves one PNG per scripted tick START..END into a new local-analysis DIR, game time at SPEED (default 0.25), then exits\nLeft drag orbit; right/middle drag pan; wheel zoom; R reset; F frame.");
             std::process::exit(0);
         }
         let value = args.next().ok_or("Missing option value")?;
@@ -1045,6 +1045,7 @@ fn load(
         v.requested = false;
         v.lighting.light = lighting::PreviewLight::generic();
         v.lighting.shell = None;
+        v.lighting.level = None;
         v.lighting.dirty = true;
         clear(
             &mut v,
@@ -1116,6 +1117,7 @@ fn load(
                 (true, Some(globe)) => Some(place_menu_planets(&mut level.scene, globe)?),
                 _ => None,
             };
+            let mut followed = None;
             // P2m: --lbp-lighting uses preset 0 unless told otherwise (D201: the main
             // block holds defaults in pod_planets; preset 0 matches RPCS3 far better).
             let preset = match (v.level.lighting_main, v.level.lighting_preset) {
@@ -1151,9 +1153,17 @@ fn load(
             {
                 // P3m: the game lights a level with its stored presets blended by PWorld
                 // `lighting`, dimmed by `darkness`; the main block is not what it uses.
+                // D267: the blocks are kept, so `--level-scripts` can light the level
+                // again when a script changes those two values.
+                let [lighting, _, _, _, darkness] = level.scene.world_lighting.unwrap_or_default();
+                followed = level.scene.settings.map(|main| {
+                    let presets = level.scene.settings_presets.clone();
+                    (main, presets, [lighting, darkness])
+                });
                 println!("{}", use_world_lighting(&mut level.scene));
             }
             let plan = plan_level(&level.scene, v.level.focus, v.level.pod)?;
+            let light_frame = plan.light_frame;
             commands.insert_resource(sackboy_play::LevelDisplay(plan.normalize));
             let planets_normalize = plan.normalize;
             let rig = match (&level.shell, v.level.pod) {
@@ -1176,6 +1186,18 @@ fn load(
                 &mut images,
                 plan,
             );
+            v.lighting.level =
+                followed
+                    .zip(light_frame)
+                    .map(
+                        |((main, presets, stored), (centre, scale))| lighting::LevelRelight {
+                            main,
+                            presets,
+                            centre,
+                            scale,
+                            stored,
+                        },
+                    );
             if game {
                 // P2k: the planets level hangs under the World transform.
                 let t0 = v.level.t0.unwrap_or(0.);
@@ -2008,6 +2030,8 @@ struct LevelPlan {
     normalize: Mat4,
     /// D121: level-settings preview light (generic when absent or unusable).
     light: lighting::PreviewLight,
+    /// The frame the light was built in (`light_frame`), when the scene has bounds.
+    light_frame: Option<(Vec3, f32)>,
 }
 fn plan_level(
     scene: &LevelScene,
@@ -2075,6 +2099,7 @@ fn plan_level(
     let mut lines = scene.counts.lines();
     lines.extend(display);
     let light = level_light(scene, &buckets);
+    let light_frame = light_frame(scene, &buckets);
     Ok(LevelPlan {
         prepared,
         placed,
@@ -2082,6 +2107,7 @@ fn plan_level(
         home,
         normalize,
         light,
+        light_frame,
     })
 }
 /// D121: preview light from the level's stored settings, in the frame `level_home` uses
@@ -2124,24 +2150,30 @@ fn use_world_lighting(scene: &mut LevelScene) -> String {
         ),
     }
 }
-fn level_light(scene: &LevelScene, buckets: &[Result<usize, String>]) -> lighting::PreviewLight {
+/// The frame of a level's light: the displayed bounds centre in level units and the
+/// display units per level unit.
+fn light_frame(scene: &LevelScene, buckets: &[Result<usize, String>]) -> Option<(Vec3, f32)> {
     let shown = |i: &level_scene::SceneItem| buckets.get(i.mesh).is_some_and(Result::is_ok);
     // Same bounds as `place_items` (D119: backdrop excluded) so the fog scale and sun
     // centre match the display normalization.
     let backdrop = |i: &level_scene::SceneItem| Some(i.thing) == scene.counts.backdrop.thing;
-    let bounds = scene
+    let [lo, hi] = scene
         .bounds_where(|i| shown(i) && !backdrop(i))
-        .or_else(|| scene.bounds_where(shown));
-    let (Some(settings), Some([lo, hi])) = (&scene.settings, bounds) else {
+        .or_else(|| scene.bounds_where(shown))?;
+    let (lo, hi) = (Vec3::from(lo), Vec3::from(hi));
+    let span = (hi - lo).max_element();
+    Some(((lo + hi) * 0.5, 1. / span))
+}
+fn level_light(scene: &LevelScene, buckets: &[Result<usize, String>]) -> lighting::PreviewLight {
+    let (Some(settings), Some((centre, scale))) = (&scene.settings, light_frame(scene, buckets))
+    else {
         let mut light = lighting::PreviewLight::generic();
         light
             .notes
             .push("no level settings read; generic light".into());
         return light;
     };
-    let (lo, hi) = (Vec3::from(lo), Vec3::from(hi));
-    let span = (hi - lo).max_element();
-    lighting::PreviewLight::from_settings(settings, (lo + hi) * 0.5, 1. / span)
+    lighting::PreviewLight::from_settings(settings, centre, scale)
 }
 /// Scene normalization and framing. The whole level is centred and scaled to unit size
 /// (largest axis = 1) so the shared orbit camera, clip planes and pan limits of the

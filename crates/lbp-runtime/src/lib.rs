@@ -26,11 +26,13 @@ use lbp_script_vm::{ClassId, Host, MemberKind, ObjectId, Step, Task, Value, Vm};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+mod global_settings;
 mod message_view;
 mod messages;
 mod sensors;
 mod switches;
 pub mod transform;
+pub use global_settings::*;
 pub use message_view::*;
 pub use messages::*;
 pub use switches::*;
@@ -392,6 +394,12 @@ pub struct LevelWorld {
     /// The speech bubbles, subtitles and prompts that are open, by the game's rules for
     /// its message list ([`Messages`]); the messaging natives feed it.
     pub messages: Messages,
+    /// The global settings in force when the level was read, before any script ran
+    /// ([`WorldState::settings_in_force`] of the stored values).
+    pub settings_at_load: SettingsInForce,
+    /// Whether the first global-settings pass has run
+    /// ([`LevelWorld::global_settings_holder`]).
+    pub global_settings_started: bool,
     /// The names of the level's tags and tag sensors; a [`TagKey`] holds an index.
     pub tag_names: Vec<String>,
     /// The world's tag map as the last switch pass left it
@@ -519,6 +527,11 @@ pub struct WorldState {
     pub lighting_from: [f32; 5],
     pub lighting_to: [f32; 5],
     pub lighting_blend: f32,
+    /// The five current values the level file stores next to the group (PWorld
+    /// `lighting`, `colourCorrection`, `fog`, `fogTint`, `darkness`), in the same order.
+    /// Nothing here reads them; a display that lit the level from them at load can
+    /// compare them with [`WorldState::lighting`].
+    pub lighting_stored: [f32; 5],
     /// Type 7, audio: only the blend factor lives in the PWorld.
     pub audio_blend: f32,
     /// PWorld `waterDrainSoundsEnabled`.
@@ -535,6 +548,17 @@ impl WorldState {
                 + self.lighting_from[i]
         })
     }
+}
+
+/// What [`LevelWorld::global_settings_holder`] found in one global-settings slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlotHolder {
+    /// No UID in the slot (or no PWorld).
+    Empty,
+    /// The slot held a UID of no Thing, or of a Thing without a script, and was cleared.
+    Cleared,
+    /// The scripted Thing that holds the slot.
+    Thing(u32),
 }
 
 /// VM value for a stored script field; `None` for a field the instance does not store.
@@ -755,6 +779,7 @@ impl LevelWorld {
                 lighting_from: p.gs_from,
                 lighting_to: p.gs_target,
                 lighting_blend: p.gs_blend,
+                lighting_stored: p.lighting,
                 audio_blend: 1.,
                 water_drain_sounds: p.water_drain_sounds_enabled,
             };
@@ -767,6 +792,7 @@ impl LevelWorld {
                 }
             }
         }
+        w.settings_at_load = w.pworld.settings_in_force();
         for (i, t) in w.things.iter().enumerate() {
             if let Some(board) = t.circuit_board {
                 w.board_owners.entry(board).or_insert(i as u32);
@@ -1227,6 +1253,72 @@ impl LevelWorld {
         {
             pad.old = pad.now;
         }
+    }
+
+    /// The Thing a global-settings slot hands its per-frame call to, for the slot
+    /// `kind` at its turn in the pass ([`LevelScripts::apply_global_settings`]).
+    ///
+    /// FOUND (01.33, the PWorld's per-frame function 0xd5e84):
+    /// - On its first run (a PWorld flag byte is still 0) it writes every slot again with
+    ///   its own UID and priority through the UID setter with the priority test off
+    ///   (0xce554, last argument 1). That setter clears the slot first (0xce520) and
+    ///   writes the priority back only for a UID other than 0, so the one change is that
+    ///   an empty slot loses a stored priority.
+    /// - Then, slot by slot: an empty slot is passed over. For a slot with a UID the
+    ///   Thing is looked up (0xce860, a search of the PWorld's sorted UID list). A Thing
+    ///   that has a PScript part gets the call; when no Thing has the UID, or the Thing
+    ///   has no PScript, the slot's UID and priority are set to 0.
+    ///
+    /// INFERRED: the flag byte is 0 for a level just loaded; UIDs are unique, so the
+    /// first Thing with the UID is the one the game's search finds; a Thing has a PScript
+    /// part when the reader kept a script resource for it. Not modelled, same function:
+    /// default audio settings while slot 7 is empty, and the water level and wave values
+    /// it refreshes for the renderer.
+    pub fn global_settings_holder(&mut self, kind: usize) -> SlotHolder {
+        if self.world.is_none() {
+            return SlotHolder::Empty;
+        }
+        let p = &mut self.pworld;
+        if !self.global_settings_started {
+            self.global_settings_started = true;
+            for (uid, priority) in p
+                .global_settings_thing_uids
+                .iter()
+                .zip(&mut p.global_settings_thing_priority)
+            {
+                if *uid == 0 {
+                    *priority = 0;
+                }
+            }
+        }
+        let uid = match p.global_settings_thing_uids.get(kind) {
+            Some(&uid) if uid != 0 => uid,
+            _ => return SlotHolder::Empty,
+        };
+        let holder = self
+            .things
+            .iter()
+            .position(|t| t.uid == Some(uid))
+            .filter(|&t| self.things[t].script_guid.is_some())
+            .and_then(|t| u32::try_from(t).ok());
+        match holder {
+            Some(thing) => SlotHolder::Thing(thing),
+            None => {
+                p.global_settings_thing_uids[kind] = 0;
+                if let Some(priority) = p.global_settings_thing_priority.get_mut(kind) {
+                    *priority = 0;
+                }
+                SlotHolder::Cleared
+            }
+        }
+    }
+
+    /// Per global-settings type, whether the value in force is not the one in force when
+    /// the level was read ([`LevelWorld::settings_at_load`]).
+    pub fn settings_unlike_load(&self) -> [bool; GLOBAL_SETTINGS] {
+        self.pworld
+            .settings_in_force()
+            .unlike(&self.settings_at_load)
     }
 
     /// One world frame has passed: `PWorld.Frame` (and `simFrame`) go up by one.
@@ -2330,6 +2422,9 @@ impl Runner {
 pub const CREATE: &str = "OnCreate__";
 /// Function the game runs on every scripted Thing each tick.
 pub const UPDATE: &str = "Update__";
+/// Function the game runs each frame on the Thing that holds a global-settings slot
+/// ([`LevelScripts::apply_global_settings`]).
+pub const APPLY_GLOBAL_SETTINGS: &str = "ApplyGlobalSettings__";
 /// What a started script thread runs (`Thread.ThreadMain__`: OnStart, Run, OnFinish).
 pub const THREAD_MAIN: &str = "ThreadMain__";
 /// Thread starts handled in one step (threads can start threads).
@@ -2416,6 +2511,8 @@ pub struct StepReport {
     pub events_to_stopped: usize,
     /// What the switch pass did ([`LevelScripts::switch_reactions`]).
     pub reactions: ReactionReport,
+    /// What the global-settings pass did ([`LevelScripts::apply_global_settings`]).
+    pub global_settings: GlobalSettingsReport,
 }
 
 /// Counts of one or more switch passes. Unit: a visited output target (one Thing on one
@@ -2485,6 +2582,7 @@ impl StepReport {
         self.events_without_script += other.events_without_script;
         self.events_to_stopped += other.events_to_stopped;
         self.reactions.absorb(other.reactions);
+        self.global_settings.absorb(other.global_settings);
     }
 
     fn add(&mut self, thing: u32, o: Outcome) {
@@ -2747,15 +2845,85 @@ impl LevelScripts {
         report
     }
 
+    /// The per-frame call of the global settings: for each of the eight slots in order,
+    /// `ApplyGlobalSettings__()` on the scripted Thing that holds the slot
+    /// ([`LevelWorld::global_settings_holder`], which also clears a slot whose Thing is
+    /// gone).
+    ///
+    /// FOUND in the 01.33 executable (0xd5e84 -> 0x88ff8c -> 0x620bd8): the PWorld's
+    /// per-frame function calls the script function of that name, with no arguments, on
+    /// the PScript of each slot's Thing, one slot after the other, so a call sees what
+    /// the calls for the lower slots did. A Thing that holds two slots is called twice.
+    /// It is the only caller (the one reference to 0x88ff8c), and no script calls the
+    /// function (script listings). The global-settings script steps its own blend there:
+    /// from `Game.GetGameFrame` and the frame it began at it writes a smoothed factor
+    /// with `Game.SetGlobalSettingsBlendFactor`, and 1.0 on every call once its
+    /// transition time is over; while its `IsTweaking` member is set it writes its values
+    /// without a blend instead.
+    /// INFERRED: a script without the function is passed over and keeps its slot (the
+    /// game's call by name was not followed into the VM); a Thing stopped by a fault is
+    /// not called, as everywhere in this schedule.
+    pub fn apply_global_settings(
+        &mut self,
+        vm: &mut Vm,
+        host: &mut Bindings<LevelWorld>,
+        budget: u64,
+    ) -> StepReport {
+        let mut report = StepReport::default();
+        for kind in 0..GLOBAL_SETTINGS {
+            let thing = match host.world.global_settings_holder(kind) {
+                SlotHolder::Empty => continue,
+                SlotHolder::Cleared => {
+                    report.global_settings.slots_cleared += 1;
+                    continue;
+                }
+                SlotHolder::Thing(thing) => thing,
+            };
+            if self.stopped.contains(&thing) {
+                report.global_settings.to_stopped += 1;
+                continue;
+            }
+            let found = self.instances.binary_search_by_key(&thing, |i| i.thing);
+            let Ok(inst) = found.map(|i| self.instances[i]) else {
+                report.global_settings.no_function += 1;
+                continue;
+            };
+            let mut b = budget;
+            let o = self
+                .runner
+                .start(vm, host, inst, APPLY_GLOBAL_SETTINGS, &mut b);
+            match o {
+                Outcome::NoFunction | Outcome::NoClass => {
+                    report.global_settings.no_function += 1;
+                    continue;
+                }
+                Outcome::Fault(_) => {
+                    self.stopped.insert(thing);
+                }
+                Outcome::Done | Outcome::Yielded => {}
+            }
+            report.global_settings.calls[kind] += 1;
+            report.add(thing, o);
+        }
+        self.start_threads(vm, host, budget, &mut report);
+        report
+    }
+
     /// One game tick of a level: [`Self::tick`], then [`Self::trigger_events`], so a
     /// script an event suspends is resumed on the next tick (order INFERRED), then
-    /// [`Self::switch_reactions`].
+    /// [`Self::switch_reactions`], then [`Self::apply_global_settings`].
     ///
     /// FOUND in the 01.33 executable: the world update (0xeacd4) calls the switch pass
     /// (0xdd228, at 0xeb270) after 0xe0f0c, 0xcfc40 and 0xcfbb4 and before 0xcfed4, and
     /// not while the game-wide pause test (0x18cf18) holds. Which of those neighbours are
     /// the trigger pass and the script update is not established, so the place of the
-    /// switch pass after both here is INFERRED.
+    /// switch pass after both here is INFERRED. The global-settings pass (0xd5e84, at
+    /// 0xeb2a4) comes after the switch pass in the same function, with 0xcfed4, 0xdad5c,
+    /// 0xd50b4 and 0xe26b0 between them: FOUND. Its place after `Update__` is INFERRED:
+    /// the call that runs `Update__` on every scripted Thing was looked for and not
+    /// found (the one engine function that calls a script function of that name by its
+    /// name object, 0x625780, is reached from a single game-state object outside the
+    /// world update, 0x3f8d24).
     pub fn tick_level(
         &mut self,
         vm: &mut Vm,
@@ -2765,6 +2933,7 @@ impl LevelScripts {
         let mut report = self.tick(vm, host, budget);
         report.absorb(self.trigger_events(vm, host, budget));
         report.absorb(self.switch_reactions(vm, host, budget));
+        report.absorb(self.apply_global_settings(vm, host, budget));
         host.world.advance_frame();
         host.world.end_pad_frame();
         report

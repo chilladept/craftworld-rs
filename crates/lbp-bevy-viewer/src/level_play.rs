@@ -5,12 +5,13 @@
 //! the Sackboy is the player the level's triggers test, so their `Enter`, `Inside` and
 //! `Leave` scripts run as he walks. A small window shows the counts. Of what the scripts
 //! change, the open messages are drawn (part 17, `speech_overlay.rs`): speech bubbles at
-//! their Things and the subtitle. The rest is the clock and the counts.
+//! their Things and the subtitle; and the level is lit again when a script changes the
+//! global lighting or darkness (part 18). The rest is the clock and the counts.
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts, EguiPrimaryContextPass};
 use lbp_catalog::{attachment::AttachedSource, LoadControl};
 use lbp_preview::level_scene;
-use lbp_runtime::{LevelScripts, LevelWorld, StepReport, TICK_HZ};
+use lbp_runtime::{LevelScripts, LevelWorld, LightFollower, StepReport, TICK_HZ};
 use lbp_script_vm::natives::Bindings;
 use lbp_script_vm::Vm;
 use lbp_sim::avian2d::prelude::Position;
@@ -37,6 +38,9 @@ struct Play {
     player: Option<u32>,
     /// Messages that entered the list and messages closed, at the last printed line.
     messages_printed: (u64, u64),
+    /// The (lighting, darkness) pair the scene's light shows, once the level is drawn
+    /// with a light that follows the PWorld lighting.
+    light: Option<LightFollower>,
 }
 
 fn value(all: &[String], flag: &str) -> Option<String> {
@@ -136,9 +140,10 @@ pub fn install(app: &mut App) -> Result<(), String> {
         hide_ui,
         player: None,
         messages_printed: (0, 0),
+        light: None,
     })
     .insert_resource(Time::<Fixed>::from_hz(f64::from(TICK_HZ)))
-    .add_systems(FixedUpdate, tick)
+    .add_systems(FixedUpdate, (tick, relight).chain())
     .add_systems(EguiPrimaryContextPass, (speech, window));
     Ok(())
 }
@@ -184,6 +189,46 @@ fn tick(
     note(p, &r);
     p.totals.absorb(r);
     print_messages(p);
+}
+
+/// Frames a loaded scene is drawn before its light may be built again. MEASURED on the
+/// PC (one level, release build): a new light in the first frame after the scene was
+/// spawned lost the GPU device, twice out of two runs; after this wait 89 new lights on
+/// 89 ticks in a row did not. The cause is not established. PLACEHOLDER guard.
+const RELIGHT_AFTER_FRAMES: u32 = 60;
+
+/// Lights the scene again when the lighting or the darkness in force has moved away from
+/// the pair the scene's light was built from (part 18): the level's stored presets
+/// blended at the new lighting and dimmed by the new darkness, the rule the viewer
+/// already uses for the level file's own values (P3m, `LevelSettings::at_lighting`).
+/// Nothing while the level is not drawn yet ([`RELIGHT_AFTER_FRAMES`]), or is lit another
+/// way (the Pod, a chosen preset, the main block). Colour correction, fog and fog tint
+/// are not applied: their mapping is not established. One line per new light: the check
+/// that needs no screenshot.
+fn relight(mut play: NonSendMut<Play>, mut v: ResMut<crate::Viewer>) {
+    let p = &mut *play;
+    if v.ready_frames < RELIGHT_AFTER_FRAMES {
+        // A scene loaded again is lit from the level file's values again.
+        p.light = None;
+        return;
+    }
+    let Some(level) = v.lighting.level.as_ref() else {
+        return;
+    };
+    let follower = p
+        .light
+        .get_or_insert_with(|| LightFollower::new(level.stored));
+    let now = p.host.world.pworld.settings_in_force();
+    let Some([lighting, darkness]) = follower.update(now.light()) else {
+        return;
+    };
+    let light = level.light(lighting, darkness);
+    println!(
+        "Lighting at tick {}: lighting {lighting:.3}, darkness {darkness:.3} (new light {}); not applied: colour correction {:.3}, fog {:.3}, fog tint {:.3}",
+        p.scripts.ticks, follower.relights, now.lighting[1], now.lighting[2], now.lighting[3]
+    );
+    v.lighting.light = light;
+    v.lighting.dirty = true;
 }
 
 /// One line per tick on which a message entered the list or was closed: the check of the
@@ -282,6 +327,20 @@ fn window(mut contexts: EguiContexts, play: NonSend<Play>) -> Result {
                 sum.opened,
                 sum.replaced,
                 messages.closed
+            ));
+            let now = play.host.world.pworld.settings_in_force();
+            let [lighting, correction, fog, fog_tint, darkness] = now.lighting;
+            ui.label(format!(
+                "Global settings: {} apply calls; lighting {lighting:.3}, darkness {darkness:.3} ({})",
+                play.totals.global_settings.total_calls(),
+                match &play.light {
+                    Some(f) => format!("scene lit {} times by them", f.relights),
+                    None => "scene light does not follow them".into(),
+                }
+            ));
+            ui.small(format!(
+                "  not applied: colour correction {correction:.3}, fog {fog:.3}, fog tint {fog_tint:.3}, gravity {:.3}, water level {:.3}",
+                now.gravity, now.water_level
             ));
             let mut unbound: Vec<_> = play.host.unbound.iter().collect();
             unbound.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
