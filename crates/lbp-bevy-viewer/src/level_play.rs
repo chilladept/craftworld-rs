@@ -239,14 +239,17 @@ fn place_sackboy(shell: &mut LevelWorld) -> Option<(u32, [f32; 3])> {
     Some((shell.add_player(spot, (spot[2] - 1., spot[2] + 1.)), spot))
 }
 
-/// Half the z span of the viewer's own Sackboy in the Pod for the triggers' layer rule
-/// (part 32). PLACEHOLDER: the game takes the span from his body (FOUND: two floats of an
-/// object his creature part points to; their values were not read). MEASURED in the game
-/// (RPCS3, 2026-10-09): the pod computer was engaged by a Sackboy in the front lane, z 0,
-/// and pod.bin's trigger is at z -193.7; so his span reaches at least that far back from
-/// the lane's middle. A lane step is taken. With [`PLAYER_HALF_DEPTH`] he would have to
-/// change lanes first.
-const POD_PLAYER_HALF_DEPTH: f32 = 200.;
+/// The z span of the viewer's own Sackboy in the Pod for the triggers' layer rule (part
+/// 33): an absolute world z range, the same in every lane. FOUND (01.33): the trigger
+/// test reads two floats of the creature's current state record as absolute world z (the
+/// trigger's z plus its z offset must lie between them); the creature's constructor sets
+/// them to -500 and 100 and every creature update writes them again from the same two
+/// constants. For a Sackboy they can widen (around the centre of a box of the level, to
+/// 500 under a global flag, to 300 from another path); INFERRED that none of these
+/// changes them in normal play. So pod.bin's trigger at z -193.7 holds him in all three
+/// lanes, and the lane decision is the pad zone's own z rule (part 24) alone. The play
+/// mode's span on other levels ([`PLAYER_HALF_DEPTH`], part 10) is left as it is.
+const POD_PLAYER_Z_SPAN: (f32, f32) = (-500., 100.);
 
 /// Part 32. Hands the place of the viewer's own Sackboy to the shell world for the tick
 /// about to run: a new Sackboy Thing the first time (`LevelWorld::add_player`), then
@@ -259,7 +262,7 @@ fn stand_sackboy(
     sackboy: &mut Option<Option<u32>>,
     at: [f32; 3],
 ) -> (u32, bool) {
-    let layers = (at[2] - POD_PLAYER_HALF_DEPTH, at[2] + POD_PLAYER_HALF_DEPTH);
+    let layers = POD_PLAYER_Z_SPAN;
     match sackboy.flatten() {
         Some(thing) => {
             shell.move_player(thing, at, layers);
@@ -613,6 +616,29 @@ fn tick(
         }
         p.puter_open = Some(in_use);
     }
+    // Part 33: the viewer's own Sackboy at the pod computer. While it is in use (by him,
+    // the only and so the primary player) his movement input is not applied, he turns to
+    // face into the screen and his figure is drawn toward the engage target by the
+    // change-over value (`sackboy_play::engage_blend`).
+    if let (Some(shell), Some(pod)) = (&p.shell, pod.as_deref_mut()) {
+        let in_use = shell.own_sackboy && shell.host.world.pod_computer_in_use;
+        let blend = crate::sackboy_play::engage_blend(in_use, shell.opening);
+        if pod.in_use != in_use {
+            pod.in_use = in_use;
+            println!(
+                "Pod Sackboy at tick {}: {}",
+                shell.scripts.ticks,
+                if in_use {
+                    "at the pod computer: his movement input is not applied, he turns to face into the screen (angle pi), his figure is drawn toward the engage target by the change-over value (placeholder for the clip's progress); his physics place is not moved"
+                } else {
+                    "the pod computer is no longer in use: his input is applied again, the drawn offset is 0"
+                }
+            );
+        }
+        if pod.blend != blend {
+            pod.blend = blend;
+        }
+    }
 }
 
 /// A Puter key of the shell layer under the scripts (part 30; [`key_act`]). Without a
@@ -707,8 +733,10 @@ fn step(
                 let (thing, new) = stand_sackboy(&mut shell.host.world, &mut shell.sackboy, at);
                 if new {
                     println!(
-                        "Pod Sackboy before tick {next}: Thing {thing} of the shell level, the viewer's own Sackboy at {at:.1?} ({}); his place is handed to the shell level before every tick, z span {POD_PLAYER_HALF_DEPTH} either way for the triggers' layer rule (placeholder); the pad zone wants him in the pod computer trigger's list and z at least {PAD_ZONE_MIN_Z}",
-                        if grounded { "on the floor" } else { "in the air" }
+                        "Pod Sackboy before tick {next}: Thing {thing} of the shell level, the viewer's own Sackboy at {at:.1?} ({}); his place is handed to the shell level before every tick, z span {:.0} to {:.0} (absolute world z, FOUND constants of the 01.33 creature update) for the triggers' layer rule; the pad zone wants him in the pod computer trigger's list and z at least {PAD_ZONE_MIN_Z}",
+                        if grounded { "on the floor" } else { "in the air" },
+                        POD_PLAYER_Z_SPAN.0,
+                        POD_PLAYER_Z_SPAN.1
                     );
                 }
             }
@@ -2372,6 +2400,8 @@ mod tests {
     /// computer trigger's list, and the zone is that list and his z. Where the game has
     /// him on arrival (MEASURED) he is in it; walked off to the side he is not; in the
     /// lane behind he is; in the back lane the trigger holds him and the z rule says no.
+    /// Part 33: the span is the fixed absolute range, so the back lane is out by the z
+    /// rule only.
     #[test]
     fn d281_the_pad_zone_is_decided_by_where_the_sackboy_stands() {
         let mut shell = Side::of(pod_bin_world());
@@ -2408,10 +2438,10 @@ mod tests {
         // A jump does not leave it (the box reaches up to y -267.5).
         assert_eq!(at([0., -300., 0.]), (true, true));
         assert_eq!(at([0., -260., 0.]), (false, false));
-        // The lane behind: in. The back lane: out of the trigger's list by the layer rule
-        // with this span. The pad zone's own z rule: in the list, but z under -300.
+        // The lane behind: in. The back lane (part 33, the fixed span): in the trigger's
+        // list, out of the zone by the pad zone's own z rule, as under -300.
         assert_eq!(at([0., -477., -200.]), (true, true));
-        assert_eq!(at([0., -477., -400.]), (false, false));
+        assert_eq!(at([0., -477., -400.]), (true, false));
         assert_eq!(at([0., -477., -310.]), (true, false));
         assert_eq!(at([0., -477., -300.]), (true, true));
         // One Sackboy all along, player 0, with the pad.
@@ -2423,6 +2453,36 @@ mod tests {
         let other = narrow.1.world.add_player(arrival, layers);
         round(&mut narrow, &mut level);
         assert!(!narrow.1.world.in_pad_zone(other));
+    }
+
+    /// D282. His z span for the layer rule is the absolute range the 01.33 creature update
+    /// writes, -500 to 100, whatever lane he is in; pod.bin's trigger at z -193.7 holds
+    /// him in all three, and the pad zone is decided by its own z rule: in at lanes 0 and
+    /// -200, out at -400.
+    #[test]
+    fn d282_the_span_is_the_fixed_range_in_every_lane() {
+        assert_eq!(POD_PLAYER_Z_SPAN, (-500., 100.));
+        let mut shell = Side::of(pod_bin_world());
+        let mut level = Side::of(LevelWorld::from_things(&[]));
+        shell.1.world.hand_session_to(&mut level.1.world);
+        let mut sackboy = None;
+        for (lane, zone) in [(0., true), (-200., true), (-400., false), (0., true)] {
+            let (thing, _) = stand_sackboy(&mut shell.1.world, &mut sackboy, [-5.37, -477., lane]);
+            let player = shell.1.world.players.iter().find(|p| p.thing == thing);
+            assert_eq!(
+                player.map(|p| p.layers),
+                Some(POD_PLAYER_Z_SPAN),
+                "lane {lane}"
+            );
+            round(&mut shell, &mut level);
+            let listed = shell.1.world.things[0]
+                .trigger
+                .as_ref()
+                .is_some_and(|g| g.inside.contains(&thing));
+            assert!(listed, "lane {lane}");
+            assert_eq!(shell.1.world.in_pad_zone(thing), zone, "lane {lane}");
+        }
+        assert_eq!(shell.1.world.players.len(), 1);
     }
 
     /// D281. With the viewer's own Sackboy the press is taken where he stands in the

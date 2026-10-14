@@ -21,10 +21,13 @@
 //!
 //! In the Pod (D281, docs/level-scripts.md part 32): with `--level-scripts --pod-camera N
 //! --pod-shell HEX` the level he plays in is the shell level (pod.bin), not the planets
-//! level given: the physics scene is pod.bin's ([`pod_scene`]), he starts on its floor at
-//! the data spawn, his figure hangs under the shell's frame root, the camera is the
-//! script's, and `level_play` hands his place and the pad to the script worlds
-//! ([`PodSackboy`]). In a script `e` is the engage button (Square) on the step's first tick.
+//! level given: the physics scene is pod.bin's ([`pod_scene`]), he arrives by the game's
+//! checkpoint spawn rule and falls to its floor ([`checkpoint_arrival`], D282), his figure
+//! hangs under the shell's frame root, the camera is the script's, and `level_play` hands
+//! his place and the pad to the script worlds ([`PodSackboy`]). In a script `e` is the
+//! engage button (Square) on the step's first tick. While the pod computer is in use his
+//! movement input is not applied, he faces into the screen and his figure is drawn toward
+//! the engage target (D282, docs/level-scripts.md part 33).
 use bevy::prelude::*;
 use lbp_catalog::{attachment::AttachedSource, LoadControl};
 use lbp_preview::level_scene;
@@ -75,6 +78,100 @@ pub(crate) struct PodSackboy {
     /// the animation picker to catch up on ([`tick_anim`]): his pose on a tick then does
     /// not depend on how long the load took.
     backlog: Vec<(lbp_sim::sackboy::Sackboy, bool)>,
+    /// D282: the pod computer is in use by him (written by `level_play::tick`): his
+    /// movement input is not applied ([`pod_input`]) and he faces into the screen
+    /// ([`pod_facing`]).
+    pub in_use: bool,
+    /// D282: how far his figure is drawn toward [`PodSackboy::target`], 0..1
+    /// ([`engage_blend`]); 0 when the pod computer is not in use.
+    pub blend: f32,
+    /// D282: the engage target in the shell level's units ([`engage_target`]).
+    pub target: [f32; 3],
+}
+
+/// D282: the place his figure is drawn toward at the pod computer: FOUND (01.33, the
+/// Sackboy animation code for the pod computer user) a constant, whose x the game
+/// replaces with the x of the Thing named "pod_controller" ([`engage_target`]).
+pub(crate) const POD_ENGAGE_TARGET: [f32; 3] = [-12.469, -482.979, -93.170];
+
+/// D282: [`POD_ENGAGE_TARGET`] with x from the "pod_controller" Thing when the level
+/// has one.
+pub(crate) fn engage_target(controller_x: Option<f32>) -> [f32; 3] {
+    let [x, y, z] = POD_ENGAGE_TARGET;
+    [controller_x.unwrap_or(x), y, z]
+}
+
+/// D282: the blend of the drawn offset at the pod computer. FOUND: the clip's progress,
+/// 0..1. PLACEHOLDER: the clips are not available and their timing is not known, so the
+/// change-over value of pod.bin's script (`level_play`'s opening, 0.05 to 1.0 over about
+/// 20 ticks after the host's answer) stands in for it; 0 when not in use.
+pub(crate) fn engage_blend(in_use: bool, opening: f32) -> f32 {
+    if in_use {
+        opening.clamp(0., 1.)
+    } else {
+        0.
+    }
+}
+
+/// D282: where his figure is drawn: his physics position moved by (target - position)
+/// times the blend. FOUND the offset rule (a root offset of his drawn body); INFERRED
+/// that it is drawn only, since no write to his physics position was found.
+pub(crate) fn engage_drawn(at: [f32; 3], target: [f32; 3], blend: f32) -> [f32; 3] {
+    std::array::from_fn(|i| at[i] + (target[i] - at[i]) * blend)
+}
+
+/// D282: his pad input while the pod computer is in use: none. FOUND: the game switches
+/// his input context to the pod computer's; INFERRED that his walking, jumping and lane
+/// changes are not applied then.
+pub(crate) fn pod_input(input: Input, in_use: bool) -> Input {
+    if in_use {
+        Input::default()
+    } else {
+        input
+    }
+}
+
+/// D282: the facing angle the pod computer's user turns to, into the screen (FOUND, the
+/// facing function returns pi for him).
+pub(crate) const POD_USER_FACING: f32 = std::f32::consts::PI;
+
+/// D282: the facing shown for a tick: `last` the angle shown on the tick before, `picked`
+/// the picker's for this tick, `turned` whether the last one was not the picker's. In use
+/// it eases toward [`POD_USER_FACING`] by the picker's own rate
+/// (`lbp_sim::sackboy_anim::FACING_EASE`, FOUND); afterwards back to the picker's angle at
+/// the same rate (INFERRED). Returns the angle and whether it is still not the picker's.
+pub(crate) fn pod_facing(last: f32, picked: f32, in_use: bool, turned: bool) -> (f32, bool) {
+    use lbp_sim::sackboy_anim::FACING_EASE;
+    if in_use {
+        (last + (POD_USER_FACING - last) * FACING_EASE, true)
+    } else if turned {
+        let y = last + (picked - last) * FACING_EASE;
+        if (y - picked).abs() < 1e-3 {
+            (picked, false)
+        } else {
+            (y, true)
+        }
+    } else {
+        (picked, false)
+    }
+}
+
+/// D282: the per-player x offsets of a checkpoint spawn by spawn slot (FOUND, 01.33): the
+/// first player takes slot 0.
+pub(crate) const SPAWN_SLOT_X: [f32; 5] = [0., 80., -40., 40., -80.];
+
+/// D282: how far in front of the checkpoint (world z) a Sackboy spawns (FOUND, 01.33).
+pub(crate) const SPAWN_Z_FORWARD: f32 = 50.;
+
+/// D282: where a checkpoint puts a Sackboy, FOUND (01.33): the checkpoint's world
+/// translation, z the larger of the checkpoint's z and a box's z (`box_z`; INFERRED a box
+/// of the checkpoint Thing, not identified, so the viewer passes none and the checkpoint's
+/// z is taken) then 50 forward, x moved by the slot's offset ([`SPAWN_SLOT_X`]). No
+/// height offset: he appears at the checkpoint's height (INFERRED: and falls, no floor
+/// search was seen).
+pub(crate) fn checkpoint_arrival(m: &[f32; 16], box_z: Option<f32>, slot: usize) -> [f32; 3] {
+    let z = box_z.map_or(m[14], |b| m[14].max(b)) + SPAWN_Z_FORWARD;
+    [m[12] + SPAWN_SLOT_X[slot % SPAWN_SLOT_X.len()], m[13], z]
 }
 
 /// D281: the shell level's GUID when the Sackboy plays in the Pod: `--play-sackboy` with
@@ -171,6 +268,9 @@ pub(crate) struct Figure {
     /// shell root and the shell level's display matrix); none for a figure without a
     /// parent, which is placed by [`LevelDisplay`].
     display: Option<Mat4>,
+    /// D282: the shown facing is not the picker's (turned to the pod computer, or on the
+    /// way back from it; [`pod_facing`]).
+    turned: bool,
 }
 
 /// Sackboy's body mesh, the play figure when `--select-guid` is not given: `0000043f`
@@ -363,6 +463,7 @@ pub(crate) fn spawn_figure(
                 picked: 0,
                 posed: 0,
                 display: under.map(|u| u.1),
+                turned: false,
             },
         ))
         .id();
@@ -630,7 +731,7 @@ pub fn install(app: &mut App) -> Result<(), String> {
         );
     }
     // The level reader recurses deeply: same worker stack as the level scene.
-    let (scene, checkpoints, header, popit) = std::thread::Builder::new()
+    let (scene, checkpoints, header, popit, controller) = std::thread::Builder::new()
         .stack_size(level_scene::LEVEL_STACK_BYTES)
         .spawn(move || -> Result<_, String> {
             let control = LoadControl::default();
@@ -665,11 +766,17 @@ pub fn install(app: &mut App) -> Result<(), String> {
                 Some(_) => None,
                 None => Some(crate::popit_play::load_assets(&source, &catalog, &control)?),
             };
+            // D282: the pod computer's engage target takes its x from this Thing.
+            let controller = report.things.iter().enumerate().find_map(|(i, t)| {
+                let named = t.data.script_name.as_ref()?.name.as_slice() == b"pod_controller";
+                named.then(|| (i, t.data.pos.as_ref().map(|p| p.world[12])))
+            });
             Ok((
                 scene,
                 level_scene::checkpoints(&report.things),
                 header,
                 popit,
+                controller,
             ))
         })
         .map_err(|e| format!("play sackboy thread: {e}"))?
@@ -678,16 +785,24 @@ pub fn install(app: &mut App) -> Result<(), String> {
     let mut pod_line = None;
     let spawn = match (at, checkpoints.first()) {
         (Some(p), _) => p,
-        // D281: in the Pod he starts standing at the data spawn: the checkpoint's x moved
-        // by the Moon's spawn offset, the lane nearest the checkpoint, on the floor below.
-        // INFERRED rule (`level_spawn_feet`); whether the game drops him from the
-        // checkpoint or sets him down was not measured.
+        // D282: in the Pod he arrives by the game's checkpoint spawn rule (FOUND, 01.33):
+        // the shell level's first checkpoint, 50 forward in z, slot 0, at the
+        // checkpoint's height; he falls to the floor from there.
         (None, Some((thing, m))) if pod.is_some() => {
-            let (feet, line) = data_spawn(&scene, thing, m)?;
-            let p = [feet[0], feet[1] + FLOOR_REST, feet[2]];
+            let p = checkpoint_arrival(m, None, 0);
+            let floor = scene.floor_below([p[0], p[1]], p[2]).map_or(
+                "no floor below in that lane".into(),
+                |f| {
+                    format!(
+                        "the floor below is y {f:.1} (pod.bin's collision), where he would stand at y {:.2}",
+                        f + FLOOR_REST
+                    )
+                },
+            );
             pod_line = Some(format!(
-                "Pod Sackboy start: {line}; the floor is the pod Thing's own shape, projected through its matrix (pod.bin's collision, nothing fitted); he stands {FLOOR_REST} above it at ({:.2}, {:.2}), lane {:.0}; MEASURED in the game on arrival: ({}, {}), lane 0",
-                p[0], p[1], p[2], POD_ARRIVAL_MEASURED[0], POD_ARRIVAL_MEASURED[1]
+                "Pod Sackboy start: checkpoint spawn (FOUND, 01.33): checkpoint Thing {thing} ({:.2}, {:.2}, {:.0}), z max(checkpoint z, box z) + {SPAWN_Z_FORWARD} with the box not identified (INFERRED: the checkpoint's z), slot 0 x {:+.0}, no height offset: he starts at ({:.2}, {:.2}, {:.0}), lane {:.0}, and falls; {floor}; MEASURED in the game on arrival: ({}, {}), lane 0",
+                m[12], m[13], m[14], SPAWN_SLOT_X[0], p[0], p[1], p[2], p[2],
+                POD_ARRIVAL_MEASURED[0], POD_ARRIVAL_MEASURED[1]
             ));
             p
         }
@@ -726,8 +841,24 @@ pub fn install(app: &mut App) -> Result<(), String> {
         println!(
             "Pod Sackboy: plays in the shell level (pod.bin), every body held where the file has it (placeholder); keys: arrows walk and change lanes, Space jumps, Z or gamepad Square is the engage button; no Popit"
         );
-        app.init_resource::<PodSackboy>()
-            .add_systems(FixedFirst, pod_report);
+        let target = engage_target(controller.and_then(|c| c.1));
+        println!(
+            "Pod Sackboy engage target: ({:.3}, {:.3}, {:.3}): x from {} (the game's constant has {:.3}), y and z the game's constant (FOUND, 01.33); his figure is drawn toward it while the pod computer is in use",
+            target[0],
+            target[1],
+            target[2],
+            match controller {
+                Some((i, Some(_))) => format!("Thing {i} \"pod_controller\""),
+                Some((i, None)) => format!("the constant: Thing {i} \"pod_controller\" has no place"),
+                None => "the constant: no Thing \"pod_controller\"".into(),
+            },
+            POD_ENGAGE_TARGET[0]
+        );
+        app.insert_resource(PodSackboy {
+            target,
+            ..default()
+        })
+        .add_systems(FixedFirst, pod_report);
     }
     if let Some(popit) = popit {
         crate::popit_play::install(app, popit);
@@ -820,10 +951,13 @@ fn read_pad(
     pads: Query<&Gamepad>,
     play: Res<Play>,
     mut sackboy: Query<&mut SackboyBody>,
+    pod: Option<Res<PodSackboy>>,
 ) {
     if play.script.is_some() {
         return;
     }
+    // D282: at the pod computer his movement input is not applied.
+    let in_use = pod.is_some_and(|p| p.in_use);
     let pad = pads.iter().next();
     let held = |k: KeyCode, b: GamepadButton| keys.pressed(k) || pad.is_some_and(|p| p.pressed(b));
     // A pad's stick is a signed byte over 128 in the game: full right stops short of 1.
@@ -851,13 +985,16 @@ fn read_pad(
     ]
     .into_iter()
     .find_map(|(k, m)| keys.pressed(k).then_some(m));
-    let input = Input {
-        x,
-        jump: held(KeyCode::Space, GamepadButton::South),
-        back: held(KeyCode::ArrowUp, GamepadButton::DPadUp),
-        front: held(KeyCode::ArrowDown, GamepadButton::DPadDown),
-        mood,
-    };
+    let input = pod_input(
+        Input {
+            x,
+            jump: held(KeyCode::Space, GamepadButton::South),
+            back: held(KeyCode::ArrowUp, GamepadButton::DPadUp),
+            front: held(KeyCode::ArrowDown, GamepadButton::DPadDown),
+            mood,
+        },
+        in_use,
+    );
     for mut body in &mut sackboy {
         body.input = input;
     }
@@ -892,8 +1029,10 @@ fn script_input(
             pod.engage = true;
         }
     }
+    // D282: at the pod computer his movement input is not applied.
+    let in_use = pod.as_ref().is_some_and(|p| p.in_use);
     for mut body in &mut sackboy {
-        body.input = input.unwrap_or_default();
+        body.input = pod_input(input.unwrap_or_default(), in_use);
     }
 }
 
@@ -937,7 +1076,11 @@ fn tick_anim(
         }
     }
     let a = f.picker.tick(&body.controller, body.grounded);
-    f.yaw = [f.yaw[1], a.yaw];
+    // D282: at the pod computer he turns to face into the screen.
+    let in_use = pod.as_ref().is_some_and(|p| p.in_use);
+    let (yaw, turned) = pod_facing(f.yaw[1], a.yaw, in_use, f.turned);
+    f.turned = turned;
+    f.yaw = [f.yaw[1], yaw];
     f.anim = Some(a);
     f.picked += 1;
 }
@@ -1027,8 +1170,14 @@ fn log_scripted(
         .ok()
         .and_then(|f| f.anim.as_ref().map(|a| (f, a)))
         .map(|(f, a)| {
+            // D282: the shown facing when it is not the picker's (the pod computer's user).
+            let shown = if f.turned {
+                format!(" shown {:.1}", f.yaw[1].to_degrees())
+            } else {
+                String::new()
+            };
             format!(
-                " mood {} yaw {:.1} layers {}",
+                " mood {} yaw {:.1}{shown} layers {}",
                 mood_summary(&f.picker),
                 a.yaw.to_degrees(),
                 layer_summary(a)
@@ -1073,10 +1222,18 @@ pub(crate) fn show_sackboy(
         // moves from the previous tick's to the latest by the fixed-step overstep.
         let alpha = fixed.overstep_fraction().clamp(0., 1.);
         f.facing = f.yaw[0] + (f.yaw[1] - f.yaw[0]) * alpha;
+        // D282: at the pod computer his figure is drawn toward the engage target; his
+        // physics place stays.
+        let [dx, dy, dz] = match pod.as_deref() {
+            Some(pod) if pod.blend > 0. => {
+                engage_drawn([p[0], p[1], slab.z], pod.target, pod.blend)
+            }
+            _ => [p[0], p[1], slab.z],
+        };
         let feet = display.transform_point3(Vec3::new(
-            p[0],
-            p[1] - FLOOR_REST + body.controller.landing_dip(),
-            slab.z,
+            dx,
+            dy - FLOOR_REST + body.controller.landing_dip(),
+            dz,
         ));
         *t = Transform::from_matrix(
             Mat4::from_translation(feet) * Mat4::from_rotation_y(f.facing) * f.upright,
@@ -1211,7 +1368,8 @@ mod tests {
     /// D281. The Pod's physics scene: the pod Thing's shape is laid out as pod.bin's
     /// (the outline in local x and z, local z along the level's y), so its floor is
     /// found through the whole matrix, not in the plane; every body is held and no joint
-    /// is left. He starts on that floor at the data spawn, his rest height above it.
+    /// is left. The data spawn (the fitted figure's rule; D282: no longer the Pod's start)
+    /// finds that floor, his rest height above it.
     #[test]
     fn d281_the_pod_scene_has_the_projected_floor_and_holds_every_body() {
         use lbp_level::parts::{Body, Pos, Shape, ShapeColor};
@@ -1278,6 +1436,79 @@ mod tests {
         // He stands his rest height above it: within 1.1 of the game's measured y.
         let y = feet[1] + FLOOR_REST;
         assert!((y - POD_ARRIVAL_MEASURED[1]).abs() < 1.2, "{y}");
+    }
+
+    /// D282. The checkpoint spawn rule: the checkpoint's place, 50 forward in z (or from a
+    /// box's z when that is in front), the slot's x offset, no height offset.
+    #[test]
+    fn d282_the_arrival_is_the_checkpoint_spawn_rule() {
+        let mut checkpoint = [0.; 16];
+        (checkpoint[0], checkpoint[5], checkpoint[10], checkpoint[15]) = (1., 1., 1., 1.);
+        (checkpoint[12], checkpoint[13], checkpoint[14]) = (-3.05, 540.76, -50.);
+        // The Pod: slot 0, lane 0, at the checkpoint's height.
+        assert_eq!(
+            checkpoint_arrival(&checkpoint, None, 0),
+            [-3.05, 540.76, 0.]
+        );
+        // A box in front of the checkpoint wins; one behind it does not.
+        assert_eq!(checkpoint_arrival(&checkpoint, Some(-10.), 0)[2], 40.);
+        assert_eq!(checkpoint_arrival(&checkpoint, Some(-300.), 0)[2], 0.);
+        // The slots' x offsets; the sixth player takes slot 0 again.
+        let xs: Vec<f32> = (0..6)
+            .map(|slot| checkpoint_arrival(&checkpoint, None, slot)[0] + 3.05)
+            .collect();
+        for (x, want) in xs.iter().zip([0., 80., -40., 40., -80., 0.]) {
+            assert!((x - want).abs() < 1e-4, "{xs:?}");
+        }
+        // He falls from there onto a floor below (the pod scene of the d281 test is not
+        // needed for the rule; his y is the checkpoint's whatever the slot).
+        assert!((0..5).all(|s| checkpoint_arrival(&checkpoint, None, s)[1] == 540.76));
+    }
+
+    /// D282. At the pod computer: the drawn offset is 0 at blend 0 and the target at 1,
+    /// the blend is 0 when not in use, his movement input is not applied while in use and
+    /// returns afterwards, and he turns to face pi at the picker's rate and back.
+    #[test]
+    fn d282_the_pod_computer_user_is_held_turned_and_drawn_toward_the_target() {
+        let at = [-5.37, -476.9, 0.];
+        let target = engage_target(Some(-12.469));
+        assert_eq!(target, POD_ENGAGE_TARGET);
+        assert_eq!(engage_target(None), POD_ENGAGE_TARGET);
+        assert_eq!(engage_target(Some(4.))[0], 4.);
+        assert_eq!(engage_drawn(at, target, 0.), at);
+        let full = engage_drawn(at, target, 1.);
+        assert!(
+            (0..3).all(|i| (full[i] - target[i]).abs() < 1e-4),
+            "{full:?}"
+        );
+        let half = engage_drawn(at, target, 0.5);
+        assert!((half[2] - target[2] / 2.).abs() < 1e-4, "{half:?}");
+        assert_eq!(engage_blend(true, 0.4), 0.4);
+        assert_eq!(engage_blend(true, 3.), 1.);
+        assert_eq!(engage_blend(false, 1.), 0.);
+        let walk = Input {
+            x: -1.,
+            jump: true,
+            back: true,
+            ..Input::default()
+        };
+        assert_eq!(pod_input(walk, true), Input::default());
+        assert_eq!(pod_input(walk, false), walk);
+        // Facing: eased toward pi while in use, then back to the picker's angle.
+        let (mut yaw, mut turned) = (0., false);
+        for _ in 0..40 {
+            (yaw, turned) = pod_facing(yaw, 0., true, turned);
+        }
+        assert!(turned && (yaw - POD_USER_FACING).abs() < 1e-3, "{yaw}");
+        assert_eq!(POD_USER_FACING, std::f32::consts::PI);
+        let first = pod_facing(yaw, 0., false, turned);
+        assert!(first.1 && first.0 < yaw && first.0 > 0.);
+        for _ in 0..40 {
+            (yaw, turned) = pod_facing(yaw, 0., false, turned);
+        }
+        assert_eq!((yaw, turned), (0., false));
+        // Never in use: the picker's angle as it is.
+        assert_eq!(pod_facing(0.3, 1.2, false, false), (1.2, false));
     }
 
     #[test]

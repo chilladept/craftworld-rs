@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D281
+# Current state (overwrite each milestone) — after D282
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -11,7 +11,45 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D281 the viewer's own Sackboy in the Pod (2026-10-13)
+## Latest: D282 his z span, his arrival and the pod computer's user (2026-10-14)
+- "Pod picture" PR 9 (input option C), viewer only (`docs/level-scripts.md` part 33). Three
+  placeholders of D281 replaced by FOUND rules of the 01.33 EBOOT (static reading, evidence only).
+  Only with `--play-sackboy --level-scripts --pod-camera N --pod-shell HEX`.
+- Z span. FOUND: absolute world z -500 to 100, set by the creature's constructor and rewritten
+  every creature update (widening paths not taken in normal play: INFERRED).
+  `level_play::POD_PLAYER_Z_SPAN` replaces `POD_PLAYER_HALF_DEPTH` (200). pod.bin's trigger
+  (z -193.7) holds him in all three lanes; the lane decision is the pad zone's z >= -300 alone.
+  The play mode's span on other levels (100, PLACEHOLDER) is unchanged.
+- Arrival. FOUND: checkpoint translation, z max(checkpoint z, a box z) + 50, slot x offset (0,
+  +80, -40, +40, -80; slot 0 first), no height offset. `sackboy_play::checkpoint_arrival`, box
+  not identified (INFERRED: the checkpoint's z): start (-3.05, 540.76, 0), he falls. MEASURED:
+  out of the pad zone on tick 1, in on tick 25 (y -331.3, still falling), on the floor on tick
+  28 at y -476.4; nothing in between. The game's arrival (-5.37, -477.97): 2.3 in x unexplained.
+  `data_spawn` (Moon x -1.11) stays for other levels.
+- Pod computer user. FOUND: no script native moves him; the animation code switches his input
+  context, faces him to pi and draws his body offset by (target - position) * blend, target
+  (-12.469, -482.979, -93.170) with x from the "pod_controller" Thing. Viewer: while in use his
+  movement input is dropped (`pod_input`), his facing eases to pi at 0.4 per tick
+  (`pod_facing`), his figure is drawn at lerp(position, target, blend) (`engage_drawn`); blend =
+  the change-over value (PLACEHOLDER for the clips' progress); his physics place stays. FOUND in
+  the file: "pod_controller" (Thing 5) is at x 17.846, not -12.469 (30.3 unexplained). The
+  D281 note "the game moves him to z -200" is not explained by this code.
+- MEASURED (`local-analysis/rscript/stage6/shots/d282-*`): walk run as D281 (out 471, press 472
+  ignored, in 514, press 535 taken, in use 536, change-over 1.0 on 555), he stays at x -11.0
+  while in use with walk and lane keys given, shown facing 177.8 degrees by 545, 180 by 560.
+  Lanes: out on 504 at z -305 (z rule, still in the trigger's list), in on 566, in use 595.
+  Stills at 470 and 580 equal over two runs. Eleven captures without `--play-sackboy` equal byte
+  for byte to D281's.
+- Left: the enter/hold/leave clips and their timing; the controller x gap; the z -200 read; the
+  arrival's x; the checkpoint box; the way out of the pod computer (not run in the viewer).
+- Tests: three new viewer tests (`d282_*`), `d281_the_pad_zone_...` updated (back lane out by
+  the z rule only). fmt, CI clippy, CI tests (612), `cargo check` of both viewers and the
+  viewer's clippy pass; viewer tests 81 pass, `sackboy_play::tests::input_script_steps` fails as
+  on main. The runtime is untouched.
+- Next: the pod computer's clips; the Sackboy by default in the scripted Pod picture;
+  `pod_mask.tex`.
+
+## Before: D281 the viewer's own Sackboy in the Pod (2026-10-13)
 - "Pod picture" PR 8 (input option C), viewer only (`docs/level-scripts.md` part 32). With
   `--play-sackboy --level-scripts --pod-camera N --pod-shell HEX` the Sackboy of the scripted Pod
   picture is the viewer's playable one, in the shell level (pod.bin). Without `--play-sackboy`

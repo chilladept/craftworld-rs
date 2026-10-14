@@ -1,5 +1,16 @@
 # Development log
 
+## 2026-10-14 - D282 his z span, his arrival and the pod computer's user
+
+Pod picture PR 9 (input option C), viewer only. In the Pod with `--play-sackboy`: his z span for the
+triggers' layer rule is the FOUND absolute range -500 to 100 of the 01.33 creature update (was 200 either
+way), so the trigger holds him in every lane and the pad zone's z rule decides the lane; he arrives by the
+FOUND checkpoint spawn rule (checkpoint + 50 in z, slot 0, no height offset) at (-3.05, 540.76, 0) and falls,
+in the pad zone on tick 25, on the floor on tick 28 at y -476.4; while the pod computer is in use his movement
+input is dropped, he turns to face pi and his figure is drawn toward the engage target (x from the
+"pod_controller" Thing, 17.846) by the change-over value (placeholder for the clips). Without
+`--play-sackboy` eleven captures are equal byte for byte. `docs/level-scripts.md` part 33.
+
 ## 2026-10-13 - D281 the viewer's own Sackboy in the Pod
 
 Pod picture PR 8 (input option C), viewer only. With `--play-sackboy` under `--level-scripts --pod-camera N
