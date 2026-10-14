@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D285
+# Current state (overwrite each milestone) — after D286
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -11,7 +11,29 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D285 the player's default colour as the Pod's flat colour (2026-10-14)
+## Latest: D286 the Pod's side walls as clear glass (2026-10-14)
+- "Pod picture" PR 13, viewer only (`docs/level-scripts.md` part 37), from the owner's report
+  of a strange texture on the Pod's side walls. P2j's default wall art (0x1f3b9 in slot 0 of
+  `window_glassy` 0x1d14c, drawn opaque) is gone; `--runtime-texture` still adds it on request,
+  `--no-pod-wall` does nothing.
+- MEASURED (the captured glass draw): blend One, InvSrcAlpha; only the normal map and the
+  transition mask bound; FOUND: alpha 0.2 x the dissolve's kept share, colour premultiplied,
+  the constant 0.11765 in place of the green in the edge; TC0 is the mesh's UV0.
+- Viewer: material GUID 0x1d14c only (alpha mode 4 not used as the rule) draws
+  `AlphaMode::Premultiplied`, alpha 0.2 x kept share, lit grey with the bump and gloss times
+  that alpha; raw UV0 recovered from the bump's UV0 x 2 (`lbp-preview` `BumpMap::uv_transform`).
+- MEASURED (`local-analysis/rscript/stage6/shots/d286-*`): the planets captures, `--pod-open`
+  and 640 equal D285/D284; the closed, no-script, 610 and 615 frames show the room through the
+  panels. Against `d156-rpcs3-pod-default.png`: the right panel's drawings and statue match;
+  the left shows the cloth where the game shows wall art; the game's glass is darker and
+  greener (right panel mean (63, 88, 92) against (145, 151, 140)).
+- Tests: `p2j_d286_*`, `d286_*` (three) and the shader validation extended. fmt, CI clippy, CI
+  tests (612), `cargo check` of both viewers and the viewer's clippy pass; viewer tests 92 pass,
+  `sackboy_play::tests::input_script_steps` fails as on main.
+- Next: the glass's blend in the encoded output space and its specular scale; the left panel's
+  view; the camera's timing.
+
+## Before: D285 the player's default colour as the Pod's flat colour (2026-10-14)
 - "Pod picture" PR 12, runtime and viewer (`docs/level-scripts.md` part 36). FOUND (01.33,
   evidence only): a new profile takes entry 0 of the script class `PlayerColour`'s palette (12
   entries; 0x1589a8 given index 0 by both callers); entry 0's primary is (150, 221, 60). The Pod

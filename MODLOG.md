@@ -1,5 +1,16 @@
 # Development log
 
+## 2026-10-14 - D286 the Pod's side walls as clear glass
+
+Pod picture PR 13, viewer only, from the owner's report of a strange texture on the Pod's side walls. The
+panels are the gfx material `window_glassy` 0x1d14c; P2j's default wall art in its slot 0 (a placeholder from
+before the room was drawn behind the shell) is gone. In the captured draw the glass blends One, InvSrcAlpha with
+alpha 0.2 times the dissolve's kept share and only its normal map bound (MEASURED), so the viewer draws that GUID
+premultiplied at opacity 0.2, the lit grey with its bump and gloss, the constant 0.11765 in place of the green in
+the dissolve's edge, and the mesh's raw UV0 recovered from the bump's coordinates. The room now shows through the
+panels; the right panel matches the game's still, the left shows the cloth where the game shows wall art, and
+the game's glass is darker and greener (blend space and specular left out). `docs/level-scripts.md` part 37.
+
 ## 2026-10-14 - D285 the player's default colour as the Pod's flat colour
 
 Pod picture PR 12, runtime and viewer. A player record now starts with the game's default colour, entry 0 of the

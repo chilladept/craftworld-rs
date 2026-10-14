@@ -136,6 +136,10 @@ pub struct SecondTexture {
     #[texture(143)]
     #[sampler(144)]
     dissolve_island: Option<Handle<Image>>,
+    /// D286: clear glass. x = the output alpha (0 = not glass: alpha 1, colour as is), y =
+    /// the green the dissolve's edge takes in place of the surface colour's.
+    #[uniform(145)]
+    glass: Vec4,
     /// D121: generated normals passed `adapter::normal_trust`; otherwise stays unlit.
     pub normals_trusted: bool,
     /// D284: the input of this bucket that holds the mesh's raw UV0
@@ -350,6 +354,19 @@ pub fn set_thing_tint(material: &mut ViewerMaterial, tint: Option<[f32; 3]>) {
 pub fn tinted(material: &ViewerMaterial) -> bool {
     material.extension.thing_tint.w > 0.5
 }
+/// D286: draws the material as the game's glass (`window_glassy`): the fragment's alpha
+/// is `opacity` times the dissolve's kept share and its colour is multiplied by that
+/// alpha (for `AlphaMode::Premultiplied`); the dissolve's edge takes `green` in place of
+/// the surface colour's green.
+pub fn enable_glass(material: &mut ViewerMaterial, opacity: f32, green: f32) {
+    material.extension.glass = Vec4::new(opacity, green, 0., 0.);
+}
+/// D286: the glass's opacity, none when the material is not glass.
+#[cfg(test)]
+pub fn glass(material: &ViewerMaterial) -> Option<f32> {
+    let opacity = material.extension.glass.x;
+    (opacity > 0.).then_some(opacity)
+}
 /// D278: what [`set_dissolve`] writes. See the fields of the same names above.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Dissolve {
@@ -488,6 +505,7 @@ struct BumpInput {
 @group(#{MATERIAL_BIND_GROUP}) @binding(142) var<uniform> dissolve_mask_v: vec4<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(143) var dissolve_island: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(144) var dissolve_island_sampler: sampler;
+@group(#{MATERIAL_BIND_GROUP}) @binding(145) var<uniform> glass: vec4<f32>;
 // D189 graph texture k at uv with explicit gradients (non-uniform control flow).
 fn graph_texture(k: u32, uv: vec2<f32>, gx: vec2<f32>, gy: vec2<f32>) -> vec4<f32> {
     switch k {
@@ -739,7 +757,9 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> FragmentOut
         if dissolve_params.z > 0.5 && has_raw_uv0 {
             m6 = step(0.5, textureSampleGrad(dissolve_island, dissolve_island_sampler, raw_uv0, raw_uv0_dx, raw_uv0_dy).r);
         }
-        let edge = (above - dissolve_consts.x * color.g) / dissolve_consts.y + 1.0 - m6 + dissolve_params.w * (1.0 - m6);
+        // D286: the glass takes a constant in place of the surface green.
+        let green = select(color.g, glass.y, glass.x > 0.0);
+        let edge = (above - dissolve_consts.x * green) / dissolve_consts.y + 1.0 - m6 + dissolve_params.w * (1.0 - m6);
         if edge > 1.0 {
             discard;
         }
@@ -830,8 +850,15 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> FragmentOut
     if dissolve_on {
         rgb = mix(dissolve_colour.rgb, rgb, dissolve_keep);
     }
+    // D286: the glass writes alpha = opacity x the dissolve's kept share and its colour
+    // multiplied by it (premultiplied, for One / OneMinusSrcAlpha); the rest alpha 1.
+    var alpha = 1.0;
+    if glass.x > 0.0 {
+        alpha = glass.x * dissolve_keep;
+        rgb *= alpha;
+    }
     var out: FragmentOutput;
-    out.color = main_pass_post_lighting_processing(pbr, vec4<f32>(rgb, 1.0));
+    out.color = main_pass_post_lighting_processing(pbr, vec4<f32>(rgb, alpha));
     return out;
 }
 "#;
@@ -987,6 +1014,26 @@ fn main_pass_post_lighting_processing(p: PbrInputStub, c: vec4<f32>) -> vec4<f32
         assert_eq!(m.extension.dissolve_params, Vec4::ZERO);
         assert_eq!(super::raw_uv0(&m), 2);
     }
+    /// D286: a new material is not glass; `enable_glass` gives the shader the opacity and
+    /// the dissolve's green, and leaves the rest of the material (its dissolve) alone.
+    #[test]
+    fn d286_glass_carries_its_opacity_and_green() {
+        use bevy::prelude::*;
+        let mut m = super::material(StandardMaterial::default());
+        assert_eq!(super::glass(&m), None);
+        assert_eq!(m.extension.glass, Vec4::ZERO);
+        m.extension.raw_uv0 = 1;
+        let d = super::Dissolve {
+            plane: Vec4::Y,
+            ..Default::default()
+        };
+        super::set_dissolve(&mut m, Some(&d));
+        super::enable_glass(&mut m, 0.2, 0.117_65);
+        assert_eq!(super::glass(&m), Some(0.2));
+        assert_eq!(m.extension.glass, Vec4::new(0.2, 0.117_65, 0., 0.));
+        assert_eq!(super::dissolve(&m).as_ref(), Some(&d));
+        assert_eq!(m.extension.dissolve_params.x, 1.);
+    }
     /// D121: the authored shader (all `#ifdef` blocks enabled, imports stubbed) parses
     /// and validates headlessly. Bevy's own composition is exercised only at run time.
     #[test]
@@ -1016,6 +1063,11 @@ fn main_pass_post_lighting_processing(p: PbrInputStub, c: vec4<f32>) -> vec4<f32
             "textureSampleGrad(dissolve_mask, dissolve_sampler, dissolve_uv, dissolve_dx, dissolve_dy).r"
         ));
         assert!(body.contains("rgb = mix(dissolve_colour.rgb, rgb, dissolve_keep);"));
+        // D286: the glass's green in the edge, its alpha and its premultiplied colour.
+        assert!(body.contains("(above - dissolve_consts.x * green)"));
+        assert!(body.contains("alpha = glass.x * dissolve_keep;"));
+        assert!(body.contains("rgb *= alpha;"));
+        assert!(body.contains("vec4<f32>(rgb, alpha)"));
         assert_eq!(body.matches("discard;").count(), 2);
         let source = format!("{STUBS}{body}");
         let module = naga::front::wgsl::parse_str(&source)

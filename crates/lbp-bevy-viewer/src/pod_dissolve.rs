@@ -30,8 +30,11 @@
 //! the player's colour (FOUND, part 21), with its red, green and blue squared as the
 //! engine passes them to the shader ([`uniforms`]).
 //!
-//! Left out: the glass material's constant in place of its colour's green, the fog over
-//! the flat colour.
+//! D286 (part 37): the glass material takes its constant in place of the colour's green
+//! and its raw UV0 (from its bump map's coordinates), and its alpha is its opacity times
+//! the kept share (`dual::enable_glass`).
+//!
+//! Left out: the fog over the flat colour.
 use crate::dual::Dissolve;
 use bevy::prelude::*;
 

@@ -63,6 +63,8 @@ pub struct BumpMap {
     pub sampling_uv: Vec<[f32; 2]>,
     pub wrap: crate::TextureWrapping,
     pub uv_channel: usize,
+    /// D286: the sampler's transform from the raw channel to `sampling_uv`.
+    pub uv_transform: crate::SamplingTransform,
 }
 #[derive(Default)]
 pub struct Surface {
@@ -567,6 +569,7 @@ fn load_bump(
         sampling_uv,
         wrap,
         uv_channel: sampler.uv_channel,
+        uv_transform: sampler.uv_transform,
     })
 }
 

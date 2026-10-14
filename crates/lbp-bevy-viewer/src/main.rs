@@ -558,6 +558,10 @@ fn model_up(z_up: bool) -> Quat {
     }
 }
 fn options() -> Result<Viewer, String> {
+    options_from(std::env::args().skip(1))
+}
+/// The command line without the program name (D286: separate so tests can read options).
+fn options_from(mut args: impl Iterator<Item = String>) -> Result<Viewer, String> {
     let mut v = Viewer {
         bump_gloss: false,
         no_bump_gloss: false,
@@ -596,9 +600,7 @@ fn options() -> Result<Viewer, String> {
     };
     let mut print_census = false;
     let mut play_sackboy = false;
-    let mut pod_wall = true;
     let mut no_lbp_lighting = false;
-    let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
         if flag == "--instance-rgba" {
             let value = args
@@ -682,8 +684,9 @@ fn options() -> Result<Viewer, String> {
             v.no_bump_gloss = true;
             continue;
         }
+        // D286: the side panels are glass and take no texture by default any more; the
+        // flag is still accepted so older command lines run unchanged.
         if flag == "--no-pod-wall" {
-            pod_wall = false;
             continue;
         }
         if flag == "--pod-game-camera" {
@@ -754,7 +757,7 @@ fn options() -> Result<Viewer, String> {
         if flag == "--help" {
             println!("lbp-bevy-viewer --snapshot FILE --game-dir DIRECTORY [--select-guid HEX]\n--play-animation HEX: play an animation on the selected mesh\n--animation-frame N: hold that running frame instead of playing (QA captures)\n--skinning gpu|cpu: Bevy joint skinning (default) or the CPU reference path\n--model-up z|y: single-mesh model up axis (default z: Z-up, front -Y, shown upright facing the camera; y: raw axes)\n--browse-query TEXT; --show-unavailable: browser filters\n--animation-base: local animation base-row snapshot (not game time; also levels)\n--no-animation-base, --no-instance-default: turn off the D188 single-mesh defaults (animation base values; white instance color 1,1,1,1 when no Thing supplies one) and the D191 level defaults (animation base values; each Thing's editorColor as its instance color, inferred)\n--instance-rgba R,G,B,A: supplied linear instance color (overrides the white default)\n--synthetic: authored depth/UV/repeat/clamp scene\n--synthetic-groups: authored mixed material groups\n--synthetic-affine: authored UV scale/offset/reflection\n--qa-capture NEW_PNG_UNDER_LOCAL_ANALYSIS: capture then exit (window shown without taking focus)
 --no-activate: show the window without taking focus or the foreground (interactive runs)
---qa-hide-ui: draw no panels (clean captures)\n--window-16-9: 1280x720 window (the game's 16:9 frame; RPCS3 comparisons)\n--preview-lighting: key + ambient preview lighting (not game lighting; levels use their stored settings, approximate)\n--lighting-preset N|main: with a level, light from its stored preset N instead of the main settings (P2l; --lbp-lighting defaults to preset 0 when one is stored, main forces the main block)\n--lbp-lighting: preview lighting shaped like the community brdf.cg reconstruction (hemisphere ambient, sun, two rims, squared combine; unfitted stored values, uniform mapping inferred, P2l); on by default in level mode (P2w), --no-lbp-lighting draws levels unlit, --preview-lighting keeps the older Lambert preview\n--no-glow: skip material glow (output port 4; P3h A/B)\n--no-baked-ao: skip the backdrop lightmap baked AO under --lbp-lighting (P3k A/B)\n--bump-gloss / --no-bump-gloss: material bump maps (output port 3) and static gloss colours (port 2) under --lbp-lighting, on with it by default (P2q; offsets and frame inferred)\n{CENSUS_FLAGS_HELP}\n--print-census: print the corpus-count panel text and exit (no window)\n--ui-demo: authored UI layer demo (no game data; other options ignored)\n--slot-browser: story slot browser over --snapshot/--game-dir (--slot-browser-report prints counts and exits; --slot-browser-slots adds one line per slot)\n--text-browser: .trans tables (search by text, tag or key) and font glyph sheets (--text-browser-report prints counts and exits)\n--ui-script CLASS: run one of your UI scripts headlessly (stub natives) and draw the frame tree it builds; --ui-script-function NAME (default UpdateUI__Q5Gooey), --ui-script-report prints counts and the outline (--qa-hide-ui draws the tree without the count lines)\n--pod-menu CLASS: the Pod main menu as pills on a globe and moon (placeholder spheres; pill positions from the RPCS3 reference), Up/Down/Enter; with a level, the pills over the level view\n--pod-camera N: with a level, home view that puts Thing N (the Pod globe) where the RPCS3 frame has it\n--pod-shell HEX: with --pod-camera, the Pod shell level (000027b9) as a layer over the view; Space or gamepad Square opens/closes the Puter (camera dolly), Esc or Circle closes; --pod-game-camera: the planets view through the game's own camera (presets, vfov 57.3 deg), World transform and main-menu Earth/Moon placement instead of the globe fit (P2k);\n--pod-open: start open; the side panels show the room wall art 0001f3b9 (inferred; --no-pod-wall: plain); --pod-t T: start at opening progress T (0-1, mid-dolly captures); --pod-shell-camera FX,FY,FZ,TX,TY,TZ: closed shell eye from the game camera preset (shell level units); --select-guid HEX (Sackboy 0000043f) stands in front of the DualShock, --play-animation HEX plays on him, --pod-hold-animation HEX while the Puter is open; --pod-figure-data: closed spot from the shell's data (checkpoint + spawn offset, dropped to the floor) instead of the RPCS3 fit (both are reported)\n--puter-screen CLASS: in the 3D view, that UI script's frame tree on a screen quad (arrows/Enter focus); --puter-function NAME, --puter-at X,Y,Z[,WIDTH] (display units, facing +Z; default 1.1,0,0,1.2)\n--popit: inventory browser over the disc plans (--popit-report prints counts; add --popit-decode-icons to measure icon decoding)\n--level-guid HEX | --level-path MAP_PATH: level scene mode (RENDER_MESH Things at POS)\n--level-placement inverse-bind|pos-only: POS Things at POS x inverse bind of bone 0 (default, D120) or POS only (D113)\n--shape-bevels: with a level, bevelled shapes (geometry inferred, unverified; default straight)\n--per-bone-placement: with a level, models with boneThings place each vertex by its bone's Thing (P2m; inferred rigid skinning; default bone 0 rule, but on under --pod-game-camera unless --no-per-bone-placement)\n--runtime-texture MESH:SLOT:TEXTURE (hex GUIDs, slot 0-7, repeatable): with a level (and --pod-shell), draw Solid groups of that mesh whose material lists SLOT as unrendered with TEXTURE (UV0, Repeat, untinted; inferred, game binding unconfirmed)\n--level-report: with a level, print scene counts and exit (no window)\n--level-focus-thing N: with a level, frame the view on Thing N (reader order)\n--level-scripts: with a level, run its scripts at 30 Hz (OnCreate__, then Update__ each tick) and show the counts, with the open speech bubbles and the subtitle drawn as plain boxes the level lit again when a script changes the global lighting or darkness, and each Thing's own model hidden, tinted and moved as the scripts set it (a mesh that is not visible in play mode is hidden), and the camera moved to a script's override camera while one is on, or put at the camera a script writes itself (the Pod's planets level: with --pod-camera N and no --pod-shell the level also hangs under its script-moved world Thing); --level-scripts-flags N,..: progression flags set on the profile; --level-scripts-hold-at N (QA): the scripts stop after tick N, so a capture shows that tick; --level-scripts-in-use-at N (QA): the pod computer is in use once N ticks have run (a stand-in for the player engaging it), so the Pod level's change-over runs and its pod mesh is swapped; with --pod-camera N and --pod-shell HEX the shell level is played in the same session with a Sackboy (not drawn, a placeholder) on the pod computer's trigger, and Space or gamepad Square is the engage button on the pad the scripts read for one tick (the pod's own script then asks for the pod computer, once the intro has set its progression flags), or while the computer is in use a request to the host to close it, as Esc or Circle (placeholder: no script path for closing was found); --level-scripts-press-at N (QA): that engage press on tick N without a key\n--play-sackboy: with a level, its shapes as a physics world and Sackboy at the first checkpoint, drawn as his mesh (0000043f unless --select-guid) with stand/walk/lane/jump/land clips picked from his state (rules inferred; --play-animation HEX plays one clip instead) (arrows walk and change lanes, Space jumps, I/K/L/J moods happy/sad/angry/scared; camera follows); --play-sackboy-at X,Y,Z spawn; --play-sackboy-input r:40,rj:12,-:30 scripted keys (l r j b f, mood presses U D R L) with the position printed each tick; --qa-record DIR,START,END[,SPEED] (QA only) saves one PNG per scripted tick START..END into a new local-analysis DIR, game time at SPEED (default 0.25), then exits\nLeft drag orbit; right/middle drag pan; wheel zoom; R reset; F frame.");
+--qa-hide-ui: draw no panels (clean captures)\n--window-16-9: 1280x720 window (the game's 16:9 frame; RPCS3 comparisons)\n--preview-lighting: key + ambient preview lighting (not game lighting; levels use their stored settings, approximate)\n--lighting-preset N|main: with a level, light from its stored preset N instead of the main settings (P2l; --lbp-lighting defaults to preset 0 when one is stored, main forces the main block)\n--lbp-lighting: preview lighting shaped like the community brdf.cg reconstruction (hemisphere ambient, sun, two rims, squared combine; unfitted stored values, uniform mapping inferred, P2l); on by default in level mode (P2w), --no-lbp-lighting draws levels unlit, --preview-lighting keeps the older Lambert preview\n--no-glow: skip material glow (output port 4; P3h A/B)\n--no-baked-ao: skip the backdrop lightmap baked AO under --lbp-lighting (P3k A/B)\n--bump-gloss / --no-bump-gloss: material bump maps (output port 3) and static gloss colours (port 2) under --lbp-lighting, on with it by default (P2q; offsets and frame inferred)\n{CENSUS_FLAGS_HELP}\n--print-census: print the corpus-count panel text and exit (no window)\n--ui-demo: authored UI layer demo (no game data; other options ignored)\n--slot-browser: story slot browser over --snapshot/--game-dir (--slot-browser-report prints counts and exits; --slot-browser-slots adds one line per slot)\n--text-browser: .trans tables (search by text, tag or key) and font glyph sheets (--text-browser-report prints counts and exits)\n--ui-script CLASS: run one of your UI scripts headlessly (stub natives) and draw the frame tree it builds; --ui-script-function NAME (default UpdateUI__Q5Gooey), --ui-script-report prints counts and the outline (--qa-hide-ui draws the tree without the count lines)\n--pod-menu CLASS: the Pod main menu as pills on a globe and moon (placeholder spheres; pill positions from the RPCS3 reference), Up/Down/Enter; with a level, the pills over the level view\n--pod-camera N: with a level, home view that puts Thing N (the Pod globe) where the RPCS3 frame has it\n--pod-shell HEX: with --pod-camera, the Pod shell level (000027b9) as a layer over the view; Space or gamepad Square opens/closes the Puter (camera dolly), Esc or Circle closes; --pod-game-camera: the planets view through the game's own camera (presets, vfov 57.3 deg), World transform and main-menu Earth/Moon placement instead of the globe fit (P2k);\n--pod-open: start open; the side panels are clear glass (D286; --runtime-texture 00002f6c:0:HEX paints a texture on them, --no-pod-wall is accepted and does nothing); --pod-t T: start at opening progress T (0-1, mid-dolly captures); --pod-shell-camera FX,FY,FZ,TX,TY,TZ: closed shell eye from the game camera preset (shell level units); --select-guid HEX (Sackboy 0000043f) stands in front of the DualShock, --play-animation HEX plays on him, --pod-hold-animation HEX while the Puter is open; --pod-figure-data: closed spot from the shell's data (checkpoint + spawn offset, dropped to the floor) instead of the RPCS3 fit (both are reported)\n--puter-screen CLASS: in the 3D view, that UI script's frame tree on a screen quad (arrows/Enter focus); --puter-function NAME, --puter-at X,Y,Z[,WIDTH] (display units, facing +Z; default 1.1,0,0,1.2)\n--popit: inventory browser over the disc plans (--popit-report prints counts; add --popit-decode-icons to measure icon decoding)\n--level-guid HEX | --level-path MAP_PATH: level scene mode (RENDER_MESH Things at POS)\n--level-placement inverse-bind|pos-only: POS Things at POS x inverse bind of bone 0 (default, D120) or POS only (D113)\n--shape-bevels: with a level, bevelled shapes (geometry inferred, unverified; default straight)\n--per-bone-placement: with a level, models with boneThings place each vertex by its bone's Thing (P2m; inferred rigid skinning; default bone 0 rule, but on under --pod-game-camera unless --no-per-bone-placement)\n--runtime-texture MESH:SLOT:TEXTURE (hex GUIDs, slot 0-7, repeatable): with a level (and --pod-shell), draw Solid groups of that mesh whose material lists SLOT as unrendered with TEXTURE (UV0, Repeat, untinted; inferred, game binding unconfirmed)\n--level-report: with a level, print scene counts and exit (no window)\n--level-focus-thing N: with a level, frame the view on Thing N (reader order)\n--level-scripts: with a level, run its scripts at 30 Hz (OnCreate__, then Update__ each tick) and show the counts, with the open speech bubbles and the subtitle drawn as plain boxes the level lit again when a script changes the global lighting or darkness, and each Thing's own model hidden, tinted and moved as the scripts set it (a mesh that is not visible in play mode is hidden), and the camera moved to a script's override camera while one is on, or put at the camera a script writes itself (the Pod's planets level: with --pod-camera N and no --pod-shell the level also hangs under its script-moved world Thing); --level-scripts-flags N,..: progression flags set on the profile; --level-scripts-hold-at N (QA): the scripts stop after tick N, so a capture shows that tick; --level-scripts-in-use-at N (QA): the pod computer is in use once N ticks have run (a stand-in for the player engaging it), so the Pod level's change-over runs and its pod mesh is swapped; with --pod-camera N and --pod-shell HEX the shell level is played in the same session with a Sackboy (not drawn, a placeholder) on the pod computer's trigger, and Space or gamepad Square is the engage button on the pad the scripts read for one tick (the pod's own script then asks for the pod computer, once the intro has set its progression flags), or while the computer is in use a request to the host to close it, as Esc or Circle (placeholder: no script path for closing was found); --level-scripts-press-at N (QA): that engage press on tick N without a key\n--play-sackboy: with a level, its shapes as a physics world and Sackboy at the first checkpoint, drawn as his mesh (0000043f unless --select-guid) with stand/walk/lane/jump/land clips picked from his state (rules inferred; --play-animation HEX plays one clip instead) (arrows walk and change lanes, Space jumps, I/K/L/J moods happy/sad/angry/scared; camera follows); --play-sackboy-at X,Y,Z spawn; --play-sackboy-input r:40,rj:12,-:30 scripted keys (l r j b f, mood presses U D R L) with the position printed each tick; --qa-record DIR,START,END[,SPEED] (QA only) saves one PNG per scripted tick START..END into a new local-analysis DIR, game time at SPEED (default 0.25), then exits\nLeft drag orbit; right/middle drag pan; wheel zoom; R reset; F frame.");
             std::process::exit(0);
         }
         let value = args.next().ok_or("Missing option value")?;
@@ -909,9 +912,6 @@ fn options() -> Result<Viewer, String> {
     // (0000043f sack_boy.mol; the default naked costume adds no geometry, INFERRED).
     if play_sackboy && v.level.active() && v.guid.trim().is_empty() {
         v.guid = sackboy_play::SACKBOY_MESH.into();
-    }
-    if pod_wall && v.level.shell.is_some() {
-        pod_wall_default(&mut v.level.runtime_textures)?;
     }
     if v.level.report && !v.level.active() {
         return Err("--level-report requires --level-guid or --level-path".into());
@@ -1670,6 +1670,19 @@ struct Prepared {
     material: Option<u32>,
     /// D284: the input that holds the mesh's raw UV0 (`pod_dissolve::uv0_source`).
     raw_uv0: u8,
+    /// D286: clear glass (`window_glassy`): its output alpha, drawn premultiplied.
+    glass: Option<f32>,
+}
+/// D286: draws a bucket as the game's glass: opacity [`GLASS_OPACITY`], and its raw UV0
+/// as `in.uv` (MEASURED: the captured draw's TC0 is the mesh's UV0), so the dissolve's
+/// mask lies on the mesh's own UV and not on the position tile. `raw_uv0` is given only
+/// for a bucket without diffuse coordinates (a solid bucket's `in.uv` is all zero).
+fn mark_glass(p: &mut Prepared, raw_uv0: Option<Vec<[f32; 2]>>) {
+    p.glass = Some(GLASS_OPACITY);
+    if let Some(uv) = raw_uv0.filter(|uv| uv.len() == p.mesh.count_vertices()) {
+        p.mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv);
+        p.raw_uv0 = 1;
+    }
 }
 /// D284: which input of a bucket holds raw UV0: the primary coordinates when they are
 /// channel 0 unchanged, else the second sample's (drawn as UV_1) when they are.
@@ -1762,6 +1775,20 @@ fn prepare(
             range.len()
         ));
     }
+    // D286: the glass's raw UV0, recovered from its bump map's coordinates (a solid
+    // bucket has no diffuse coordinates of its own).
+    let mut glass_uv: Vec<Option<Vec<[f32; 2]>>> = buckets
+        .iter()
+        .zip(&materials)
+        .map(|((asset, _), material)| {
+            let bump = asset
+                .as_ref()
+                .filter(|a| *material == Some(WINDOW_GLASSY) && a.sampling_uv().is_none())
+                .and_then(|a| a.surface())
+                .and_then(|s| s.bump.as_deref())?;
+            raw_uv0_from_bump(bump.uv_channel, bump.uv_transform, &bump.sampling_uv)
+        })
+        .collect();
     let mut prepared = prepare_buckets(
         &g.positions,
         preview.normals.as_deref(),
@@ -1773,6 +1800,9 @@ fn prepare(
     )?;
     for p in &mut prepared {
         p.material = materials.get(p.bucket).copied().flatten();
+        if p.material == Some(WINDOW_GLASSY) {
+            mark_glass(p, glass_uv.get_mut(p.bucket).and_then(Option::take));
+        }
     }
     Ok(prepared)
 }
@@ -2166,6 +2196,7 @@ fn prepare_buckets(
             bucket,
             material: None,
             raw_uv0,
+            glass: None,
         });
     }
     if prepared.is_empty() {
@@ -2179,17 +2210,14 @@ fn upload(
     materials: &mut Assets<ViewerMaterial>,
     images: &mut Assets<Image>,
 ) -> (Handle<Mesh>, Handle<ViewerMaterial>, Option<Handle<Image>>) {
+    let blend = alpha_mode(&p);
     let image = p.image.map(|i| images.add(i));
     let mut surface = dual::material(StandardMaterial {
         base_color: p.color,
         base_color_texture: image.clone(),
         unlit: true,
         cull_mode: None,
-        alpha_mode: if p.decal {
-            AlphaMode::Blend
-        } else {
-            AlphaMode::Opaque
-        },
+        alpha_mode: blend,
         depth_bias: if p.decal { 8.0 } else { 0.0 },
         ..default()
     });
@@ -2251,9 +2279,25 @@ fn upload(
     if let Some((map, mode)) = p.spec_map {
         dual::enable_spec_map(&mut surface, images.add(map), mode);
     }
+    if let Some(opacity) = p.glass {
+        dual::enable_glass(&mut surface, opacity, GLASS_DISSOLVE_GREEN);
+    }
     surface.extension.normals_trusted = p.normals_trusted;
     surface.extension.raw_uv0 = p.raw_uv0;
     (meshes.add(p.mesh), materials.add(surface), image)
+}
+/// How a bucket blends. D286: the glass is `Premultiplied`, Bevy's One /
+/// OneMinusSrcAlpha with the shader's colour taken as already multiplied by its alpha:
+/// the captured draw's `One, InvSrcAlpha` (MEASURED). Its depth is not written (Bevy's
+/// transparent pass; the game writes it), so nothing behind it is lost.
+fn alpha_mode(p: &Prepared) -> AlphaMode {
+    if p.glass.is_some() {
+        AlphaMode::Premultiplied
+    } else if p.decal {
+        AlphaMode::Blend
+    } else {
+        AlphaMode::Opaque
+    }
 }
 /// D113: display plan for a level scene, built without GPU or window. Per scene mesh the
 /// prepared buckets (or the display error); per displayed item its mesh and Transform
@@ -3244,24 +3288,34 @@ fn spawn_level(
     v.lighting.light = plan.light;
     things
 }
-/// P2j: the Pod side panels (pod.mol slot 0, window_glassy) show the room wall art
-/// default_wall_diffuse 0001f3b9 unless a `--runtime-texture` rule names that slot or
-/// `--no-pod-wall` is given. Matched to RPCS3 by eye (D184); the game's binding is
-/// unconfirmed (docs/p2j-pod-wall.md).
-const POD_WALL_TEXTURE: u32 = 0x0001_f3b9;
-fn pod_wall_default(
-    rules: &mut Vec<lbp_preview::runtime_texture::RuntimeTexture>,
-) -> Result<(), String> {
-    if rules.iter().any(|r| r.mesh == POD_TENT_MESH && r.slot == 0) {
-        return Ok(());
-    }
-    rules.push(lbp_preview::runtime_texture::RuntimeTexture {
-        mesh: POD_TENT_MESH,
-        slot: 0,
-        texture: POD_WALL_TEXTURE,
-    });
-    lbp_preview::runtime_texture::validate(rules).inspect_err(|_| {
-        rules.pop();
+/// D286 (docs/level-scripts.md, part 37): `window_glassy`, the gfx material of the Pod's
+/// side panels (pod.mol primitive 2). P2j's default wall art on it (0001f3b9, D184) is
+/// gone: the game draws it as clear glass over the room. The rule is this GUID only
+/// (the material's alpha mode 4 was measured on this one draw, so it is not used).
+const WINDOW_GLASSY: u32 = 0x0001_d14c;
+/// D286: the glass's output alpha (MEASURED, fc32 of the captured draw): the colour is
+/// premultiplied by it and the room behind is kept by one minus it.
+const GLASS_OPACITY: f32 = 0.2;
+/// D286: the constant the glass's shader takes in place of the surface green in the
+/// dissolve's edge (FOUND, 30 / 255).
+const GLASS_DISSOLVE_GREEN: f32 = 0.117_65;
+/// D286: raw UV0 from a bump map's coordinates when they are UV0 through a scale and
+/// offset with no zero scale (the glass's tissue paper is UV0 x 2, FOUND); none
+/// otherwise. The inverse of the forward map, so exact for a power-of-two scale.
+fn raw_uv0_from_bump(
+    uv_channel: usize,
+    transform: lbp_preview::SamplingTransform,
+    sampling_uv: &[[f32; 2]],
+) -> Option<Vec<[f32; 2]>> {
+    let lbp_preview::SamplingTransform::ScaleOffset(t) = transform else {
+        return None;
+    };
+    let [sx, sy, ox, oy] = t.values();
+    (uv_channel == 0 && sx != 0. && sy != 0.).then(|| {
+        sampling_uv
+            .iter()
+            .map(|&[u, v]| [(u - ox) / sx, (v - oy) / sy])
+            .collect()
     })
 }
 /// P2e: one `--runtime-texture` value; repeatable, conflicts and the rule cap refused.
@@ -4467,27 +4521,132 @@ mod tests {
         assert_eq!(tent, POD_TENT_MESH);
         assert_ne!(platform, POD_TENT_MESH);
     }
+    /// P2j, D286: the shell adds no texture to the glass slot any more (P2j's default wall
+    /// art is gone, with or without `--no-pod-wall`); an explicit rule for that slot is
+    /// still taken as given.
     #[test]
-    fn p2j_pod_wall_default_yields_to_an_explicit_slot_rule() {
+    fn p2j_d286_the_shell_adds_no_wall_texture_but_keeps_an_explicit_rule() {
         use lbp_preview::runtime_texture::RuntimeTexture;
-        let mut rules = Vec::new();
-        pod_wall_default(&mut rules).unwrap();
+        let run = |extra: &[&str]| {
+            let args = [
+                "--snapshot",
+                "s",
+                "--game-dir",
+                "g",
+                "--level-guid",
+                "00000001",
+                "--pod-shell",
+                "000027b9",
+            ];
+            options_from(args.iter().chain(extra).map(|s| s.to_string()))
+                .unwrap()
+                .level
+                .runtime_textures
+        };
+        assert!(run(&[]).is_empty());
+        assert!(run(&["--no-pod-wall"]).is_empty());
         assert_eq!(
-            rules,
+            run(&["--runtime-texture", "00002f6c:0:0001f3b9"]),
             [RuntimeTexture {
                 mesh: POD_TENT_MESH,
                 slot: 0,
-                texture: POD_WALL_TEXTURE
+                texture: 0x0001_f3b9,
             }]
         );
-        let mine = RuntimeTexture {
-            mesh: POD_TENT_MESH,
-            slot: 0,
-            texture: 0x27fb,
-        };
-        let mut rules = vec![mine];
-        pod_wall_default(&mut rules).unwrap();
-        assert_eq!(rules, [mine]);
+    }
+    /// D286: a bucket with no diffuse coordinates and its raw UV0 (as the glass is built).
+    fn d286_bucket(raw_uv0: u8) -> Prepared {
+        let positions = [[0., 0., 0.], [1., 0., 0.], [0., 1., 0.]];
+        Prepared {
+            mesh: adapter::mesh_local(&positions, &[[0, 1, 2]], None).unwrap(),
+            image: None,
+            second_image: None,
+            third_image: None,
+            fourth_image: None,
+            color: Color::linear_rgba(0.118, 0.118, 0.118, 1.),
+            alpha_mix: false,
+            decal: false,
+            normals_trusted: true,
+            bump: None,
+            gloss: None,
+            spec_map: None,
+            alpha_test: 0.,
+            glow: None,
+            reflection: None,
+            graph: None,
+            lightmap: None,
+            bucket: 0,
+            material: Some(WINDOW_GLASSY),
+            raw_uv0,
+            glass: None,
+        }
+    }
+    /// D286: the glass bucket draws premultiplied at opacity 0.2 with the dissolve's
+    /// constant green; any other bucket stays opaque (a decal blended) and not glass.
+    #[test]
+    fn d286_the_glass_bucket_blends_premultiplied_at_0_2() {
+        let mut plain = d286_bucket(0);
+        assert_eq!(alpha_mode(&plain), AlphaMode::Opaque);
+        plain.decal = true;
+        assert_eq!(alpha_mode(&plain), AlphaMode::Blend);
+        let mut glass = d286_bucket(0);
+        mark_glass(&mut glass, None);
+        assert_eq!(glass.glass, Some(0.2));
+        assert_eq!(alpha_mode(&glass), AlphaMode::Premultiplied);
+        let (mut meshes, mut materials, mut images) = (
+            Assets::<Mesh>::default(),
+            Assets::<ViewerMaterial>::default(),
+            Assets::<Image>::default(),
+        );
+        let (_, material, _) = upload(glass, &mut meshes, &mut materials, &mut images);
+        let material = materials.get(&material).unwrap();
+        assert_eq!(material.base.alpha_mode, AlphaMode::Premultiplied);
+        assert_eq!(dual::glass(material), Some(GLASS_OPACITY));
+        let (_, material, _) = upload(d286_bucket(0), &mut meshes, &mut materials, &mut images);
+        let material = materials.get(&material).unwrap();
+        assert_eq!(material.base.alpha_mode, AlphaMode::Opaque);
+        assert_eq!(dual::glass(material), None);
+        assert!((GLASS_DISSOLVE_GREEN - 30. / 255.).abs() < 1e-5);
+    }
+    /// D286: the glass gets the mesh's raw UV0 as `in.uv`, recovered from its bump map's
+    /// UV0 x 2; a bump on another channel, a matrix transform or a zero scale gives none.
+    #[test]
+    fn d286_the_glass_takes_raw_uv0() {
+        let x2 = lbp_preview::SamplingTransform::ScaleOffset(lbp_preview::UvTransform {
+            bits: [2f32.to_bits(), 2f32.to_bits(), 0, 0],
+        });
+        let raw = [[0.83, 0.007], [0.95, 0.9], [0.9, 0.5]];
+        let bumped: Vec<[f32; 2]> = raw.iter().map(|&[u, v]| [u * 2., v * 2.]).collect();
+        let back = raw_uv0_from_bump(0, x2, &bumped).unwrap();
+        assert_eq!(back, raw);
+        assert_eq!(raw_uv0_from_bump(1, x2, &bumped), None);
+        let zero = lbp_preview::SamplingTransform::ScaleOffset(lbp_preview::UvTransform {
+            bits: [0, 2f32.to_bits(), 0, 0],
+        });
+        assert_eq!(raw_uv0_from_bump(0, zero, &bumped), None);
+        let matrix = lbp_preview::SamplingTransform::Matrix(lbp_preview::UvMatrix {
+            bits: [1f32.to_bits(), 0, 0, 0, 1f32.to_bits(), 0],
+        });
+        assert_eq!(raw_uv0_from_bump(0, matrix, &bumped), None);
+        let mut glass = d286_bucket(0);
+        mark_glass(&mut glass, Some(back.clone()));
+        assert_eq!(glass.raw_uv0, 1);
+        match glass.mesh.attribute(Mesh::ATTRIBUTE_UV_0) {
+            Some(bevy::mesh::VertexAttributeValues::Float32x2(uv)) => assert_eq!(*uv, back),
+            other => panic!("UV0 {other:?}"),
+        }
+        // A wrong length, or none given: still glass, the mask stays on the position.
+        for raw in [Some(back[..2].to_vec()), None] {
+            let mut other = d286_bucket(0);
+            mark_glass(&mut other, raw);
+            assert_eq!((other.raw_uv0, other.glass), (0, Some(0.2)));
+            match other.mesh.attribute(Mesh::ATTRIBUTE_UV_0) {
+                Some(bevy::mesh::VertexAttributeValues::Float32x2(uv)) => {
+                    assert_eq!(*uv, [[0f32; 2]; 3])
+                }
+                other => panic!("UV0 {other:?}"),
+            }
+        }
     }
     #[test]
     fn level_placement_normalizes_frames_side_on_and_counts_display_skips() {
