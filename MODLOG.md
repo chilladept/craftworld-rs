@@ -1,5 +1,17 @@
 # Development log
 
+## 2026-10-14 - D287 the Pod's glass blended as the game does
+
+Pod picture PR 14, viewer only. In the captured frame the glass draws into a plain 8-bit target, so the game
+blends its encoded output, out = s + 0.8 d, and adds its specular (x 0.6 x 6, with a rim term) after the alpha
+(MEASURED, FOUND). The viewer now builds the same s, alpha times the encoded lit colour plus that specular, and
+writes the secant of the encoded blend through two destinations as a premultiplied colour and alpha (mean error
+under 2 / 255 against the exact blend, where D286's linear blend was off by up to 10). The dark green-blue of the
+game's panels is mostly the room behind them: under the level's own lighting the viewer's room and panels come
+within a few levels of the game's (right panel (60, 83, 94) against (66, 84, 90)); D286's stills used
+`--preview-lighting`, which washes out the room and draws the hanging cloths plain tan where they carry art (the
+left panel's difference). `docs/level-scripts.md` part 38.
+
 ## 2026-10-14 - D286 the Pod's side walls as clear glass
 
 Pod picture PR 13, viewer only, from the owner's report of a strange texture on the Pod's side walls. The

@@ -2280,7 +2280,12 @@ fn upload(
         dual::enable_spec_map(&mut surface, images.add(map), mode);
     }
     if let Some(opacity) = p.glass {
-        dual::enable_glass(&mut surface, opacity, GLASS_DISSOLVE_GREEN);
+        dual::enable_glass(
+            &mut surface,
+            opacity,
+            GLASS_DISSOLVE_GREEN,
+            GLASS_SPECULAR_SCALE,
+        );
     }
     surface.extension.normals_trusted = p.normals_trusted;
     surface.extension.raw_uv0 = p.raw_uv0;
@@ -3299,6 +3304,9 @@ const GLASS_OPACITY: f32 = 0.2;
 /// D286: the constant the glass's shader takes in place of the surface green in the
 /// dissolve's edge (FOUND, 30 / 255).
 const GLASS_DISSOLVE_GREEN: f32 = 0.117_65;
+/// D287 (part 38): the scale of the glass's specular, added to its output after the
+/// alpha (MEASURED, fc45 of the captured draw; the gloss colour 0.6 is fc30).
+const GLASS_SPECULAR_SCALE: f32 = 6.0;
 /// D286: raw UV0 from a bump map's coordinates when they are UV0 through a scale and
 /// offset with no zero scale (the glass's tissue paper is UV0 x 2, FOUND); none
 /// otherwise. The inverse of the forward map, so exact for a power-of-two scale.
@@ -4607,6 +4615,25 @@ mod tests {
         assert_eq!(material.base.alpha_mode, AlphaMode::Opaque);
         assert_eq!(dual::glass(material), None);
         assert!((GLASS_DISSOLVE_GREEN - 30. / 255.).abs() < 1e-5);
+    }
+    /// D287: the uploaded glass carries the specular scale added after its alpha (6); a
+    /// plain bucket has none.
+    #[test]
+    fn d287_the_glass_carries_its_specular_scale() {
+        let mut glass = d286_bucket(0);
+        mark_glass(&mut glass, None);
+        let (mut meshes, mut materials, mut images) = (
+            Assets::<Mesh>::default(),
+            Assets::<ViewerMaterial>::default(),
+            Assets::<Image>::default(),
+        );
+        let (_, material, _) = upload(glass, &mut meshes, &mut materials, &mut images);
+        let material = materials.get(&material).unwrap();
+        assert_eq!(dual::glass_specular_scale(material), GLASS_SPECULAR_SCALE);
+        assert_eq!(GLASS_SPECULAR_SCALE, 6.);
+        let (_, material, _) = upload(d286_bucket(0), &mut meshes, &mut materials, &mut images);
+        let material = materials.get(&material).unwrap();
+        assert_eq!(dual::glass_specular_scale(material), 0.);
     }
     /// D286: the glass gets the mesh's raw UV0 as `in.uv`, recovered from its bump map's
     /// UV0 x 2; a bump on another channel, a matrix transform or a zero scale gives none.

@@ -137,7 +137,8 @@ pub struct SecondTexture {
     #[sampler(144)]
     dissolve_island: Option<Handle<Image>>,
     /// D286: clear glass. x = the output alpha (0 = not glass: alpha 1, colour as is), y =
-    /// the green the dissolve's edge takes in place of the surface colour's.
+    /// the green the dissolve's edge takes in place of the surface colour's. D287: z = the
+    /// scale of the specular added after the alpha (the game's fc45).
     #[uniform(145)]
     glass: Vec4,
     /// D121: generated normals passed `adapter::normal_trust`; otherwise stays unlit.
@@ -355,17 +356,64 @@ pub fn tinted(material: &ViewerMaterial) -> bool {
     material.extension.thing_tint.w > 0.5
 }
 /// D286: draws the material as the game's glass (`window_glassy`): the fragment's alpha
-/// is `opacity` times the dissolve's kept share and its colour is multiplied by that
-/// alpha (for `AlphaMode::Premultiplied`); the dissolve's edge takes `green` in place of
-/// the surface colour's green.
-pub fn enable_glass(material: &mut ViewerMaterial, opacity: f32, green: f32) {
-    material.extension.glass = Vec4::new(opacity, green, 0., 0.);
+/// is `opacity` times the dissolve's kept share; the dissolve's edge takes `green` in
+/// place of the surface colour's green. D287: the colour is that alpha times the encoded
+/// lit colour plus `specular` times the gloss (added after the alpha, as the game does),
+/// written for `AlphaMode::Premultiplied` through [`glass_blend`].
+pub fn enable_glass(material: &mut ViewerMaterial, opacity: f32, green: f32, specular: f32) {
+    material.extension.glass = Vec4::new(opacity, green, specular, 0.);
+}
+/// D287: the two encoded destination values the glass's blend is exact at
+/// ([`glass_blend`]); chosen on the captured frame's and the viewer's room pixels. The
+/// shader writes the same numbers.
+#[cfg(test)]
+pub const GLASS_SECANT: [f32; 2] = [0.35, 0.75];
+/// D287: sRGB encoding of a linear value (the viewer's target), clamped to 0..1.
+#[cfg(test)]
+pub fn srgb_encode(c: f32) -> f32 {
+    let v = c.clamp(0., 1.);
+    if v <= 0.003_130_8 {
+        v * 12.92
+    } else {
+        1.055 * v.powf(1. / 2.4) - 0.055
+    }
+}
+/// D287: sRGB decoding of an encoded value, clamped to 0..1.
+#[cfg(test)]
+pub fn srgb_decode(v: f32) -> f32 {
+    let v = v.clamp(0., 1.);
+    if v <= 0.040_45 {
+        v / 12.92
+    } else {
+        ((v + 0.055) / 1.055).powf(2.4)
+    }
+}
+/// D287 (mirrors the shader's `glass_blend`): the game blends the glass in its encoded
+/// output, `out = s + (1 - a) d` (8-bit target, no sRGB). The viewer's target blends
+/// linear light, `out = S + T D` with one T for the three channels (One /
+/// OneMinusSrcAlpha). S and T are the secant of the game's blend, in linear light,
+/// through the destinations [`GLASS_SECANT`]: T the mean of the three slopes, S the mean
+/// of the two points' residuals. Returns (S, 1 - T), the premultiplied colour and alpha.
+#[cfg(test)]
+pub fn glass_blend(s: [f32; 3], a: f32) -> ([f32; 3], f32) {
+    let [d1, d2] = GLASS_SECANT;
+    let (l1, l2) = (srgb_decode(d1), srgb_decode(d2));
+    let y = |d: f32| s.map(|c| srgb_decode(c + (1. - a) * d));
+    let (y1, y2) = (y(d1), y(d2));
+    let t = ((0..3).map(|i| (y2[i] - y1[i]) / (l2 - l1)).sum::<f32>() / 3.).clamp(0., 1.);
+    let c = std::array::from_fn(|i| (0.5 * ((y1[i] - t * l1) + (y2[i] - t * l2))).max(0.));
+    (c, 1. - t)
 }
 /// D286: the glass's opacity, none when the material is not glass.
 #[cfg(test)]
 pub fn glass(material: &ViewerMaterial) -> Option<f32> {
     let opacity = material.extension.glass.x;
     (opacity > 0.).then_some(opacity)
+}
+/// D287: the glass's specular scale (0 when the material is not glass).
+#[cfg(test)]
+pub fn glass_specular_scale(material: &ViewerMaterial) -> f32 {
+    material.extension.glass.z
 }
 /// D278: what [`set_dissolve`] writes. See the fields of the same names above.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -606,6 +654,43 @@ fn gloss_term(n: vec3<f32>, to_view: vec3<f32>, factor: vec3<f32>, tint: vec3<f3
     let spec = gloss.rgb * tint * (pow(clamp(dot(r, light_dir.xyz), 0.0, 1.0), gloss.w) * shadow);
     return 2.0 * w * factor * spec;
 }
+// D287 (part 38): the glass's specular (the captured program, LBP mode only): light^2 x
+// (pow(saturate(R.L), CosinePower) + saturate(rim / 2)) x gloss colour x glass.z, added
+// to the encoded output after the alpha; no shadow (none bound in the game's draw).
+fn glass_specular(n: vec3<f32>, to_view: vec3<f32>, factor: vec3<f32>) -> vec3<f32> {
+    if light_dir.w < 1.5 || gloss.w <= 0.0 || dot(n, n) <= 0.0 {
+        return vec3<f32>(0.0);
+    }
+    let rim = pow(clamp(dot(n, -to_view) + 0.9, 0.0, 1.0), 2.0);
+    let r = reflect(-to_view, n);
+    let spec = pow(clamp(dot(r, light_dir.xyz), 0.0, 1.0), gloss.w) + clamp(rim * 0.5, 0.0, 1.0);
+    return glass.z * gloss.rgb * factor * spec;
+}
+// D287: sRGB transfer of the viewer's target, clamped to 0..1.
+fn srgb_encode(c: vec3<f32>) -> vec3<f32> {
+    let v = clamp(c, vec3<f32>(0.0), vec3<f32>(1.0));
+    let high = 1.055 * pow(v, vec3<f32>(1.0 / 2.4)) - 0.055;
+    return select(high, v * 12.92, v <= vec3<f32>(0.0031308));
+}
+fn srgb_decode(e: vec3<f32>) -> vec3<f32> {
+    let v = clamp(e, vec3<f32>(0.0), vec3<f32>(1.0));
+    let high = pow((v + 0.055) / 1.055, vec3<f32>(2.4));
+    return select(high, v / 12.92, v <= vec3<f32>(0.04045));
+}
+// D287: the game blends the glass in its encoded output, out = s + (1 - a) d. This
+// target blends linear light, out = S + T D (One, OneMinusSrcAlpha, one T), so S and T
+// are the secant of the game's blend through the encoded destinations 0.35 and 0.75:
+// T the mean of the three slopes, S the mean residual. Returns (S, 1 - T).
+fn glass_blend(s: vec3<f32>, a: f32) -> vec4<f32> {
+    let l1 = srgb_decode(vec3<f32>(0.35));
+    let l2 = srgb_decode(vec3<f32>(0.75));
+    let y1 = srgb_decode(s + (1.0 - a) * 0.35);
+    let y2 = srgb_decode(s + (1.0 - a) * 0.75);
+    let slope = (y2 - y1) / (l2 - l1);
+    let t = clamp((slope.x + slope.y + slope.z) / 3.0, 0.0, 1.0);
+    let c = max(0.5 * ((y1 - t * l1) + (y2 - t * l2)), vec3<f32>(0.0));
+    return vec4<f32>(c, 1.0 - t);
+}
 // Facing normal, tilted by the bump offset in a cotangent frame built from the
 // position and UV1 derivatives (LBP mode with a bound bump map only).
 fn lit_normal(shading: vec3<f32>, face: vec3<f32>, to_view: vec3<f32>, bump: BumpInput) -> vec3<f32> {
@@ -773,6 +858,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> FragmentOut
         }
     }
     var rgb = color.rgb;
+    var glass_spec = vec3<f32>(0.0);
     // D268: a level script's render-mesh tint (INFERRED: a multiply before lighting).
     if thing_tint.w > 0.5 {
         rgb *= thing_tint.rgb;
@@ -813,7 +899,13 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> FragmentOut
             spec_tint = textureSample(graph_image5, graph_sampler5, in.uv_b).rgb;
         }
 #endif
-        rgb = rgb * factor + gloss_term(n, pbr.V, factor, spec_tint, shadow * baked);
+        if glass.x > 0.0 {
+            // D287: the glass's specular goes in after its alpha (below), not here.
+            glass_spec = glass_specular(n, pbr.V, factor);
+            rgb = rgb * factor;
+        } else {
+            rgb = rgb * factor + gloss_term(n, pbr.V, factor, spec_tint, shadow * baked);
+        }
         // P3i: reflection graph sampled at the world-orientation reflection vector (the game's
         // TC4 is the camera-translated world position, not view-rotated; world axes INFERRED to
         // match ours), scaled by the luminance of the lit light.
@@ -850,12 +942,15 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> FragmentOut
     if dissolve_on {
         rgb = mix(dissolve_colour.rgb, rgb, dissolve_keep);
     }
-    // D286: the glass writes alpha = opacity x the dissolve's kept share and its colour
-    // multiplied by it (premultiplied, for One / OneMinusSrcAlpha); the rest alpha 1.
+    // D286: the glass's alpha = opacity x the dissolve's kept share; the rest alpha 1.
+    // D287: as the game, the encoded colour times that alpha plus the specular, blended
+    // as in encoded space (glass_blend), written premultiplied.
     var alpha = 1.0;
     if glass.x > 0.0 {
         alpha = glass.x * dissolve_keep;
-        rgb *= alpha;
+        let blended = glass_blend(alpha * srgb_encode(rgb) + glass_spec, alpha);
+        rgb = blended.rgb;
+        alpha = blended.a;
     }
     var out: FragmentOutput;
     out.color = main_pass_post_lighting_processing(pbr, vec4<f32>(rgb, alpha));
@@ -1028,11 +1123,97 @@ fn main_pass_post_lighting_processing(p: PbrInputStub, c: vec4<f32>) -> vec4<f32
             ..Default::default()
         };
         super::set_dissolve(&mut m, Some(&d));
-        super::enable_glass(&mut m, 0.2, 0.117_65);
+        super::enable_glass(&mut m, 0.2, 0.117_65, 6.);
         assert_eq!(super::glass(&m), Some(0.2));
-        assert_eq!(m.extension.glass, Vec4::new(0.2, 0.117_65, 0., 0.));
+        assert_eq!(m.extension.glass, Vec4::new(0.2, 0.117_65, 6., 0.));
         assert_eq!(super::dissolve(&m).as_ref(), Some(&d));
         assert_eq!(m.extension.dissolve_params.x, 1.);
+    }
+    /// D287: the game's blend in its encoded output, out = s + (1 - a) d, saturating.
+    fn d287_game(s: f32, a: f32, d: f32) -> f32 {
+        (s + (1. - a) * d).min(1.)
+    }
+    /// D287: what the viewer's linear blend of `glass_blend`'s output gives, encoded.
+    fn d287_viewer(s: [f32; 3], a: f32, d: [f32; 3]) -> [f32; 3] {
+        let (c, alpha) = super::glass_blend(s, a);
+        std::array::from_fn(|i| super::srgb_encode(c[i] + (1. - alpha) * super::srgb_decode(d[i])))
+    }
+    /// D287: the sRGB pair round-trips and is the standard curve.
+    #[test]
+    fn d287_srgb_pair_round_trips() {
+        for i in 0..=255 {
+            let v = i as f32 / 255.;
+            assert!(
+                (super::srgb_encode(super::srgb_decode(v)) - v).abs() < 1e-5,
+                "{v}"
+            );
+        }
+        assert!((super::srgb_decode(0.5) - 0.214_04).abs() < 1e-4);
+        assert_eq!(super::srgb_decode(2.), 1.);
+        assert_eq!(super::srgb_encode(-1.), 0.);
+    }
+    /// D287: the blend is exact at the two secant destinations for a grey glass colour;
+    /// over the destinations 0.2 to 1 and glass colours like the measured ones (encoded s
+    /// up to 0.15, alpha 0.2) it is on average within 2 / 255 of the game's encoded blend,
+    /// where the linear blend D286 used is off by more than 7 / 255.
+    #[test]
+    fn d287_glass_blend_follows_the_encoded_blend() {
+        let a = 0.2;
+        for s in [0.0, 0.05, 0.1] {
+            for d in super::GLASS_SECANT {
+                let v = d287_viewer([s; 3], a, [d; 3]);
+                for c in v {
+                    assert!((c - d287_game(s, a, d)).abs() < 1e-4, "s {s} d {d}: {c}");
+                }
+            }
+        }
+        let (mut sum, mut d286_sum, mut n, mut worst) = (0., 0., 0., 0f32);
+        for s in [
+            [0.07, 0.09, 0.09],
+            [0.03, 0.06, 0.08],
+            [0.0, 0.0, 0.0],
+            [0.15, 0.15, 0.15],
+        ] {
+            for k in 0..=40 {
+                let d = 0.2 + 0.8 * k as f32 / 40.;
+                let v = d287_viewer(s, a, [d; 3]);
+                for i in 0..3 {
+                    let err = (v[i] - d287_game(s[i], a, d)).abs();
+                    worst = worst.max(err);
+                    sum += err;
+                    // D286: colour s / a premultiplied in linear light, alpha a.
+                    let lin = a * super::srgb_decode(s[i] / a) + (1. - a) * super::srgb_decode(d);
+                    d286_sum += (super::srgb_encode(lin) - d287_game(s[i], a, d)).abs();
+                    n += 1.;
+                }
+            }
+        }
+        // Mean 1.7 / 255 (D286's 7.4); the worst, 12.5, is a tinted colour over a dark
+        // destination (one alpha for the three channels).
+        assert!(sum / n < 2. / 255., "mean {}", sum / n * 255.);
+        assert!(
+            d286_sum / n > 7. / 255.,
+            "d286 mean {}",
+            d286_sum / n * 255.
+        );
+        assert!(worst < 13. / 255., "worst {}", worst * 255.);
+    }
+    /// D287: the blend's output is a valid premultiplied pair: colour at least 0, alpha
+    /// in 0..1, and a fully dissolved glass (alpha 0, no specular) leaves the room as is.
+    #[test]
+    fn d287_glass_blend_output_is_valid() {
+        for s in [0.0, 0.1, 0.5, 1.0, 1.5] {
+            for a in [0.0, 0.1, 0.2, 1.0] {
+                let (c, alpha) = super::glass_blend([s; 3], a);
+                assert!((0. ..=1.).contains(&alpha), "s {s} a {a}: {alpha}");
+                assert!(c.iter().all(|&v| v >= 0.), "s {s} a {a}: {c:?}");
+            }
+        }
+        let (c, alpha) = super::glass_blend([0.; 3], 0.);
+        assert!(
+            alpha.abs() < 1e-5 && c.iter().all(|v| v.abs() < 1e-5),
+            "{c:?} {alpha}"
+        );
     }
     /// D121: the authored shader (all `#ifdef` blocks enabled, imports stubbed) parses
     /// and validates headlessly. Bevy's own composition is exercised only at run time.
@@ -1066,8 +1247,17 @@ fn main_pass_post_lighting_processing(p: PbrInputStub, c: vec4<f32>) -> vec4<f32
         // D286: the glass's green in the edge, its alpha and its premultiplied colour.
         assert!(body.contains("(above - dissolve_consts.x * green)"));
         assert!(body.contains("alpha = glass.x * dissolve_keep;"));
-        assert!(body.contains("rgb *= alpha;"));
         assert!(body.contains("vec4<f32>(rgb, alpha)"));
+        // D287: the encoded colour times the alpha plus the specular, through the blend,
+        // and the glass's lit colour without the gloss term.
+        assert!(body.contains("glass_blend(alpha * srgb_encode(rgb) + glass_spec, alpha)"));
+        assert!(body.contains("glass_spec = glass_specular(n, pbr.V, factor);"));
+        assert!(!body.contains("rgb *= alpha;"));
+        let [d1, d2] = super::GLASS_SECANT;
+        for d in [d1, d2] {
+            assert!(body.contains(&format!("srgb_decode(vec3<f32>({d}))")));
+            assert!(body.contains(&format!("(1.0 - a) * {d});")));
+        }
         assert_eq!(body.matches("discard;").count(), 2);
         let source = format!("{STUBS}{body}");
         let module = naga::front::wgsl::parse_str(&source)

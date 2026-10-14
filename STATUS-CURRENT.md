@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D286
+# Current state (overwrite each milestone) — after D287
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -11,7 +11,31 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D286 the Pod's side walls as clear glass (2026-10-14)
+## Latest: D287 the Pod's glass blended as the game does (2026-10-14)
+- "Pod picture" PR 14, viewer only (`docs/level-scripts.md` part 38). MEASURED (the captured
+  frame, before and after the glass draw): the target is `R8G8B8A8_UNORM` without sRGB, so the
+  game blends its encoded output, out = s + 0.8 d; the glass's share s is (17, 22, 23) left and
+  (7, 15, 21) right. The game's dark green-blue panels are the room behind them: the viewer's
+  room under the level's own lighting is (69, 90, 88) behind the right panel against the game's
+  (73, 86, 87); part 37's stills used `--preview-lighting` ((160, 163, 148)), which also draws
+  the hanging cloths plain tan where they carry art (the left panel's "cloth against wall art").
+- Viewer, glass GUID 0x1d14c only: s = alpha x the encoded lit colour + the glass specular
+  (gloss 0.6 x 6 x light^2 x (pow(R.L) + rim / 2), after the alpha, level lighting only);
+  `glass_blend` writes the secant of the encoded blend through destinations 0.35 and 0.75 as a
+  premultiplied colour and one alpha. Mean error (1.7, 0.9, 1.2) / 255 over the viewer's room
+  pixels (D286's linear blend: (10.2, 5.4, 2.7)).
+- MEASURED (`local-analysis/rscript/stage6/shots/d287-*`): planets frames, `--pod-open`, 640 and
+  the walk run equal D286; the glass frames change by at most 13 (51 at 615 under the level
+  lighting). Panel means (left; right): game (133, 138, 111); (66, 84, 90); now under the level
+  lighting (129, 133, 109); (60, 83, 94); with `--preview-lighting` (163, 151, 122); (133, 141,
+  132), D286 (170, 156, 125); (143, 147, 135).
+- Tests: `d287_*` (four) and two D286 tests updated. fmt, CI clippy, CI tests, `cargo check` of
+  both viewers and the viewer's clippy pass; viewer tests 96 pass,
+  `sackboy_play::tests::input_script_steps` fails as on main.
+- Next: the preview lighting's washed-out room and the cloths' art; the left panel's larger
+  glass share; the camera's timing.
+
+## Before: D286 the Pod's side walls as clear glass (2026-10-14)
 - "Pod picture" PR 13, viewer only (`docs/level-scripts.md` part 37), from the owner's report
   of a strange texture on the Pod's side walls. P2j's default wall art (0x1f3b9 in slot 0 of
   `window_glassy` 0x1d14c, drawn opaque) is gone; `--runtime-texture` still adds it on request,
