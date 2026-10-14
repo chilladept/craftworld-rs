@@ -102,6 +102,8 @@ struct Play {
     dissolve_printed: bool,
     /// D284: the platform edge's line at value 1 was printed.
     dissolve_edge_printed: bool,
+    /// D298: the depth-of-field range last printed (level units).
+    dof_printed: Option<[f32; 2]>,
 }
 
 /// The script world of the Pod's shell layer (part 28): the second level of the
@@ -539,6 +541,7 @@ pub fn install(app: &mut App) -> Result<(), String> {
         script_eye_y: None,
         dissolve_printed: false,
         dissolve_edge_printed: false,
+        dof_printed: None,
     })
     .insert_resource(crate::CaptureHold(hold_at.is_some()))
     .insert_resource(Time::<Fixed>::from_hz(f64::from(TICK_HZ)))
@@ -549,7 +552,7 @@ pub fn install(app: &mut App) -> Result<(), String> {
     // After the viewer's own camera has placed the follow camera, before a capture.
     .add_systems(
         Update,
-        (script_camera, follow_dissolve, layer_depths)
+        (script_camera, follow_dof, follow_dissolve, layer_depths)
             .chain()
             .after(crate::camera)
             .before(crate::capture),
@@ -950,9 +953,51 @@ fn follow_fog(play: NonSend<Play>, mut v: ResMut<crate::Viewer>) {
     v.lighting.fog_bias = bias;
     v.lighting.dirty = true;
     println!(
-        "Fog bias at tick {}: {bias:.1} level units from the scripts (Cam.SetDOFAndFog), added to the start and the end of the preview fog; the first two values (depth of field) are not applied",
+        "Fog bias at tick {}: {bias:.1} level units from the scripts (Cam.SetDOFAndFog), added to the start and the end of the preview fog; the first two values (depth of field) apply under --depth-of-field",
         play.scripts.ticks
     );
+}
+
+/// D298 (part 49): the depth-of-field range a script handed the camera: the first two
+/// values of the last `Cam.SetDOFAndFog` call (level units along the view, FOUND: the
+/// game projects both distances along the camera's axis), `None` before any call and
+/// unless 0 < start < end, both numbers.
+fn dof_range(world: &LevelWorld) -> Option<[f32; 2]> {
+    let [start, end, _] = world.camera.dof_and_fog?;
+    (start.is_finite() && end.is_finite() && start > 0. && end > start).then_some([start, end])
+}
+
+/// D298: puts the scripts' depth-of-field range on the main camera in display units every
+/// frame (the passes run only under `--depth-of-field`, `dof_post.rs`). One line when the
+/// range changes, in level units.
+fn follow_dof(
+    mut play: NonSendMut<Play>,
+    display: Option<Res<crate::sackboy_play::LevelDisplay>>,
+    mut cameras: Query<&mut crate::dof_post::DepthOfField>,
+) {
+    let range = dof_range(&play.host.world);
+    let scale = display.map_or(1., |d| d.0.x_axis.x);
+    let shown = range
+        .map(|[a, b]| [a * scale, b * scale])
+        .filter(|[a, b]| a.is_finite() && b.is_finite() && *a > 0.);
+    for mut camera in &mut cameras {
+        if camera.range != shown {
+            camera.range = shown;
+        }
+    }
+    if crate::dof_post::enabled() && play.dof_printed != range {
+        play.dof_printed = range;
+        match range {
+            Some([a, b]) => println!(
+                "Depth of field at tick {}: blur from {a:.1} to {b:.1} level units along the view (Cam.SetDOFAndFog), whole beyond {b:.1}",
+                play.scripts.ticks
+            ),
+            None => println!(
+                "Depth of field at tick {}: no range from the scripts, no blur",
+                play.scripts.ticks
+            ),
+        }
+    }
 }
 
 /// Sets the level's draw entities from the script world (part 19): the Things on the

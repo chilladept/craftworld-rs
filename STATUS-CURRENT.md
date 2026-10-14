@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D297
+# Current state (overwrite each milestone) — after D298
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -11,7 +11,38 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D295-D297 the planets menu zoom, the tent's line and the glow (2026-10-14)
+## Latest: D298 the game's depth of field (2026-10-14)
+- Viewer only (`docs/level-scripts.md` part 49). FOUND (RenderDoc frames 5247 and 14790, hidden
+  desktop): before the glow, a half-size source (scene 2x2 mean, depth gate in alpha), two
+  rings of five pentagon taps at radius `saturate(8 g - 7)` x 1.6 half-size texels (a tap
+  counts when its gate is within 0.01 of the centre's or above), and a bilinear composite by
+  that radius beyond the range's start (scene alpha kept). FOUND (EBOOT 0x2e81ac): the
+  `SetDOFAndFog` distances become depth-buffer values; the two frames' gate constants fit
+  (80,000, 100,000) and (12,000, 16,000) with the Pod camera's planes within 0.13 %: the radius
+  runs linearly in depth from the first value to the second.
+- New `dof_post.rs` and `--depth-of-field` (off by default, level-lighting route only), fed each
+  frame from the scripts' range (`level_play::follow_dof`). Consts `DOF_RAMP`, `DOF_TAP_STEP`,
+  `DOF_TAP_DIRS`, `DOF_SAME_LAYER`, `DOF_RING_PASSES`.
+- MEASURED (`shots/d298-*`, with `--final-pass`): without the flag every still is byte-equal to
+  the build before. At 614 (range 31,159-39,667) the room's gradient against `open-t1` (1.20):
+  3.76 -> 1.84; upper left 1.30 -> 1.18 (0.67), upper right 1.45 -> 1.35 (0.65), upper centre
+  1.54 -> 0.92 (0.76); DualShock and posts unchanged. Closed Pod at 600 and Da Vinci unchanged
+  (nothing beyond 80,000; no range), as the game's 5247.
+- Tests `d298_*` (six); fmt, the viewer's clippy and `cargo check --workspace` pass; viewer tests
+  124 pass, `sackboy_play::tests::input_script_steps` fails as on main.
+- Next: the flag on by default after a non-Pod game frame with depth of field; the stencil-marked
+  composite; `--final-pass` by default; the change-over's room view against `open-t1`.
+
+## Before: D299 where the game's final pass applies (2026-10-14)
+- Docs only (`docs/level-scripts.md` part 50). FOUND (RenderDoc, the blank Moon level): the
+  final pass has frame 5247's constants (x1.2998, the vignette, glow 0.7) but ends by mixing
+  back to the scene by the scene's alpha, which is 1 outside the Pod, so it returns the scene.
+  The game's Moon and Bravery Test frames match the viewer without `--final-pass`; it stays off
+  by default. MEASURED: with D295 the room behind the window registers against `open-t1` at
+  scale 0.96 at tick 614 (was 1.62), region |d| 10.6 -> 5.0 (1.2 at 616). The game's zoom runs
+  about two ticks ahead of the VM's (one is part 46's step order).
+
+## Before: D295-D297 the planets menu zoom, the tent's line and the glow (2026-10-14)
 - D297 (`docs/level-scripts.md` part 48), viewer comment and test only. FOUND (RenderDoc frames
   5247 and 14790): the four post passes and their constants are the same in both frames, so the
   glow strength 0.7 holds; the blur rebuilds the game's within 0.25 level. MEASURED (tick 614,

@@ -1,5 +1,15 @@
 # Development log
 
+## 2026-10-14 - D298 the game's depth of field
+
+Viewer only. The game's depth of field (FOUND, RenderDoc frames 5247 and 14790): a half-size source with a depth
+gate in its alpha, two rings of five pentagon taps at a radius saturate(8 g - 7) x 1.6 half-size texels (nearer taps
+left out), and a bilinear composite by that radius beyond the range's start, before the glow. FOUND (EBOOT
+0x2e81ac): SetDOFAndFog's two distances become depth-buffer values; the frames' gate constants fit the scripts'
+ranges and the Pod camera's planes within 0.13 %. New `dof_post.rs` under `--depth-of-field` (off by default,
+level-lighting route only), fed from the scripts' range each frame. MEASURED at 614: the room's gradient against
+open-t1 (1.20) 3.76 -> 1.84; without the flag every still is byte-equal. See docs/level-scripts.md part 49.
+
 ## 2026-10-14 - D294 the final pass's brightness and vignette as the game's
 
 Pod picture PR 21, viewer only. The game's final pass (FOUND, frame 5247, PS 14857) scales the encoded frame by

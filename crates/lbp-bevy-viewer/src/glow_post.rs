@@ -157,7 +157,7 @@ fn composite_entry(glow: bool, final_pass: bool) -> &'static str {
 }
 
 #[derive(Resource)]
-struct GlowPipelines {
+pub(crate) struct GlowPipelines {
     /// One texture and the sampler (source and blur passes).
     single: BindGroupLayoutDescriptor,
     /// The scene, the sampler and the blurred glow (the final add).
@@ -172,7 +172,7 @@ struct GlowPipelines {
 
 /// Whether the main texture holds linear values that the hardware encodes (sRGB views),
 /// encoded values as they are (plain 8-bit), or neither (float/HDR: not supported).
-fn target_space(format: TextureFormat) -> Option<bool> {
+pub(crate) fn target_space(format: TextureFormat) -> Option<bool> {
     match format {
         TextureFormat::Rgba8UnormSrgb | TextureFormat::Bgra8UnormSrgb => Some(true),
         TextureFormat::Rgba8Unorm | TextureFormat::Bgra8Unorm => Some(false),
@@ -274,7 +274,7 @@ fn init_pipelines(
 /// D292: the per-view pieces: the intermediate textures and the pipelines for the
 /// view's main texture format.
 #[derive(Component)]
-struct GlowView {
+pub(crate) struct GlowView {
     half: CachedTexture,
     quarter_h: CachedTexture,
     quarter_v: CachedTexture,
@@ -352,7 +352,7 @@ fn prepare_glow(
 /// D292: the four passes: source (half res), horizontal and vertical blur (quarter res),
 /// and the add into the main texture (alpha 1). D294: with the glow off only the add pass
 /// runs (the final pass, glow 0; the scene is bound in the glow's slot, unread).
-fn edge_glow(
+pub(crate) fn edge_glow(
     view: ViewQuery<(&ViewTarget, &GlowView), With<EdgeGlow>>,
     pipelines: Res<GlowPipelines>,
     cache: Res<PipelineCache>,
