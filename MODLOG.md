@@ -1,5 +1,17 @@
 # Development log
 
+## 2026-10-14 - D283 the script camera's lens
+
+Pod picture PR 10, viewer only. A camera a script writes with `Cam.SetCameraFromToUp` now draws with the
+script's near and far planes as well as its field of view (FOUND in 01.33: the native writes near, far, ortho
+factor and vertical field of view every call, not the aspect; the Pod passes 10, 100,000, 0, 1.0 rad), and the
+override camera with the game camera's lens (near 10, far 40,000, 60 degrees; part 20's wording corrected). The
+planes go from level units to display units by the level's display scale: in the Pod near 0.0015706 and far
+15.706 display units (were 64 and 636,705 level units). Nothing of the Pod is beyond 100,000; the frames with
+the script camera are equal byte for byte except 3 pixels at tick 610 and the planets level alone (a near
+object the old near plane cut). The intro's black bar is INFERRED to be the level's Thing 12, not the engine's
+cinema bars. `docs/level-scripts.md` part 34.
+
 ## 2026-10-14 - D282 his z span, his arrival and the pod computer's user
 
 Pod picture PR 9 (input option C), viewer only. In the Pod with `--play-sackboy`: his z span for the

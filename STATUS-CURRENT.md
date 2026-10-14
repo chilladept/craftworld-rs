@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D282
+# Current state (overwrite each milestone) — after D283
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -11,7 +11,39 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D282 his z span, his arrival and the pod computer's user (2026-10-14)
+## Latest: D283 the script camera's lens (2026-10-14)
+- "Pod picture" PR 10, viewer only (`docs/level-scripts.md` part 34). FOUND (01.33, static
+  reading, evidence only): the render camera's lens is ortho factor, vertical FOV (radians),
+  aspect, near, far; perspective when the ortho factor is 0. `Cam.SetCameraFromToUp` writes near,
+  far, ortho factor and FOV every call (the Pod: 10, 100,000, 0, 1.0 rad = 57.3 deg) and not the
+  aspect (the game camera's 16:9 stays; INFERRED). Part 23's third float is the ortho factor.
+  The override has no lens of its own: the game camera's near 10, far 40,000 (+ a zone's
+  pull-back), 60 deg; part 20 corrected (10 and 40,000 are the game camera's constants always).
+- Viewer: `level_play::script_lens` draws a script camera with the script's FOV and planes and
+  the override with the game camera's; planes from level to display units by the level's
+  display scale (INFERRED: the game's world units are level units). In the Pod (scale 1.5706e-4)
+  Bevy gets near 0.0015706 and far 15.706 display units, FOV 1.0 rad (vertical, as Bevy's); was
+  0.01 and 100 (64 and 636,705 level units). Ortho factor other than 0: the viewer's lens stays
+  (PLACEHOLDER). Aspect never written. The viewer's lens is kept and put back when the camera goes
+  out; a level without a script camera is never touched. Bevy's far plane only culls whole
+  entities (its projection is infinite).
+- MEASURED (`local-analysis/rscript/stage6/shots/d283-*`): the planets level reaches at most
+  72,847 level units along the view (69,306 at rest): nothing culled by far 100,000. The FOV was
+  already the script's (part 23), so the closed Pod at 470, the walk and press at 580, the intro at
+  30 and 200 and nine of the eleven equality captures are equal byte for byte to D282's. Changed:
+  in use from 600 held at 610, 3 pixels (a shell sliver between 10 and 64 units from the eye); the
+  planets level alone at 600 (no world Thing root; the camera among its Things), 15.3 percent:
+  a near object the old near plane cut is now drawn whole. Against the game's closed frame the
+  470 still is as close as D282's (the same bytes).
+- Cinema bars: FOUND `HUD.EnterCinemaMode`/`LeaveCinemaMode` (bars smoothstep(amount) x 0.17 +
+  0.01 of the height each); the Pod's scripts never call them. INFERRED: the intro's black bar is
+  the level's Thing 12. Docs only.
+- Tests: three viewer tests (`d283_*`). fmt, CI clippy, CI tests (612), `cargo check` of both
+  viewers and the viewer's clippy pass; viewer tests 84 pass, `sackboy_play::tests::input_script_steps`
+  fails as on main. The runtime is untouched.
+- Next: the orthographic branch; the camera zones' FOV and far; the pod computer's clips.
+
+## Before: D282 his z span, his arrival and the pod computer's user (2026-10-14)
 - "Pod picture" PR 9 (input option C), viewer only (`docs/level-scripts.md` part 33). Three
   placeholders of D281 replaced by FOUND rules of the 01.33 EBOOT (static reading, evidence only).
   Only with `--play-sackboy --level-scripts --pod-camera N --pod-shell HEX`.

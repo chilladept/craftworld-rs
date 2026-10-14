@@ -61,9 +61,10 @@ struct Play {
     /// (`thing_view::LevelThings::scene`), and what was done to them since the start.
     things_scene: Option<u64>,
     followed: crate::thing_view::Followed,
-    /// The camera's own field of view (radians), kept while a script's override camera
-    /// has the lens, to put back when the override is out.
-    follow_fov: Option<f32>,
+    /// The camera's own lens (field of view, near and far plane, display units), kept
+    /// while a script camera or a script's override camera has the lens, to put back
+    /// when it is out (part 34).
+    follow_lens: Option<Lens>,
     /// Frames drawn with the override camera, and the override's state at the last
     /// printed line: (in, blend at 1, target on).
     override_frames: u64,
@@ -519,7 +520,7 @@ pub fn install(app: &mut App) -> Result<(), String> {
         light: None,
         things_scene: None,
         followed: Default::default(),
-        follow_fov: None,
+        follow_lens: None,
         override_frames: 0,
         override_printed: (false, false, false),
         hold_at,
@@ -1145,6 +1146,86 @@ fn camera_view(display: Mat4, global: Mat4, clip_from_view: Mat4) -> Option<Came
     })
 }
 
+/// The part of a perspective lens a script camera sets (part 34): the vertical field of
+/// view in radians, the near and far plane in display units. The aspect is not in it:
+/// it stays the viewer's (the window's, 16:9 under `--window-16-9`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Lens {
+    fov: f32,
+    near: f32,
+    far: f32,
+}
+
+impl Lens {
+    fn of(lens: &PerspectiveProjection) -> Self {
+        Self {
+            fov: lens.fov,
+            near: lens.near,
+            far: lens.far,
+        }
+    }
+
+    /// Writes the three into `lens`; its aspect is left as it is.
+    fn apply(self, lens: &mut PerspectiveProjection) {
+        lens.fov = self.fov;
+        lens.near = self.near;
+        lens.far = self.far;
+    }
+}
+
+/// The lens the viewer draws a script's camera with (part 34), `scale` being the
+/// level's display scale (display units per level unit) and `own` the viewer's lens.
+///
+/// FOUND (01.33): the render camera holds an ortho factor, a vertical field of view in
+/// radians, an aspect, a near and a far plane, and is a perspective camera when the ortho
+/// factor is 0. `Cam.SetCameraFromToUp` writes near, far, ortho factor and field of view
+/// from its four floats on every call (the Pod passes 10, 100,000, 0 and 1.0) and does
+/// not write the aspect. The override camera has no lens of its own: it is the game
+/// camera's (near 10, far 40,000, 60 degrees; the runtime's `DisplayCamera` carries
+/// them). INFERRED: the game's world units are level units, so the planes are scaled
+/// by `scale` like every other level length.
+///
+/// The field of view is the camera's when it has a usable one, else `own`'s. The planes
+/// are the camera's when both are above 0 (FOUND: the game rebuilds the projection only
+/// then) and far is beyond near, else `own`'s. With an ortho factor other than 0 the
+/// viewer keeps `own` whole (PLACEHOLDER: the game's orthographic branch is not drawn;
+/// no script seen passes one). In Bevy the far plane only culls whole draw entities (its
+/// projection has no far plane), so a mesh that crosses it is still drawn whole.
+fn script_lens(camera: &DisplayCamera, ortho: f32, scale: f32, own: Lens) -> Lens {
+    if ortho != 0. {
+        return own;
+    }
+    let fov = camera.fov_y_deg.map_or(own.fov, f32::to_radians);
+    let (near, far) = (camera.near * scale, camera.far * scale);
+    let planes = near > 0. && far > near && far.is_finite();
+    Lens {
+        fov,
+        near: if planes { near } else { own.near },
+        far: if planes { far } else { own.far },
+    }
+}
+
+/// The lens to draw a frame with: under a script's camera (`shown`, with its ortho
+/// factor) [`script_lens`], the viewer's lens of before it being kept in `follow`; with
+/// no script camera the kept lens once (to put back), then `None`: the viewer's lens
+/// stands untouched. `own` is the lens the projection has now.
+fn wanted_lens(
+    shown: Option<(&DisplayCamera, f32)>,
+    follow: &mut Option<Lens>,
+    own: Option<Lens>,
+    scale: f32,
+) -> Option<Lens> {
+    match shown {
+        Some((camera, ortho)) => {
+            if follow.is_none() {
+                *follow = own;
+            }
+            follow.map(|kept| script_lens(camera, ortho, scale, kept))
+        }
+        None => follow.take(),
+    }
+}
+
 /// The script camera (parts 20 and 23), each frame after the viewer's own camera system
 /// has placed the camera: that placement is the follow camera. The runtime says which
 /// camera the frame is drawn with (`LevelWorld::display_camera`):
@@ -1168,10 +1249,12 @@ fn camera_view(display: Mat4, global: Mat4, clip_from_view: Mat4) -> Option<Came
 /// pod's draws that camera's eye. The shell's own script world gets no camera view
 /// here.
 ///
-/// INFERRED: world +Y is up under the override. Not applied: the near and far planes of
-/// either script camera (the viewer keeps its own, in display units). One line is
-/// printed when a camera comes in, is fully in or comes to rest, or goes out: the check
-/// without a screenshot.
+/// INFERRED: world +Y is up under the override. The lens (part 34, [`script_lens`]): the
+/// camera a script wrote draws with the field of view, near and far plane the script
+/// passed, the override with the game camera's (60 degrees, 10, 40,000), the planes
+/// taken from level units to display units; the viewer's own lens comes back with its
+/// own camera. One line is printed when a camera comes in, is fully in or comes to
+/// rest, or goes out: the check without a screenshot.
 fn script_camera(
     mut play: NonSendMut<Play>,
     display: Option<Res<crate::sackboy_play::LevelDisplay>>,
@@ -1191,11 +1274,14 @@ fn script_camera(
     let follow_dir = transform.forward().as_vec3();
     let world = &mut p.host.world;
     let shown = world.display_camera(follow_eye.to_array(), follow_dir.to_array());
-    let own_fov = match projection.as_ref() {
-        Projection::Perspective(lens) => Some(lens.fov),
+    // The third float of the call that wrote the camera (FOUND: the ortho factor).
+    let ortho = world.script_camera().map_or(0., |c| c.lens_value);
+    let scale = display.0.x_axis.x;
+    let own = match projection.as_ref() {
+        Projection::Perspective(lens) => Some(Lens::of(lens)),
         _ => None,
     };
-    let wanted_fov = match &shown {
+    let wanted = match &shown {
         Some(camera) => {
             *transform = place_camera(display.0, camera);
             if camera.source == CameraSource::Script {
@@ -1205,18 +1291,19 @@ fn script_camera(
                 CameraSource::Script => p.script_frames += 1,
                 CameraSource::Override => p.override_frames += 1,
             }
-            if p.follow_fov.is_none() {
-                p.follow_fov = own_fov;
-            }
-            // A script camera without a usable field of view keeps the viewer's own.
-            camera.fov_y_deg.map(f32::to_radians).or(p.follow_fov)
+            let ortho = if camera.source == CameraSource::Script {
+                ortho
+            } else {
+                0.
+            };
+            wanted_lens(Some((camera, ortho)), &mut p.follow_lens, own, scale)
         }
-        None => p.follow_fov.take(),
+        None => wanted_lens(None, &mut p.follow_lens, own, scale),
     };
-    if let (Some(fov), Some(own)) = (wanted_fov, own_fov) {
-        if fov != own {
-            if let Projection::Perspective(lens) = projection.as_mut() {
-                lens.fov = fov;
+    if let (Some(lens), Some(own)) = (wanted, own) {
+        if lens != own {
+            if let Projection::Perspective(perspective) = projection.as_mut() {
+                lens.apply(perspective);
             }
         }
     }
@@ -1268,9 +1355,21 @@ fn script_camera(
             (_, ScriptCameraState::AtRest) => "at rest",
             (_, ScriptCameraState::Moving) => "moving again",
         };
+        let drawn = match projection.as_ref() {
+            Projection::Perspective(lens) => format!(
+                "drawn with vertical field of view {:.2} deg, near {:.5} and far {:.3} display units ({:.1} and {:.0} level units, scale {scale:.4e}), aspect {:.4}",
+                lens.fov.to_degrees(),
+                lens.near,
+                lens.far,
+                lens.near / scale,
+                lens.far / scale,
+                lens.aspect_ratio
+            ),
+            _ => "not a perspective lens".into(),
+        };
         match script {
             Some(c) => println!(
-                "Script camera at tick {ticks}: {what}; eye {:.1?}, direction {:.3?}, up {:.2?}, field of view {} (level units); near {:.0} and far {:.0} not applied; frames drawn with it {}",
+                "Script camera at tick {ticks}: {what}; eye {:.1?}, direction {:.3?}, up {:.2?}, field of view {} (level units); passed near {:.0}, far {:.0}, ortho factor {ortho}; {drawn}; frames drawn with it {}",
                 c.pose.eye,
                 c.pose.direction,
                 c.up,
@@ -2750,5 +2849,147 @@ mod tests {
         assert_eq!(puter_change(&mut last, Some(false)), None);
         let mut open_at_start = None;
         assert_eq!(puter_change(&mut open_at_start, Some(true)), Some(true));
+    }
+
+    /// The viewer's lens before any script camera (`setup` in main.rs), and a display
+    /// scale like the planets level's (its 0.01 and 100 display units are 64 and
+    /// 636,705 level units).
+    const VIEWER_LENS: Lens = Lens {
+        fov: std::f32::consts::FRAC_PI_4,
+        near: 0.01,
+        far: 100.,
+    };
+    const PLANETS_SCALE: f32 = 100. / 636_705.;
+
+    /// A camera written by `Cam.SetCameraFromToUp` with `params` (near, far, ortho
+    /// factor, field of view), as the runtime shows it.
+    fn written(params: [f32; 4]) -> (DisplayCamera, f32) {
+        use lbp_runtime::ScriptCamera;
+        use lbp_script_vm::natives::CameraFromToUp;
+        let call = CameraFromToUp {
+            from: [0., -250., 1130., 1.],
+            to: [0., 0., -750., 1.],
+            up: [0., 1., 0., 0.],
+            params,
+        };
+        let c = ScriptCamera::of(&call, 0).unwrap();
+        let shown = DisplayCamera {
+            source: CameraSource::Script,
+            pose: c.pose,
+            up: c.up,
+            fov_y_deg: c.fov_y_deg(),
+            near: c.near,
+            far: c.far,
+        };
+        (shown, c.lens_value)
+    }
+
+    /// D283. The Pod's call (10, 100,000, 0, 1.0): a perspective lens of 1 radian
+    /// (57.3 degrees) vertical field of view, near and far from level units to display
+    /// units by the level's display scale; the aspect is the viewer's, 16:9.
+    #[test]
+    fn d283_the_lens_is_the_natives_arguments_in_display_units() {
+        let (camera, ortho) = written([10., 100_000., 0., 1.]);
+        assert_eq!(ortho, 0.);
+        let lens = script_lens(&camera, ortho, PLANETS_SCALE, VIEWER_LENS);
+        assert!((lens.fov - 1.).abs() < 1e-6);
+        assert!((lens.fov.to_degrees() - 57.296).abs() < 1e-3);
+        assert!((lens.near - 10. * PLANETS_SCALE).abs() < 1e-9);
+        assert!((lens.far - 100_000. * PLANETS_SCALE).abs() < 1e-4);
+        // 0.00157 and 15.71 display units; the viewer's own were 64 and 636,705 level
+        // units, the game's are 10 and 100,000.
+        assert!((lens.near - 0.001_570_6).abs() < 1e-7, "{}", lens.near);
+        assert!((lens.far - 15.706).abs() < 1e-3, "{}", lens.far);
+        let mut perspective = PerspectiveProjection {
+            aspect_ratio: 16. / 9.,
+            ..Default::default()
+        };
+        lens.apply(&mut perspective);
+        assert_eq!(Lens::of(&perspective), lens);
+        assert_eq!(perspective.aspect_ratio, 16. / 9.);
+        // A level point on the picture's top edge at that field of view: the projection
+        // is a perspective one, x and y over the depth.
+        let clip = perspective.get_clip_from_view();
+        for depth in [100., 1_000.] {
+            let edge = clip.project_point3(Vec3::new(0., depth * 0.5f32.tan(), -depth));
+            assert!((edge.y - 1.).abs() < 1e-4, "{edge:?}");
+            let side = clip.project_point3(Vec3::new(depth * 0.5f32.tan() * 16. / 9., 0., -depth));
+            assert!((side.x - 1.).abs() < 1e-4, "{side:?}");
+        }
+        // An ortho factor other than 0 is not drawn: the viewer's lens stays whole.
+        let (camera, ortho) = written([10., 100_000., 0.5, 1.]);
+        assert_eq!(
+            script_lens(&camera, ortho, PLANETS_SCALE, VIEWER_LENS),
+            VIEWER_LENS
+        );
+        // Planes the game would not rebuild with keep the viewer's; the field of view
+        // still is the script's.
+        let (camera, ortho) = written([0., 100_000., 0., 1.]);
+        let lens = script_lens(&camera, ortho, PLANETS_SCALE, VIEWER_LENS);
+        assert_eq!((lens.near, lens.far), (VIEWER_LENS.near, VIEWER_LENS.far));
+        assert!((lens.fov - 1.).abs() < 1e-6);
+        // A field of view no lens can have keeps the viewer's.
+        let (camera, ortho) = written([10., 100_000., 0., 4.]);
+        let lens = script_lens(&camera, ortho, PLANETS_SCALE, VIEWER_LENS);
+        assert_eq!(lens.fov, VIEWER_LENS.fov);
+    }
+
+    /// D283. The override camera draws with the game camera's lens: 60 degrees, near 10
+    /// and far 40,000 level units.
+    #[test]
+    fn d283_the_override_lens_is_the_game_cameras() {
+        let (written, _) = written([10., 100_000., 0., 1.]);
+        let over = DisplayCamera {
+            source: CameraSource::Override,
+            fov_y_deg: Some(OVERRIDE_FOV_DEG),
+            near: lbp_runtime::OVERRIDE_NEAR,
+            far: lbp_runtime::OVERRIDE_FAR,
+            ..written
+        };
+        let lens = script_lens(&over, 0., PLANETS_SCALE, VIEWER_LENS);
+        assert!((lens.fov.to_degrees() - 60.).abs() < 1e-4);
+        assert!((lens.near / PLANETS_SCALE - 10.).abs() < 1e-3);
+        assert!((lens.far / PLANETS_SCALE - 40_000.).abs() < 0.1);
+    }
+
+    /// D283. Without a script camera the viewer's lens is not touched; under one it is
+    /// the script's, and when the camera goes out the lens of before comes back once.
+    #[test]
+    fn d283_a_level_without_a_script_camera_keeps_the_old_lens() {
+        let mut follow = None;
+        for _ in 0..3 {
+            assert_eq!(
+                wanted_lens(None, &mut follow, Some(VIEWER_LENS), PLANETS_SCALE),
+                None
+            );
+            assert_eq!(follow, None);
+        }
+        let (camera, ortho) = written([10., 100_000., 0., 1.]);
+        let pod = script_lens(&camera, ortho, PLANETS_SCALE, VIEWER_LENS);
+        let first = wanted_lens(
+            Some((&camera, ortho)),
+            &mut follow,
+            Some(VIEWER_LENS),
+            PLANETS_SCALE,
+        );
+        assert_eq!(first, Some(pod));
+        assert_eq!(follow, Some(VIEWER_LENS));
+        // The next frame the projection has the script's lens; the kept one stays.
+        let next = wanted_lens(
+            Some((&camera, ortho)),
+            &mut follow,
+            Some(pod),
+            PLANETS_SCALE,
+        );
+        assert_eq!((next, follow), (Some(pod), Some(VIEWER_LENS)));
+        // Out: the viewer's own lens back, then nothing more is written.
+        assert_eq!(
+            wanted_lens(None, &mut follow, Some(pod), PLANETS_SCALE),
+            Some(VIEWER_LENS)
+        );
+        assert_eq!(
+            wanted_lens(None, &mut follow, Some(VIEWER_LENS), PLANETS_SCALE),
+            None
+        );
     }
 }
