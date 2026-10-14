@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D294
+# Current state (overwrite each milestone) — after D297
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -11,7 +11,28 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D294 the final pass's brightness and vignette as the game's (2026-10-14)
+## Latest: D295-D297 the planets menu zoom, the tent's line and the glow (2026-10-14)
+- D297 (`docs/level-scripts.md` part 48), viewer comment and test only. FOUND (RenderDoc frames
+  5247 and 14790): the four post passes and their constants are the same in both frames, so the
+  glow strength 0.7 holds; the blur rebuilds the game's within 0.25 level. MEASURED (tick 614,
+  `--final-pass`, after D296): halo above the line 46.1 / 10.7 / 7.7 / 4.1 / -3.1 at
+  1/2/3/5/9 px against `open-t1`'s 47.4 / 14.7 / 11.2 / 5.0 / -0.7; on the left post (flat
+  background) within 0.7 level at 2, 3 and 9 px. The earlier excess was the doubled line and the
+  missing final pass. Test `d297_line_halo_matches_t1_at_0_7`.
+- D296 (part 47), viewer: the tent's back faces are culled while the dissolve is on (FOUND: every
+  captured Pod draw culls back faces). The far wall's second line no longer shows through the
+  cut; the line is 1.99 game px against the game's 1.77 (was 3.56).
+- D295 (part 46), runtime: the planets level's pod computer runs `PerFrameUpdate__b` each tick
+  (FOUND EBOOT 0x40663c); in use it pushes the main menu, whose view starts the planets world's
+  0.05-a-tick blend from view 0 (z -15000) to view 1 (z -5000). MEASURED: `SetView` on tick 601,
+  blend 0.718 on 614, done on 621; every D293 path event unchanged. The session report's planet,
+  video and per-frame counts were always 0 before (fixed).
+- Next: make `--final-pass` the default after a non-Pod game frame (Da Vinci clips 13.9% with
+  it); the viewer's change-over stills with the planets view zoomed (D295) against `open-t1`;
+  depth of field (FOUND in 5247's chain); the halo's 5 px gap and the right post once the room
+  is the game's view.
+
+## Before: D294 the final pass's brightness and vignette as the game's (2026-10-14)
 - "Pod picture" PR 21, viewer only (`docs/level-scripts.md` part 45). FOUND (frame 5247, final
   pass PS 14857): `out = (scene x 1.2998 + glow) x (0.2 + 0.8 smoothstep(0, 1, saturate(1.2 - r)))`,
   `r = |((u - 0.5) x 1.0996, (v - 0.5) x 1.7002)|`, encoded values.

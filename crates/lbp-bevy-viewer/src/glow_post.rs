@@ -43,8 +43,12 @@ use std::{
 };
 
 /// D292 FOUND (frame 5247, PS 14831, fc4): the glow source's strength,
-/// `glow_src = GLOW_STRENGTH x (1 - scene.a) x scene.rgb` (encoded values). The menu frame
-/// t1 fits about 0.4-0.45 (INFERRED, its own settings were not captured).
+/// `glow_src = GLOW_STRENGTH x (1 - scene.a) x scene.rgb` (encoded values).
+/// D297 (docs/level-scripts.md part 48): FOUND the same in frame 14790 (the Puter open; every
+/// constant of the four post passes is equal in both frames), and MEASURED against `open-t1`
+/// with the final pass and the culled tent (D294, D296): on the left post, where the
+/// viewer's background is flat, the halo at 2 / 3 / 9 game px is the game's within 0.7
+/// levels. Part 43's 0.4-0.45 for t1 came from the doubled line and is withdrawn.
 pub const GLOW_STRENGTH: f32 = 0.7;
 /// D292 FOUND (PS 14839, passes 3281/3298): the blur's tap offsets in full-resolution
 /// pixels (centre, then each side): 0, +-2, +-6, +-10, +-14 (+-1/3/5/7 half-res texels).
@@ -722,6 +726,39 @@ mod tests {
             glow_cpu(&rgb, &alpha, w, h)[(42 + 24) * w + 8][1]
         };
         assert!(below[4] > 0.03 && far == 0., "{below:?} {far}");
+    }
+    /// D297: an alpha-0 line of COL0 about 2.3 viewer px thick (the game's ~2 px line at the
+    /// change-over's 0.877 scale; the mean of a 2 and a 3 px line) through the chain at
+    /// GLOW_STRENGTH, times the vignette at the post tops (0.83), as green excess (8-bit)
+    /// above the line: within 20% of `open-t1`'s left post (MEASURED, part 48) at 2 and
+    /// 3 px (18.8 / 12.3), and inside the blur's reach still above 0 at 9 px.
+    #[test]
+    fn d297_line_halo_matches_t1_at_0_7() {
+        let (w, h) = (16, 96);
+        let col0 = [88. / 255., 192. / 255., 14. / 255.];
+        let vig = 0.83;
+        let mut halo = [0f32; 3];
+        for thick in [2, 3] {
+            for top in 40..44 {
+                let mut rgb = vec![[0.; 3]; w * h];
+                let mut alpha = vec![1.; w * h];
+                for y in top..top + thick {
+                    for x in 0..w {
+                        rgb[y * w + x] = col0;
+                        alpha[y * w + x] = 0.;
+                    }
+                }
+                let glow = glow_cpu(&rgb, &alpha, w, h);
+                for (k, d) in [2, 3, 9].into_iter().enumerate() {
+                    let g = glow[(top - d) * w + w / 2];
+                    halo[k] += vig * 255. * (g[1] - (g[0] + g[2]) / 2.) / 8.;
+                }
+            }
+        }
+        for (got, game) in halo[..2].iter().zip([18.8f32, 12.3]) {
+            assert!((got / game - 1.).abs() < 0.2, "{halo:?}");
+        }
+        assert!(halo[2] > 0. && halo[2] < halo[1], "{halo:?}");
     }
     /// D292: opaque everywhere (alpha 1) gives no glow at all, whatever the colour.
     #[test]
