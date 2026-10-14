@@ -1,5 +1,16 @@
 # Development log
 
+## 2026-10-14 - D294 the final pass's brightness and vignette as the game's
+
+Pod picture PR 21, viewer only. The game's final pass (FOUND, frame 5247, PS 14857) scales the encoded frame by
+1.2998 before adding the glow and multiplies by a vignette, 0.2 + 0.8 smoothstep(0, 1, saturate(1.2 - r)) with r
+the uv's distance from the centre over (1.0996, 1.7002). `glow_post.rs` copies it under the new `--final-pass`
+(off by default, level-lighting route only), running the add pass on every frame (glow 0 without a dissolve).
+MEASURED against the game's frames: the change-over at 614 against `open-t1`, DS body |d| 4.0 -> 0.1, left glass
+30.3 -> 2.0, right glass 20.5 -> 7.0; the closed Pod against `d156-rpcs3-pod-default` 19.0 -> 5.8 over the viewport.
+Without the flag the build is main's byte for byte. Da Vinci clips with it (no game frame), so the flag stays off
+for now. `docs/level-scripts.md` part 45.
+
 ## 2026-10-14 - D293 the 2-D and scalar smoothing steps as the game's
 
 Pod picture PR 20, script VM only. `Math.Smooth2D__pppff` and the scalar `Math.Smooth__fffff` now run the game's

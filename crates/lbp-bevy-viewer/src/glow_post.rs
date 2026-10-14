@@ -2,12 +2,18 @@
 //! game's post chain (FOUND, frame 5247): the tent's shader writes alpha = t (0 on the
 //! line), a half-resolution pass turns `0.7 x (1 - alpha) x colour` into a glow source,
 //! two 9-tap blur passes at quarter resolution spread it, and the final pass adds it to
-//! the scene. The final pass's own x1.2998 on the whole frame is not copied (part 42).
+//! the scene.
+//!
+//! D294 (part 45): that final pass's own scale and vignette (FOUND, PS 14857),
+//! `out = (scene x 1.2998 + glow) x (0.2 + 0.8 x smoothstep(0, 1, saturate(1.2 - r)))`, under
+//! `--final-pass` on the level-lighting route only (off by default). With it the add pass
+//! runs on every frame: with no dissolve the glow term is 0 and only the scale and the
+//! vignette apply.
 //!
 //! One full-screen chain on the main 3D camera ([`EdgeGlow`]), after the main passes and
-//! before egui/UI (`Core3dSystems::PostProcess`). It runs only while a `ViewerMaterial`
+//! before egui/UI (`Core3dSystems::PostProcess`). The glow runs only while a `ViewerMaterial`
 //! dissolve is on (other draws keep alpha 1 but are not relied on) and not under
-//! `--no-edge-glow`; otherwise the frame is untouched.
+//! `--no-edge-glow`; without the glow or the final pass the frame is untouched.
 use crate::dual::{self, ViewerMaterial};
 use bevy::{
     core_pipeline::{tonemapping::tonemapping, Core3d, Core3dSystems, FullscreenShader},
@@ -46,28 +52,48 @@ pub const BLUR_OFFSETS: [f32; 5] = [0., 2., 6., 10., 14.];
 /// D292 FOUND (PS 14839): the blur's weights per tap (each side tap twice); not
 /// normalised: one pass sums to 1.38.
 pub const BLUR_WEIGHTS: [f32; 5] = [0.3, 0.225, 0.15, 0.105, 0.06];
+/// D294 FOUND (frame 5247, final pass PS 14857, fc13): the whole frame's scale before the
+/// glow is added, `c = scene x FINAL_SCALE + glow` (encoded values).
+pub const FINAL_SCALE: f32 = 1.2998;
+/// D294 FOUND (PS 14857, fc15): the vignette's radius axes, `r = length(((u - 0.5) x 1.0996,
+/// (v - 0.5) x 1.7002))` over the viewport's uv.
+pub const VIGNETTE_AXES: [f32; 2] = [1.0996, 1.7002];
+/// D294 FOUND (PS 14857, fc18.w): where the vignette starts, `smoothstep(0, 1,
+/// saturate(VIGNETTE_START - r))` (fc26 = 3, the smoothstep's 3 - 2x).
+pub const VIGNETTE_START: f32 = 1.2;
+/// D294 FOUND (PS 14857, fc12 = fc2 = fc8 = 0.2): the vignette's floor, `FLOOR + (1 - FLOOR)
+/// x smoothstep(..)` (the colour matrix fc14..25 is the identity, fc16/fc24 0).
+pub const VIGNETTE_FLOOR: f32 = 0.2;
 
 /// D292 `--no-edge-glow`: the glow chain never runs (A/B captures). `--no-glow` is P3h's.
 static NO_EDGE_GLOW: AtomicBool = AtomicBool::new(false);
 pub fn disable() {
     NO_EDGE_GLOW.store(true, Ordering::Relaxed);
 }
+/// D294 `--final-pass` (level-lighting route only, `main.rs`): the final pass's scale and
+/// vignette on every frame.
+static FINAL_PASS: AtomicBool = AtomicBool::new(false);
+pub fn enable_final_pass() {
+    FINAL_PASS.store(true, Ordering::Relaxed);
+}
 
-/// D292: on the camera the glow chain runs for; `active` while a dissolve is on.
+/// D292: on the camera the glow chain runs for; `active` while a dissolve is on (the glow),
+/// D294 `final_pass` under `--final-pass` (the scale and vignette, every frame).
 #[derive(Component, Clone, Copy, Default, Debug)]
 pub struct EdgeGlow {
     pub active: bool,
+    pub final_pass: bool,
 }
 impl SyncComponent for EdgeGlow {
     type Target = Self;
 }
-/// Extracted only while active: off removes it from the render view, so the chain skips.
+/// Extracted only while the glow or the final pass is on: otherwise the chain skips.
 impl ExtractComponent for EdgeGlow {
     type QueryData = &'static Self;
     type QueryFilter = ();
     type Out = Self;
     fn extract_component(item: &Self) -> Option<Self> {
-        item.active.then_some(*item)
+        (item.active || item.final_pass).then_some(*item)
     }
 }
 
@@ -102,14 +128,27 @@ impl Plugin for GlowPostPlugin {
     }
 }
 
-/// D292: the chain is on while any viewer material dissolves (and not `--no-edge-glow`).
+/// D292: the glow is on while any viewer material dissolves (and not `--no-edge-glow`);
+/// D294: the final pass while `--final-pass` is on.
 fn update_active(materials: Res<Assets<ViewerMaterial>>, mut cameras: Query<&mut EdgeGlow>) {
     let on = !NO_EDGE_GLOW.load(Ordering::Relaxed)
         && materials.iter().any(|(_, m)| dual::dissolve_on(m));
+    let final_pass = FINAL_PASS.load(Ordering::Relaxed);
     for mut glow in &mut cameras {
-        if glow.active != on {
+        if glow.active != on || glow.final_pass != final_pass {
             glow.active = on;
+            glow.final_pass = final_pass;
         }
+    }
+}
+
+/// D294: the add pass's entry point: the glow alone (D292), the glow and the final pass, or
+/// the final pass with no glow (its glow term 0).
+fn composite_entry(glow: bool, final_pass: bool) -> &'static str {
+    match (glow, final_pass) {
+        (true, false) => "glow_composite",
+        (true, true) => "final_composite",
+        (false, _) => "final_only",
     }
 }
 
@@ -121,7 +160,7 @@ struct GlowPipelines {
     composite: BindGroupLayoutDescriptor,
     sampler: Sampler,
     source: HashMap<TextureFormat, CachedRenderPipelineId>,
-    composite_ids: HashMap<TextureFormat, CachedRenderPipelineId>,
+    composite_ids: HashMap<(TextureFormat, &'static str), CachedRenderPipelineId>,
     blur_h: CachedRenderPipelineId,
     blur_v: CachedRenderPipelineId,
     vertex: bevy::render::render_resource::VertexState,
@@ -237,6 +276,8 @@ struct GlowView {
     quarter_v: CachedTexture,
     source: CachedRenderPipelineId,
     composite: CachedRenderPipelineId,
+    /// D294: whether the glow's three passes run (else only the final pass, glow 0).
+    glow: bool,
 }
 
 fn prepare_glow(
@@ -245,13 +286,13 @@ fn prepare_glow(
     cache: Res<PipelineCache>,
     mut textures: ResMut<TextureCache>,
     device: Res<RenderDevice>,
-    views: Query<(Entity, &ViewTarget), With<EdgeGlow>>,
+    views: Query<(Entity, &ViewTarget, &EdgeGlow)>,
     stale: Query<Entity, (With<GlowView>, Without<EdgeGlow>)>,
 ) {
     for entity in &stale {
         commands.entity(entity).remove::<GlowView>();
     }
-    for (entity, target) in &views {
+    for (entity, target, marker) in &views {
         let format = target.main_texture_format();
         let Some(srgb) = target_space(format) else {
             warn_once!("D292: edge glow skipped: main texture format {format:?}");
@@ -268,14 +309,9 @@ fn prepare_glow(
                 srgb,
             ))
         });
-        let composite = *p.composite_ids.entry(format).or_insert_with(|| {
-            cache.queue_render_pipeline(descriptor(
-                &p.vertex,
-                &p.composite,
-                "glow_composite",
-                format,
-                srgb,
-            ))
+        let entry = composite_entry(marker.active, marker.final_pass);
+        let composite = *p.composite_ids.entry((format, entry)).or_insert_with(|| {
+            cache.queue_render_pipeline(descriptor(&p.vertex, &p.composite, entry, format, srgb))
         });
         let size = target.main_texture().size();
         let mut texture = |label: &'static str, div: u32| {
@@ -303,13 +339,15 @@ fn prepare_glow(
             quarter_v: texture("d292_glow_quarter_v", 4),
             source,
             composite,
+            glow: marker.active,
         };
         commands.entity(entity).insert(view);
     }
 }
 
 /// D292: the four passes: source (half res), horizontal and vertical blur (quarter res),
-/// and the add into the main texture (alpha 1).
+/// and the add into the main texture (alpha 1). D294: with the glow off only the add pass
+/// runs (the final pass, glow 0; the scene is bound in the glow's slot, unread).
 fn edge_glow(
     view: ViewQuery<(&ViewTarget, &GlowView), With<EdgeGlow>>,
     pipelines: Res<GlowPipelines>,
@@ -335,6 +373,11 @@ fn edge_glow(
         )
     };
     let post = target.post_process_write();
+    let glow_view = if glow.glow {
+        &glow.quarter_v.default_view
+    } else {
+        post.source
+    };
     let steps = [
         (source, bind_single(post.source), &glow.half.default_view),
         (
@@ -352,17 +395,14 @@ fn edge_glow(
             device.create_bind_group(
                 "d292_glow_composite",
                 &cache.get_bind_group_layout(&pipelines.composite),
-                &BindGroupEntries::sequential((
-                    post.source,
-                    &pipelines.sampler,
-                    &glow.quarter_v.default_view,
-                )),
+                &BindGroupEntries::sequential((post.source, &pipelines.sampler, glow_view)),
             ),
             post.destination,
         ),
     ];
     let encoder = ctx.command_encoder();
-    for (pipeline, bind_group, out) in &steps {
+    let skip = if glow.glow { 0 } else { 3 };
+    for (pipeline, bind_group, out) in &steps[skip..] {
         let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
             label: Some("d292_edge_glow"),
             color_attachments: &[Some(RenderPassColorAttachment {
@@ -391,10 +431,15 @@ fn shader_source() -> String {
             .join(", ")
     };
     format!(
-        "const GLOW_STRENGTH: f32 = {:?};\nconst BLUR_OFFSETS = array<f32, 5>({});\nconst BLUR_WEIGHTS = array<f32, 5>({});\n{BODY}",
+        "const GLOW_STRENGTH: f32 = {:?};\nconst BLUR_OFFSETS = array<f32, 5>({});\nconst BLUR_WEIGHTS = array<f32, 5>({});\nconst FINAL_SCALE: f32 = {:?};\nconst VIGNETTE_AXES = vec2<f32>({:?}, {:?});\nconst VIGNETTE_START: f32 = {:?};\nconst VIGNETTE_FLOOR: f32 = {:?};\n{BODY}",
         GLOW_STRENGTH,
         list(BLUR_OFFSETS),
-        list(BLUR_WEIGHTS)
+        list(BLUR_WEIGHTS),
+        FINAL_SCALE,
+        VIGNETTE_AXES[0],
+        VIGNETTE_AXES[1],
+        VIGNETTE_START,
+        VIGNETTE_FLOOR
     )
 }
 
@@ -484,7 +529,49 @@ fn glow_composite(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let e = min(to_encoded(scene.rgb) + glow, vec3<f32>(1.0));
     return vec4<f32>(from_encoded(e), 1.0);
 }
+// D294, pass 3454 (PS 14857) itself: the vignette over the viewport's uv (pixel centres),
+// VIGNETTE_FLOOR + (1 - VIGNETTE_FLOOR) x smoothstep(0, 1, saturate(VIGNETTE_START - r)).
+fn vignette(position: vec2<f32>) -> f32 {
+    let uv = position / vec2<f32>(textureDimensions(source_texture));
+    let r = length((uv - vec2<f32>(0.5)) * VIGNETTE_AXES);
+    let s = smoothstep(0.0, 1.0, saturate(VIGNETTE_START - r));
+    return VIGNETTE_FLOOR + (1.0 - VIGNETTE_FLOOR) * s;
+}
+// (scene x FINAL_SCALE + glow) x vignette, saturated at the end (the 8-bit target), alpha 1.
+@fragment
+fn final_composite(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
+    let scene = textureLoad(source_texture, vec2<i32>(floor(in.position.xy)), 0);
+    let glow = textureSampleLevel(glow_texture, source_sampler, in.uv, 0.0).rgb;
+    let c = (to_encoded(scene.rgb) * FINAL_SCALE + glow) * vignette(in.position.xy);
+    return vec4<f32>(from_encoded(min(c, vec3<f32>(1.0))), 1.0);
+}
+// The same with no dissolve (the glow term 0).
+@fragment
+fn final_only(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
+    let scene = textureLoad(source_texture, vec2<i32>(floor(in.position.xy)), 0);
+    let c = to_encoded(scene.rgb) * FINAL_SCALE * vignette(in.position.xy);
+    return vec4<f32>(from_encoded(min(c, vec3<f32>(1.0))), 1.0);
+}
 "#;
+
+/// D294: a CPU mirror of the final pass's vignette at radius `r`.
+#[cfg(test)]
+pub fn vignette_at(r: f32) -> f32 {
+    let s = (VIGNETTE_START - r).clamp(0., 1.);
+    VIGNETTE_FLOOR + (1. - VIGNETTE_FLOOR) * s * s * (3. - 2. * s)
+}
+/// D294: the vignette at pixel (x, y) (centres at +0.5) of a `w` x `h` frame.
+#[cfg(test)]
+pub fn vignette_cpu(x: u32, y: u32, w: u32, h: u32) -> f32 {
+    let u = (x as f32 + 0.5) / w as f32 - 0.5;
+    let v = (y as f32 + 0.5) / h as f32 - 0.5;
+    vignette_at((u * VIGNETTE_AXES[0]).hypot(v * VIGNETTE_AXES[1]))
+}
+/// D294: the final pass on one encoded colour with its glow, saturated at the end.
+#[cfg(test)]
+pub fn final_pass_cpu(scene: [f32; 3], glow: [f32; 3], vignette: f32) -> [f32; 3] {
+    std::array::from_fn(|k| ((scene[k] * FINAL_SCALE + glow[k]) * vignette).min(1.))
+}
 
 /// D292: a CPU mirror of the chain on a scene of encoded colours and alphas (row-major,
 /// `w` x `h`, both multiples of 4): the half-res source, the two blurs with bilinear
@@ -686,7 +773,10 @@ mod tests {
             assert!(source.contains("GLOW_STRENGTH * (1.0 - a) * rgb"));
             assert!(source.contains("min(to_encoded(scene.rgb) + glow, vec3<f32>(1.0))"));
             assert!(source.contains("vec4<f32>(from_encoded(e), 1.0)"));
-            assert!(!source.contains("1.2998"));
+            // D292's add has no scale; D294's is a named const in the final entries.
+            let d292 = &source[source.find("fn glow_composite").unwrap()..];
+            let d292 = &d292[..d292.find("fn vignette").unwrap()];
+            assert!(!d292.contains("1.2998") && !d292.contains("FINAL_SCALE"));
             assert_eq!(source.contains("return srgb_encode(c);"), srgb);
             let module = naga::front::wgsl::parse_str(&source)
                 .unwrap_or_else(|e| panic!("{}", e.emit_to_string(&source)));
@@ -702,6 +792,8 @@ mod tests {
                 "glow_blur_h",
                 "glow_blur_v",
                 "glow_composite",
+                "final_composite",
+                "final_only",
             ] {
                 assert!(
                     module.entry_points.iter().any(|e| e.name == entry),
@@ -717,10 +809,112 @@ mod tests {
         assert_eq!(target_space(TextureFormat::Bgra8Unorm), Some(false));
         assert_eq!(target_space(TextureFormat::Rgba16Float), None);
     }
-    /// D292: the camera's marker reaches the render world only while active.
+    /// D292: the camera's marker reaches the render world only while active (D294: or
+    /// while the final pass is on).
     #[test]
     fn d292_extracted_only_while_active() {
-        assert!(EdgeGlow::extract_component(&EdgeGlow { active: false }).is_none());
-        assert!(EdgeGlow::extract_component(&EdgeGlow { active: true }).is_some());
+        let m = |active, final_pass| EdgeGlow { active, final_pass };
+        assert!(EdgeGlow::extract_component(&m(false, false)).is_none());
+        assert!(EdgeGlow::extract_component(&m(true, false)).is_some());
+        assert!(EdgeGlow::extract_component(&m(false, true)).is_some());
+    }
+    /// D294: the FOUND constants of the final pass (PS 14857) and the add pass's entries.
+    #[test]
+    fn d294_final_pass_constants() {
+        assert_eq!(FINAL_SCALE, 1.2998);
+        assert_eq!(VIGNETTE_AXES, [1.0996, 1.7002]);
+        assert_eq!(VIGNETTE_START, 1.2);
+        assert_eq!(VIGNETTE_FLOOR, 0.2);
+        assert_eq!(composite_entry(true, false), "glow_composite");
+        assert_eq!(composite_entry(true, true), "final_composite");
+        assert_eq!(composite_entry(false, true), "final_only");
+    }
+    /// D294: the vignette is 1 over the centre (r <= 0.2), about 0.27 in a 16:9 frame's
+    /// corner, and the 0.2 floor from r = 1.2 out (never reached inside the frame: the
+    /// corner's r is about 1.012); the notes' 0.83 / 0.47 / 0.44 in the game's viewport.
+    #[test]
+    fn d294_vignette_centre_corner_and_floor() {
+        let (w, h) = (1280, 720);
+        assert_eq!(vignette_cpu(639, 359, w, h), 1.);
+        assert_eq!(vignette_at(0.), 1.);
+        assert_eq!(vignette_at(0.2), 1.);
+        // r = 0.2 is still the full 1: 0.2 / 1.7002 of the height below the centre.
+        assert_eq!(vignette_cpu(639, 359 + 80, w, h), 1.);
+        let r = (0.5f32 * 1.0996).hypot(0.5 * 1.7002);
+        assert!((r - 1.0124).abs() < 1e-3, "{r}");
+        let corner = vignette_cpu(0, 0, w, h);
+        assert!((0.27..0.28).contains(&corner), "{corner}");
+        assert_eq!(corner, vignette_cpu(w - 1, h - 1, w, h));
+        assert_eq!(corner, vignette_cpu(w - 1, 0, w, h));
+        // The floor: 0.2 at r 1.2 and beyond, never below it.
+        assert!((vignette_at(1.2) - 0.2).abs() < 1e-6);
+        assert!((vignette_at(3.) - 0.2).abs() < 1e-6);
+        assert!((vignette_at(1.1) - (0.2 + 0.8 * 0.028)).abs() < 1e-6);
+        for k in 0..100 {
+            let v = vignette_at(k as f32 * 0.02);
+            assert!((VIGNETTE_FLOOR..=1.).contains(&v), "{k} {v}");
+        }
+        // The notes' values (vig.py, game viewport 1120 x 630 at (80, 45)): the post tops
+        // (390, 520), the bottom centre (640, 660), (100, 600).
+        let at = |x: u32, y: u32| vignette_cpu(x - 80, y - 45, 1120, 630);
+        assert!((at(390, 520) - 0.83).abs() < 0.01);
+        assert!((at(640, 660) - 0.47).abs() < 0.01);
+        assert!((at(100, 600) - 0.44).abs() < 0.01);
+    }
+    /// D294: the final pass scales the encoded scene by 1.2998, adds the glow, then the
+    /// vignette, saturated at the end: COL0 at the centre is 1.3 x COL0 bytes; with the glow
+    /// 0 only the scale and vignette; white at the floor is 0.26 (not saturated first).
+    #[test]
+    fn d294_final_pass_scale_and_glow() {
+        let c = final_pass_cpu([0.5; 3], [0.; 3], 1.);
+        assert!((c[0] - 0.6499).abs() < 1e-6, "{c:?}");
+        let c = final_pass_cpu([0.5, 0.2, 0.], [0.1, 0.2, 0.3], 0.5);
+        assert!(
+            (c[0] - 0.37495).abs() < 1e-6 && (c[2] - 0.15).abs() < 1e-6,
+            "{c:?}"
+        );
+        let col0 = [88. / 255., 192. / 255., 14. / 255.];
+        let b = final_pass_cpu(col0, [0.; 3], 1.).map(|v| (v * 255.).round());
+        assert_eq!(b, [114., 250., 18.]);
+        let white = final_pass_cpu([1.; 3], [0.; 3], VIGNETTE_FLOOR);
+        assert!((white[0] - 0.25996).abs() < 1e-6, "{white:?}");
+        assert_eq!(final_pass_cpu([0.9; 3], [0.5; 3], 1.), [1.; 3]);
+    }
+    /// D294: the final entries carry the FOUND constants, smoothstep(0, 1, saturate(..)), the
+    /// scale before the glow's add, saturate at the end and write alpha 1, and validate with
+    /// naga for both target kinds.
+    #[test]
+    fn d294_final_pass_shader_validates() {
+        for srgb in [true, false] {
+            let source = preprocess(srgb);
+            assert!(source.contains("const FINAL_SCALE: f32 = 1.2998;"));
+            assert!(source.contains("const VIGNETTE_AXES = vec2<f32>(1.0996, 1.7002);"));
+            assert!(source.contains("const VIGNETTE_START: f32 = 1.2;"));
+            assert!(source.contains("const VIGNETTE_FLOOR: f32 = 0.2;"));
+            assert!(source.contains("smoothstep(0.0, 1.0, saturate(VIGNETTE_START - r))"));
+            assert!(source.contains("VIGNETTE_FLOOR + (1.0 - VIGNETTE_FLOOR) * s"));
+            assert!(source.contains(
+                "(to_encoded(scene.rgb) * FINAL_SCALE + glow) * vignette(in.position.xy)"
+            ));
+            assert!(
+                source.contains("to_encoded(scene.rgb) * FINAL_SCALE * vignette(in.position.xy)")
+            );
+            let end = "vec4<f32>(from_encoded(min(c, vec3<f32>(1.0))), 1.0)";
+            assert_eq!(source.matches(end).count(), 2);
+            let module = naga::front::wgsl::parse_str(&source)
+                .unwrap_or_else(|e| panic!("{}", e.emit_to_string(&source)));
+            naga::valid::Validator::new(
+                naga::valid::ValidationFlags::all(),
+                naga::valid::Capabilities::all(),
+            )
+            .validate(&module)
+            .unwrap();
+            for entry in ["final_composite", "final_only"] {
+                assert!(
+                    module.entry_points.iter().any(|e| e.name == entry),
+                    "{entry}"
+                );
+            }
+        }
     }
 }

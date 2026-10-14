@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D293
+# Current state (overwrite each milestone) — after D294
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -11,7 +11,26 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D293 the 2-D and scalar smoothing steps as the game's (2026-10-14)
+## Latest: D294 the final pass's brightness and vignette as the game's (2026-10-14)
+- "Pod picture" PR 21, viewer only (`docs/level-scripts.md` part 45). FOUND (frame 5247, final
+  pass PS 14857): `out = (scene x 1.2998 + glow) x (0.2 + 0.8 smoothstep(0, 1, saturate(1.2 - r)))`,
+  `r = |((u - 0.5) x 1.0996, (v - 0.5) x 1.7002)|`, encoded values.
+- Viewer (`glow_post.rs`): consts `FINAL_SCALE`, `VIGNETTE_AXES`, `VIGNETTE_START`,
+  `VIGNETTE_FLOOR`; the add pass's `final_composite` (with the glow) and `final_only` (no
+  dissolve, glow 0). New `--final-pass`, off by default, level-lighting route only (ignored
+  with a note under `--preview-lighting` / `--no-lbp-lighting`); with it the pass runs every frame.
+- MEASURED (`local-analysis/rscript/stage6/shots/d294-*`, hidden window): without the flag the 614
+  still equals main's byte for byte. In use at 600, held at 614, against `open-t1`, mean |d|:
+  DS body 4.0 -> 0.1, left glass 30.3 -> 2.0, right glass 20.5 -> 7.0, wall 9.3 -> 1.1, post cards
+  3.8 -> 2.9 / 2.4; viewport 29.7 -> 25.2. Closed Pod at 600 against `d156-rpcs3-pod-default`:
+  19.0 -> 5.8. Halo at 2/3/5 px 27.0/21.3/14.4 -> 23.0/18.0/12.6 (game 14.7/11.2/5.0). Da Vinci
+  clips with it (13.9 % of pixels at 255; no game frame).
+- Tests: `d294_*` (four); fmt, the viewer's clippy and `cargo check --workspace` pass; viewer
+  tests 117 pass, `sackboy_play::tests::input_script_steps` fails as on main.
+- Next: the flag on by default after a non-Pod game frame; the glow's strength and the line's
+  thickness against t1.
+
+## Before: D293 the 2-D and scalar smoothing steps as the game's (2026-10-14)
 - "Pod picture" PR 20, script VM only (`docs/level-scripts.md` part 44). FOUND (EBOOT 01.33):
   `native_Smooth2D` 0x60195c -> 0x5ee7e4 -> core 0x38f2fc, the 2-D twin of 0x3905b8 (distance and
   projection on x, y; 1-D step; offset over distance x new speed; zero under 1e-4 or the new
