@@ -1026,10 +1026,91 @@ fn clamp_len(v: [f32; 4], k: usize, max: f32) -> [f32; 4] {
     std::array::from_fn(|i| if i < k { v[i] * s } else { 0. })
 }
 
-/// `Smooth*(pos, vel, target, max_acc, max_vel)` on the first `k` components: the new
-/// velocity. INFERRED: the parameter order comes from `PlanetThing`, which passes its
-/// `MaxAcc` then `MaxVel` fields; the step is "head for the target at most `max_vel` per
-/// tick, changing velocity by at most `max_acc` per tick". Callers add it to `pos`.
+/// One step of the game's 1-D time-optimal move (EBOOT 01.33 0x38ef7c, FOUND, D289): from
+/// 0 at speed `s` toward `dist`, speeding up or braking at `acc`, never faster than
+/// `max_vel`, and ending at rest on `dist`. The plan is advanced by the game's fixed step of
+/// 1.0 (not a frame time). Returns the new (x, speed); when the whole plan fits in the step
+/// it is `(dist, 0)`.
+fn smooth_step_1d(dist: f32, acc: f32, max_vel: f32, s: f32) -> (f32, f32) {
+    const STEP: f32 = 1.;
+    let s = s.clamp(-max_vel.max(0.), max_vel.max(0.));
+    if acc <= 0. || max_vel <= 0. {
+        // Not read in the EBOOT: no acceleration means no change of speed.
+        return (s * STEP, s);
+    }
+    // The first phase pushes toward the target, unless braking alone already overshoots;
+    // the peak speed `peak` makes the two phases cover `dist` and end at rest.
+    let (first, peak) = if s >= 0. && s * s / (2. * acc) > dist {
+        (-acc, -(s * s / 2. - acc * dist).max(0.).sqrt())
+    } else {
+        (acc, (acc * dist + s * s / 2.).sqrt())
+    };
+    let phases: Vec<(f32, f32)> = if peak.abs() > max_vel {
+        let top = max_vel.copysign(peak);
+        let ramp = (top * top - s * s) / (2. * first);
+        let brake = top * top.abs() / (2. * acc);
+        vec![
+            (first, (top - s) / first),
+            (0., (dist - ramp - brake) / top),
+            (-acc.copysign(top), top.abs() / acc),
+        ]
+    } else {
+        vec![
+            (first, (peak - s) / first),
+            (-acc.copysign(peak), peak.abs() / acc),
+        ]
+    };
+    if phases.iter().map(|p| p.1).sum::<f32>() <= STEP {
+        return (dist, 0.);
+    }
+    let (mut x, mut v, mut left) = (0., s, STEP);
+    for (a, span) in phases {
+        let h = span.max(0.).min(left);
+        x += v * h + 0.5 * a * h * h;
+        v += a * h;
+        left -= h;
+        if left <= 0. {
+            break;
+        }
+    }
+    (x, v)
+}
+
+/// `Math.Smooth3D__rrrff(pos, vel, target, acc, max_vel)`: the new velocity (FOUND, D289:
+/// `native_Smooth3D` 0x5fed34 -> 0x5ef720 -> core 0x3905b8). The velocity is projected on
+/// the unit direction to the target (the sideways part is dropped), one step of
+/// [`smooth_step_1d`] runs on the distance, and the result is that direction times the new
+/// speed. It is zero when the distance is under 1e-4 or under the new speed, so the move
+/// stops a little short of the target. Only the velocity comes back; callers add it to
+/// `pos`.
+fn smooth3d(c: &Call<'_>) -> Result<[f32; 4], String> {
+    let (pos, vel, target) = (
+        vec4(param(c, 0)?)?,
+        vec4(param(c, 1)?)?,
+        vec4(param(c, 2)?)?,
+    );
+    let (acc, max_vel) = (float(param(c, 3)?)?, float(param(c, 4)?)?);
+    let d: [f32; 4] = std::array::from_fn(|i| if i < 3 { target[i] - pos[i] } else { 0. });
+    let dist = len3(d);
+    if dist < 1e-4 {
+        return Ok([0.; 4]);
+    }
+    let dir: [f32; 4] = std::array::from_fn(|i| d[i] / dist);
+    let s = (0..3).map(|i| vel[i] * dir[i]).sum::<f32>();
+    let (_, speed) = smooth_step_1d(dist, acc, max_vel, s);
+    if dist < speed {
+        return Ok([0.; 4]);
+    }
+    Ok(std::array::from_fn(|i| dir[i] * speed))
+}
+
+/// `Smooth2D` / `Smooth(pos, vel, target, max_acc, max_vel)` on the first `k` components:
+/// the new velocity. INFERRED: the parameter order comes from `PlanetThing`, which passes
+/// its `MaxAcc` then `MaxVel` fields; the step is "head for the target at most `max_vel`
+/// per tick, changing velocity by at most `max_acc` per tick". Callers add it to `pos`.
+/// `Smooth3D` uses the game's rule ([`smooth3d`]); the scalar `Smooth__fffff` shares the
+/// game's 1-D step (0x38ef7c) but its wrapper's argument order (0x5ee844) is not read
+/// yet, and `Smooth2D` goes to a core not read yet (0x38f2fc), so both stay on this rule.
 fn smooth(c: &Call<'_>, k: usize) -> Result<[f32; 4], String> {
     let get = |i| -> Result<[f32; 4], String> {
         match param(c, i)? {
@@ -1612,7 +1693,7 @@ const TABLE: &[(&str, &str, NativeFn)] = &[
         Ok(Value::Float(t * t * (3. - 2. * t)))
     }),
     ("Math", "Smooth3D__rrrff", |_, c| {
-        Ok(Value::Vec4(smooth(c, 3)?))
+        Ok(Value::Vec4(smooth3d(c)?))
     }),
     ("Math", "Smooth2D__pppff", |_, c| {
         Ok(Value::Vec4(smooth(c, 2)?))
@@ -3863,7 +3944,7 @@ mod tests {
             call("Math", "SmoothStep__fff", &[f(0.), f(1.), f(2.)]),
             Ok(f(1.))
         );
-        // Far target: speed capped at max_vel 2, change at max_acc 0.5 from rest.
+        // Far target from rest: one step of the game's move speeds up by acc 0.5.
         assert_eq!(
             call(
                 "Math",
@@ -3872,7 +3953,8 @@ mod tests {
             ),
             Ok(v(0.5, 0.))
         );
-        // Near target, already moving at the right speed: lands on it.
+        // Near target, already moving at the right speed: lands on it. (The scalar form
+        // keeps the INFERRED rule: its argument order in the game is not read yet.)
         assert_eq!(
             call(
                 "Math",
@@ -3895,6 +3977,112 @@ mod tests {
             got,
             Ok(Value::Int(lbp_resource::translation::lams_key("A") as i32))
         );
+    }
+
+    /// Runs `PlanetsWorld.UpdatePodCamera`'s eye update (`vel = Smooth3D(pos, vel, target,
+    /// 10, 100)`, then `pos += vel`) and returns the position after each call.
+    fn d289_pod_path(from: [f32; 4], target: [f32; 4], calls: usize) -> Vec<[f32; 4]> {
+        let (mut pos, mut vel) = (from, [0.; 4]);
+        (0..calls)
+            .map(|_| {
+                let Ok(Value::Vec4(v)) = call(
+                    "Math",
+                    "Smooth3D__rrrff",
+                    &[
+                        Value::Vec4(pos),
+                        Value::Vec4(vel),
+                        Value::Vec4(target),
+                        Value::Float(10.),
+                        Value::Float(100.),
+                    ],
+                ) else {
+                    panic!()
+                };
+                vel = v;
+                pos = std::array::from_fn(|i| pos[i] + vel[i]);
+                pos
+            })
+            .collect()
+    }
+
+    #[test]
+    fn d289_pod_eye_rests_short_of_the_preset_by_call_14() {
+        let target = [0., -300., 900., 0.];
+        let path = d289_pod_path([0., -250., 1130., 0.], target, 30);
+        let left = |p: [f32; 4]| len3(std::array::from_fn(|i| target[i] - p[i]));
+        // Never past the target: z only falls toward 900, y toward -300.
+        for p in &path {
+            assert!(p[2] > 900. && p[1] > -300. && p[0] == 0., "{p:?}");
+        }
+        // The distance left only shrinks, and is within 6 units by call 10.
+        for w in path.windows(2) {
+            assert!(left(w[1]) <= left(w[0]) + 1e-4, "{w:?}");
+        }
+        assert!(left(path[9]) < 6., "{:?}", path[9]);
+        // At rest from call 14: the game's eye (0, -299.4804, 902.3901), RenderDoc f14790.
+        let rest = path[13];
+        assert!(
+            (rest[1] + 299.4804).abs() < 0.01 && (rest[2] - 902.3901).abs() < 0.01,
+            "{rest:?}"
+        );
+        assert!(path[12] != rest, "still moving on call 13");
+        for p in &path[13..] {
+            assert_eq!(*p, rest);
+        }
+    }
+
+    #[test]
+    fn d289_pod_focus_rests_short_of_the_preset() {
+        let path = d289_pod_path([0., 100., -1500., 0.], [0., 500., -1500., 0.], 30);
+        for p in &path {
+            assert!(p[1] < 500. && p[2] == -1500., "{p:?}");
+        }
+        let rest = path[29];
+        assert!((rest[1] - 497.83).abs() < 0.05, "{rest:?}");
+        assert_eq!(path[16], rest, "at rest from call 17");
+    }
+
+    #[test]
+    fn d289_smooth3d_drops_sideways_velocity_and_brakes() {
+        let (f, v) = (Value::Float, |x: f32, y: f32| Value::Vec4([x, y, 0., 0.]));
+        // Sideways velocity is dropped: only the part along the target counts.
+        assert_eq!(
+            call(
+                "Math",
+                "Smooth3D__rrrff",
+                &[v(0., 0.), v(0., 5.), v(100., 0.), f(0.5), f(2.)]
+            ),
+            Ok(v(0.5, 0.))
+        );
+        // Speed is clamped to max_vel before the step.
+        assert_eq!(
+            call(
+                "Math",
+                "Smooth3D__rrrff",
+                &[v(0., 0.), v(50., 0.), v(1000., 0.), f(1.), f(10.)]
+            ),
+            Ok(v(10., 0.))
+        );
+        // Moving at 10 with 12 to go and acc 10: it brakes rather than speeding up.
+        let Ok(Value::Vec4(b)) = call(
+            "Math",
+            "Smooth3D__rrrff",
+            &[v(0., 0.), v(10., 0.), v(12., 0.), f(10.), f(100.)],
+        ) else {
+            panic!()
+        };
+        assert!(b[0] < 10. && b[0] > 0., "{b:?}");
+        // On the target, or closer than the new speed: zero.
+        assert_eq!(
+            call(
+                "Math",
+                "Smooth3D__rrrff",
+                &[v(3., 0.), v(0., 0.), v(3., 0.), f(10.), f(100.)]
+            ),
+            Ok(v(0., 0.))
+        );
+        let (x, s) = smooth_step_1d(2., 10., 100., 0.);
+        assert_eq!((x, s), (2., 0.), "the whole plan fits in the step");
     }
 
     #[test]

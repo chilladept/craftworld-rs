@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D288
+# Current state (overwrite each milestone) — after D289
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -11,7 +11,25 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D288 the hanging cloths' art on every lighting route (2026-10-14)
+## Latest: D289 the script camera's smoothing step as the game's (2026-10-14)
+- "Pod picture" PR 16, script VM only (`docs/level-scripts.md` part 40). FOUND (EBOOT 01.33,
+  `native_Smooth3D` 0x5fed34 -> core 0x3905b8 -> 1-D step 0x38ef7c): the velocity is projected on
+  the direction to the target, clamped to the top speed (arg 5), and one fixed step of 1.0 of a
+  time-optimal move runs (speed up by arg 4, brake to stop on the target); only the new velocity
+  comes back, zero under 1e-4 or when closer than the new speed, so the camera stops short. The
+  game's resting eye (0, -299.4804, 902.3901, RenderDoc f14790) is that stop-short.
+- VM: `Math.Smooth3D__rrrff` uses that step. `Smooth2D` (core 0x38f2fc not read) and the scalar
+  `Smooth` (wrapper's argument order not read) keep the older INFERRED rule.
+- MEASURED (`level_scripts`, both Pod levels, in use at 600,
+  `local-analysis/rscript/stage6/d289-camera-session.json`): the planets camera leaves on 601,
+  last moves on 614 and is reported at rest on 615 at (0, -299.4803, 902.3904), no overshoot
+  (before: 122 past on 612, rest on 626 at (0, -300, 900)). The dissolve is unchanged (0.75 on 615,
+  1.0 on 620), so the camera is at its open eye while the tent stands, as in `open-t1`.
+- Tests: `d289_*` (three). fmt, CI clippy, CI tests and `cargo check` of both viewers pass.
+- Next: `Smooth2D` and the scalar `Smooth` from the EBOOT; the viewer's change-over stills again
+  against `open-t1`; the left panel's larger glass share.
+
+## Before: D288 the hanging cloths' art on every lighting route (2026-10-14)
 - "Pod picture" PR 15, viewer only (`docs/level-scripts.md` part 39). FOUND: each hanging cloth
   of the planets room is two buckets of the backdrop mesh on the same triangles, a plain cloth
   (0x1f3ad, earlier) and the art (0x1f3b3 left, 0x1f3b4 right, later, slot 0). MEASURED: which

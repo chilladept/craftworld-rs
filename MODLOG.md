@@ -1,5 +1,15 @@
 # Development log
 
+## 2026-10-14 - D289 the script camera's smoothing step as the game's
+
+Pod picture PR 16, script VM only. `Math.Smooth3D__rrrff` now runs the game's step, read from the EBOOT (0x5fed34,
+core 0x3905b8, 1-D step 0x38ef7c; FOUND): the velocity along the target only, clamped to the top speed, one fixed
+step of 1.0 of a time-optimal move that speeds up by the acceleration and brakes to stop on the target, and zero
+once closer than the new speed. The Pod's planets camera no longer swings 122 units past its open eye: it rests on
+614 instead of 626, at (0, -299.48, 902.39), the game's resting eye in the RenderDoc dump, while the tent still
+dissolves (MEASURED), as in the game's frame `open-t1`. `Smooth2D` and the scalar `Smooth` keep the INFERRED rule.
+`docs/level-scripts.md` part 40.
+
 ## 2026-10-14 - D288 the hanging cloths' art on every lighting route
 
 Pod picture PR 15, viewer only. The planets room's hanging cloths are drawn twice on the same triangles, a plain
