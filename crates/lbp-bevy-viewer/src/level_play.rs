@@ -79,10 +79,9 @@ struct Play {
     script_frames: u64,
     script_state: ScriptCameraState,
     script_last: Option<(u64, CameraPose)>,
-    /// The Pod's shell layer under the script's camera (part 26): how often the shell
-    /// and tent roots were placed from it, and whether the first placing was printed.
-    shell_placed: u64,
-    shell_placed_printed: bool,
+    /// Part 31: the camera pose the depths of the two Pod levels were last printed for,
+    /// and whether the ticks were held then ([`layer_depths`]).
+    depths_printed: Option<(CameraPose, bool)>,
     /// The Puter state of the viewer's Pod rig that was last handed to the script world
     /// as "pod computer in use" (part 26).
     puter_open: Option<bool>,
@@ -103,8 +102,8 @@ struct Play {
 /// The script world of the Pod's shell layer (part 28): the second level of the
 /// session, with a VM of its own (a Thing handle is an index into one level world).
 /// It ticks before the level it is drawn over. No camera is written for it and none is
-/// read from it: pod.bin's scripts ask for none, and which camera the game draws the
-/// shell with is not established.
+/// read from it: pod.bin's scripts ask for none. Part 31: it is drawn with the camera
+/// the planets level's script writes, in its own level frame ([`shell_frame_root`]).
 struct ShellLevel {
     vm: Vm,
     host: Bindings<LevelWorld>,
@@ -282,10 +281,11 @@ fn set_in_use(level: &mut LevelWorld, shell: Option<&mut LevelWorld>, in_use: bo
 /// script (`LevelWorld::pod_transition`): the value kept inside 0..1; 0 before the
 /// script's first update and for a value that is not a number.
 ///
-/// PLACEHOLDER: FOUND uses of the value are the pod's shape colour alpha, the pod
-/// decorations' fade, the pod's mesh at 1 and the mask texture. Nothing read ties the
-/// shell's opening (the viewer's fitted shell eyes) or the tent's slide out of the frame
-/// to it; the camera the game draws the shell level with is not established.
+/// FOUND uses of the value are the pod's shape colour alpha, the pod decorations' fade,
+/// the pod's mesh at 1 and the mask texture. Part 31: the shell level's place no longer
+/// follows it (the shell stays in its own level frame, [`shell_frame_root`]). What still
+/// reads the progress is the viewer's own: the Pod fog of the default lighting, the
+/// fitted figure's turn and the overlay (PLACEHOLDER).
 fn opening(transition: Option<f32>) -> f32 {
     match transition {
         Some(t) if t.is_finite() => t.clamp(0., 1.),
@@ -475,8 +475,7 @@ pub fn install(app: &mut App) -> Result<(), String> {
         script_frames: 0,
         script_state: ScriptCameraState::Out,
         script_last: None,
-        shell_placed: 0,
-        shell_placed_printed: false,
+        depths_printed: None,
         puter_open: None,
         world_root: None,
         world_root_placed: 0,
@@ -493,7 +492,7 @@ pub fn install(app: &mut App) -> Result<(), String> {
     // After the viewer's own camera has placed the follow camera, before a capture.
     .add_systems(
         Update,
-        (script_camera, follow_dissolve)
+        (script_camera, follow_dissolve, layer_depths)
             .chain()
             .after(crate::camera)
             .before(crate::capture),
@@ -550,7 +549,7 @@ fn tick(
     }
     step(p, &mut capture, &sackboy);
     // Part 28: the opening progress of the viewer's Pod rig is the change-over value of
-    // pod.bin's script after the last tick (PLACEHOLDER, see [`opening`]). Also while
+    // pod.bin's script after the last tick (see [`opening`]). Also while
     // the ticks are held, for a rig that came up after them. Part 30: and the Puter
     // state "open" is the session's "pod computer in use", however it came about.
     if let (Some(shell), Some(puter)) = (&p.shell, puter.as_mut()) {
@@ -725,7 +724,7 @@ fn step(
             );
             if let Some(what) = opening_event(was, shell.opening) {
                 println!(
-                    "Pod change-over at tick {}: {what}, value {:.2} from pod.bin's script; the shell's opening progress follows it (placeholder: the game's shell camera is not established)",
+                    "Pod change-over at tick {}: {what}, value {:.2} from pod.bin's script; the tent's dissolve and the pod's mesh follow it, the shell level stays in its own frame",
                     shell.scripts.ticks, shell.opening
                 );
             }
@@ -1042,15 +1041,12 @@ fn camera_view(display: Mat4, global: Mat4, clip_from_view: Mat4) -> Option<Came
 /// scripts (`CameraState::view`): `Cam.GetCameraMatrix__` and
 /// `HUD.GetScreenSpacePosition__r` answer from it on the next ticks.
 ///
-/// With the Pod's shell layer (`--pod-shell` with `--pod-camera`; part 26) the shell and
-/// tent roots are then placed from the camera a script wrote: its eye and turn, and the
-/// opening progress `t` of the viewer's Puter state (`PodRig::shell_root_at`), which
-/// [`tick`] writes from the change-over value of pod.bin's script (part 28;
-/// PLACEHOLDER, see [`opening`]). A shell point keeps its place in the frame; the
-/// planets behind it are the script's view. While no script camera is shown the roots
-/// stay where they were. The shell's own script world gets no camera view here. Part
-/// 29: the tent root is placed with `t` = 0 always ([`shell_layer_root`]): the tent
-/// stays where the closed picture has it and goes by its dissolve.
+/// With the Pod's shell layer (`--pod-shell` with `--pod-camera`) nothing is placed
+/// here (part 31): the shell and tent roots stand in the shell level's own frame from
+/// the start ([`shell_frame_root`]), and this camera, the one the planets level's
+/// script wrote, draws both levels. MEASURED at the two end states: the game hands the
+/// pod's draws that camera's eye. The shell's own script world gets no camera view
+/// here.
 ///
 /// INFERRED: world +Y is up under the override. Not applied: the near and far planes of
 /// either script camera (the viewer keeps its own, in display units). One line is
@@ -1060,7 +1056,6 @@ fn script_camera(
     mut play: NonSendMut<Play>,
     display: Option<Res<crate::sackboy_play::LevelDisplay>>,
     mut cameras: Query<(&mut Transform, &mut Projection), With<Camera3d>>,
-    (rig, puter, mut shell_roots): ShellLayer,
 ) {
     let (Some(display), Ok((mut transform, mut projection))) = (display, cameras.single_mut())
     else {
@@ -1083,26 +1078,6 @@ fn script_camera(
     let wanted_fov = match &shown {
         Some(camera) => {
             *transform = place_camera(display.0, camera);
-            // Part 26: the Pod's shell layer follows the camera a script wrote.
-            if let (CameraSource::Script, Some(rig), Some(puter)) = (camera.source, &rig, &puter) {
-                let (eye, turn, t) = (transform.translation, transform.rotation, puter.t);
-                for (mut root, tent) in &mut shell_roots {
-                    let placed = shell_layer_root(&rig.0, eye, turn, t, tent);
-                    if *root != placed {
-                        *root = placed;
-                        p.shell_placed += 1;
-                    }
-                }
-                if !p.shell_placed_printed && p.shell_placed > 0 {
-                    p.shell_placed_printed = true;
-                    println!(
-                        "Pod shell layer at tick {}: placed from the script's camera (display eye {:.3?}, opening {t:.2}, shell scale {:.4})",
-                        p.scripts.ticks,
-                        eye.to_array(),
-                        rig.0.scale
-                    );
-                }
-            }
             if camera.source == CameraSource::Script {
                 p.script_eye_y = Some(camera.pose.eye[1]);
             }
@@ -1193,22 +1168,26 @@ fn script_camera(
     }
 }
 
-/// Where a root of the Pod's shell layer goes under a script camera at `eye` turned by
-/// `turn` (display units), at opening progress `t`. The shell root follows `t`. The tent
-/// root does not (part 29): it stays at `t` = 0, the closed picture's place, since the
-/// tent leaves by its dissolve; its slide out of the frame was the viewer's placeholder.
-fn shell_layer_root(
-    rig: &crate::pod_menu::PodRig,
-    eye: Vec3,
-    turn: Quat,
-    t: f32,
-    tent: bool,
-) -> Transform {
-    if tent {
-        rig.tent_root_at(eye, turn, 0.)
-    } else {
-        rig.shell_root_at(eye, turn, t)
-    }
+/// Part 31. The root of the Pod's shell level (pod.bin) under `--level-scripts`: the
+/// shell is drawn in its own level frame, under the camera the planets level's script
+/// writes. `planets` and `shell` take each level's units to its display units (a uniform
+/// scale and a translation each, `level_home`); the camera stands at `planets * eye`, so
+/// a shell entity at `shell * X` under the root `planets * shell^-1` stands at
+/// `planets * X`: level point `X` of the shell and level point `X` of the camera's frame
+/// are one point. No turn, and nothing follows the opening progress.
+///
+/// MEASURED (two captured frames, part 29): the camera position the game hands the pod's
+/// draws is the planets script camera's eye, (0, -250, 1130) closed and (0, -299.5,
+/// 902.4) with the pod computer open, and the tent's heights over it are its level
+/// heights plus 250. INFERRED: between the two states too. `None` when the shell's
+/// matrix has no inverse.
+pub(crate) fn shell_frame_root(planets: Mat4, shell: Mat4) -> Option<Transform> {
+    let frame = planets * shell.inverse();
+    frame.is_finite().then(|| Transform {
+        translation: frame.w_axis.truncate(),
+        rotation: Quat::IDENTITY,
+        scale: Vec3::splat(frame.x_axis.x),
+    })
 }
 
 /// The draw entities of the shell layer, for [`follow_dissolve`]: the tag, the material
@@ -1225,16 +1204,18 @@ type Dissolved<'w, 's> = Query<
 
 /// Writes the line of the tent's dissolve into the materials of the draw entities that
 /// carry a dissolve value (part 29; `thing_view::apply` keeps the value on the tag),
-/// each frame after [`script_camera`] has placed the camera and the tent root.
+/// each frame after [`script_camera`] has placed the camera.
 ///
 /// The line is `camera y + 1150 - 1550 v` in the shell level's own y
 /// (`pod_dissolve::line_y`; FOUND), the camera being the one the planets level's script
 /// wrote (MEASURED at the two end states; INFERRED that the two levels share one frame
-/// there). It goes to the shader as a plane in Bevy world space: the entity hangs under
-/// the tent root, which moves each frame, so the level-to-world matrix is the root's
-/// own `Transform` (not its `GlobalTransform`, which is a frame behind here) times the
-/// shell's display matrix. A material is written only when its values change, so a
-/// held tick costs nothing. Nothing while no script camera has been shown: the tent is
+/// between them). It goes to the shader as a plane in Bevy world space: the
+/// level-to-world matrix is the `Transform` of the root the entity hangs under times
+/// the shell's display matrix. Part 31: that root is the shell's level frame
+/// ([`shell_frame_root`]), so the product is the planets level's display matrix and the
+/// plane is plainly "level y minus the line", the line being the camera's y plus a
+/// constant: one frame for the tent, the camera and the line. A material is written
+/// only when its values change, so a held tick costs nothing. Nothing while no script camera has been shown: the tent is
 /// then drawn whole. One line is printed the first time, with the mask's state.
 fn follow_dissolve(
     mut play: NonSendMut<Play>,
@@ -1300,18 +1281,227 @@ fn follow_dissolve(
     );
 }
 
-/// The Pod rig, its Puter state and the shell and tent roots, for [`script_camera`]
-/// (part 26). The rig is there only with the shell layer.
-type ShellLayer<'w, 's> = (
-    Option<Res<'w, crate::PodRigRes>>,
-    Option<Res<'w, crate::pod_menu::PuterState>>,
-    Query<
-        'w,
-        's,
-        (&'static mut Transform, Has<crate::PodTentRoot>),
-        (With<crate::PodShellRoot>, Without<Camera3d>),
-    >,
-);
+/// The roots of the two Pod levels, for [`layer_depths`]: the root's place and whether it
+/// is a root of the shell level.
+type LayerRoots<'w, 's> = Query<
+    'w,
+    's,
+    (&'static Transform, Has<crate::PodShellRoot>),
+    Or<(With<crate::PodShellRoot>, With<crate::PodPlanetsRoot>)>,
+>;
+
+/// The draw entities under those roots: place under the root, mesh, bounds, whether
+/// shown.
+type LayerParts<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static Transform,
+        &'static Mesh3d,
+        &'static bevy::camera::primitives::Aabb,
+        &'static InheritedVisibility,
+        &'static ChildOf,
+    ),
+>;
+
+/// A box by its two corners, and how far a point is outside it (0 inside).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Box3 {
+    lo: Vec3,
+    hi: Vec3,
+}
+
+impl Box3 {
+    const NONE: Self = Self {
+        lo: Vec3::INFINITY,
+        hi: Vec3::NEG_INFINITY,
+    };
+
+    fn add(&mut self, p: Vec3) {
+        self.lo = self.lo.min(p);
+        self.hi = self.hi.max(p);
+    }
+
+    fn distance(&self, p: Vec3) -> f32 {
+        (self.lo - p).max(p - self.hi).max(Vec3::ZERO).length()
+    }
+}
+
+/// The eight corners of the box `centre` +- `half` under `matrix`.
+fn corners(matrix: Mat4, centre: Vec3, half: Vec3) -> [Vec3; 8] {
+    std::array::from_fn(|corner| {
+        let sign = Vec3::new(
+            if corner & 1 == 0 { -1. } else { 1. },
+            if corner & 2 == 0 { -1. } else { 1. },
+            if corner & 4 == 0 { -1. } else { 1. },
+        );
+        matrix.transform_point3(centre + sign * half)
+    })
+}
+
+/// The depth range of one level in front of a camera: the smallest and the largest
+/// distance along the view of the corners of its entities' bounds (a box's nearest and
+/// farthest point along a direction is a corner), and the entities counted.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct DepthRange {
+    near: f32,
+    far: f32,
+    entities: usize,
+}
+
+impl DepthRange {
+    const NONE: Self = Self {
+        near: f32::INFINITY,
+        far: f32::NEG_INFINITY,
+        entities: 0,
+    };
+
+    /// Takes in a box `centre` +- `half` under `to_view` (the box's frame to the
+    /// camera's, which looks along -Z).
+    fn add(&mut self, to_view: Mat4, centre: Vec3, half: Vec3) {
+        for corner in corners(to_view, centre, half) {
+            self.near = self.near.min(-corner.z);
+            self.far = self.far.max(-corner.z);
+        }
+        self.entities += 1;
+    }
+}
+
+/// Points per triangle edge in [`nearest_to_box`]: each triangle is looked at on a grid
+/// of this many steps a side.
+const TRIANGLE_STEPS: u16 = 8;
+
+/// The smallest distance from `target` to the surface of a triangle mesh under
+/// `to_world`, looked at on a grid of points over each triangle (its corners, edges and
+/// inside; [`TRIANGLE_STEPS`]), and the triangles looked at. 0 when a point is inside
+/// the box. A sampled value: a triangle much larger than the box can pass it between
+/// two points. `None` for a mesh without a whole triangle.
+fn nearest_to_box(
+    target: &Box3,
+    to_world: Mat4,
+    positions: &[[f32; 3]],
+    mut indices: impl Iterator<Item = usize>,
+) -> Option<(f32, usize)> {
+    let at = |i: usize| Some(to_world.transform_point3(Vec3::from(*positions.get(i)?)));
+    let (mut best, mut triangles) = (f32::INFINITY, 0);
+    while let (Some(a), Some(b), Some(c)) = (indices.next(), indices.next(), indices.next()) {
+        let (Some(a), Some(b), Some(c)) = (at(a), at(b), at(c)) else {
+            continue;
+        };
+        triangles += 1;
+        let n = TRIANGLE_STEPS;
+        for i in 0..=n {
+            for j in 0..=(n - i) {
+                let (u, v) = (f32::from(i) / f32::from(n), f32::from(j) / f32::from(n));
+                best = best.min(target.distance(a + (b - a) * u + (c - a) * v));
+            }
+        }
+    }
+    (triangles > 0).then_some((best, triangles))
+}
+
+/// Part 31, the check without a screenshot of how the two Pod levels lie under the one
+/// camera: one line when the script camera has come to rest, or the ticks are held for
+/// a capture. It gives the depth range of the shown draw entities of the shell level and
+/// of the planets level (level units along the view, from the corners of their bounds),
+/// the camera's near and far planes, and how near the planets level's surfaces come to
+/// the box around the shell ([`nearest_to_box`]): the bounds alone do not say, since
+/// the planets level's room is a box around everything. The shell stands in its own
+/// frame around the camera; the planets level hangs under its moved world Thing.
+/// Entities are placed by their own `Transform` under their root's (the roots have no
+/// parent), so a root moved on this tick counts at once.
+fn layer_depths(
+    mut play: NonSendMut<Play>,
+    display: Option<Res<crate::sackboy_play::LevelDisplay>>,
+    cameras: Query<(&Transform, &Projection), With<Camera3d>>,
+    roots: LayerRoots,
+    parts: LayerParts,
+    meshes: Res<Assets<Mesh>>,
+) {
+    let p = &mut *play;
+    let (Some(_), Some((ticks, pose))) = (&p.shell, p.script_last) else {
+        return;
+    };
+    let held = p.hold_at.is_some_and(|n| ticks >= n);
+    if !(held || p.script_state == ScriptCameraState::AtRest)
+        || p.depths_printed == Some((pose, held))
+    {
+        return;
+    }
+    let (Some(display), Ok((camera, projection))) = (display, cameras.single()) else {
+        return;
+    };
+    let scale = display.0.x_axis.x;
+    let to_view = camera.to_matrix().inverse();
+    if !(to_view.is_finite() && scale.is_finite() && scale > 0.) {
+        return;
+    }
+    let placed = parts
+        .iter()
+        .filter_map(|(local, mesh, bounds, shown, parent)| {
+            let (root, of_shell) = roots.get(parent.parent()).ok()?;
+            let to_world = root.to_matrix() * local.to_matrix();
+            shown.get().then_some((to_world, mesh, bounds, of_shell))
+        });
+    let (mut shell, mut planets) = (DepthRange::NONE, DepthRange::NONE);
+    let mut shell_box = Box3::NONE;
+    for (to_world, _, bounds, of_shell) in placed.clone() {
+        let (centre, half) = (bounds.center.into(), bounds.half_extents.into());
+        let range = if of_shell { &mut shell } else { &mut planets };
+        range.add(to_view * to_world, centre, half);
+        if of_shell {
+            for corner in corners(to_world, centre, half) {
+                shell_box.add(corner);
+            }
+        }
+    }
+    if shell.entities == 0 || planets.entities == 0 {
+        return;
+    }
+    // How near the planets level's surfaces come to the box around the shell.
+    let (mut nearest, mut triangles, mut unread) = (f32::INFINITY, 0, 0);
+    for (to_world, mesh, ..) in placed.filter(|part| !part.3) {
+        let mesh = meshes.get(&mesh.0);
+        let positions = mesh
+            .and_then(|m| m.attribute(Mesh::ATTRIBUTE_POSITION))
+            .and_then(|a| a.as_float3());
+        let found = match (positions, mesh.and_then(Mesh::indices)) {
+            (Some(positions), Some(indices)) => {
+                nearest_to_box(&shell_box, to_world, positions, indices.iter())
+            }
+            (Some(positions), None) => {
+                nearest_to_box(&shell_box, to_world, positions, 0..positions.len())
+            }
+            _ => None,
+        };
+        match found {
+            Some((distance, n)) => {
+                nearest = nearest.min(distance);
+                triangles += n;
+            }
+            None => unread += 1,
+        }
+    }
+    p.depths_printed = Some((pose, held));
+    let (near, far) = match projection {
+        Projection::Perspective(lens) => (lens.near / scale, lens.far / scale),
+        _ => (f32::NAN, f32::NAN),
+    };
+    let level = |b: Vec3| (display.0.inverse().transform_point3(b)).to_array();
+    println!(
+        "Pod levels under one camera at tick {ticks} ({}; level units): along the view, by the bounds of the shown draw entities, the shell level reaches from {:.0} to {:.0} ({} entities) and the planets level from {:.0} to {:.0} ({} entities; its room is around both); the box around the shell is {:.0?} to {:.0?}, and the nearest point of the planets level's surfaces to it is {:.0} away ({triangles} triangles looked at on a grid, {unread} entities without readable triangles); camera near plane {near:.0}, far plane {far:.0}",
+        if held { "ticks held" } else { "camera at rest" },
+        shell.near / scale,
+        shell.far / scale,
+        shell.entities,
+        planets.near / scale,
+        planets.far / scale,
+        planets.entities,
+        level(shell_box.lo),
+        level(shell_box.hi),
+        nearest / scale,
+    );
+}
 
 /// Thing numbers named per kind in the line [`follow_things`] prints.
 const MAX_THINGS_NAMED: usize = 8;
@@ -1524,34 +1714,149 @@ mod tests {
     use bevy::camera::CameraProjection;
     use lbp_runtime::OVERRIDE_FOV_DEG;
 
-    /// D278. Under the script's camera the tent root is placed at opening progress 0
-    /// whatever the progress is: where the closed picture has it, bit for bit, while the
-    /// shell root follows the progress as before.
+    /// Two levels with display matrices of their own (`level_home`: a scale after a
+    /// shift), the planets level's and the shell's.
+    fn two_displays() -> (Mat4, Mat4) {
+        (
+            Mat4::from_scale(Vec3::splat(1. / 12_000.))
+                * Mat4::from_translation(Vec3::new(300., -900., 2500.)),
+            Mat4::from_scale(Vec3::splat(1. / 4_959.))
+                * Mat4::from_translation(Vec3::new(28., -958., -169.)),
+        )
+    }
+
+    /// D280. The shell level's root under the scripts is its own level frame: a shell
+    /// level point `X` stands where the planets level's display matrix puts level point
+    /// `X`, so the script camera's eye, given in level units, is a point of the shell's
+    /// frame too. No turn, one scale; a matrix without an inverse gives no root.
     #[test]
-    fn d278_the_tent_root_stays_closed_under_the_script_camera() {
-        let rig = crate::pod_menu::PodRig::new(
-            (Vec3::new(-0.3, 0.2, 0.0), 0.25),
-            (Vec3::new(0.01, -0.2, -0.1), 0.12),
-            -0.4,
-            1.,
-        );
-        let (eye, turn) = (
-            Vec3::new(-0.4, -1.7, 1.8),
-            Quat::from_euler(EulerRot::YXZ, 0.2, 0.8, 0.),
-        );
-        let closed = rig.tent_root_at(eye, turn, 0.);
-        for t in [0., 0.05, 0.5, 0.95, 1.] {
-            assert_eq!(shell_layer_root(&rig, eye, turn, t, true), closed);
-            assert_eq!(
-                shell_layer_root(&rig, eye, turn, t, false),
-                rig.shell_root_at(eye, turn, t)
-            );
+    fn d280_the_shell_root_is_the_shells_own_level_frame() {
+        let (planets, shell) = two_displays();
+        let root = shell_frame_root(planets, shell).expect("both matrices have an inverse");
+        assert_eq!(root.rotation, Quat::IDENTITY);
+        assert!((root.scale.x - 4_959. / 12_000.).abs() < 1e-6);
+        assert_eq!(root.scale, Vec3::splat(root.scale.x));
+        let near = |a: Vec3, b: Vec3| (a - b).length() < 1e-5;
+        // The game's two camera eyes, the tent's top, the pod computer's trigger.
+        for x in [
+            Vec3::new(0., -250., 1130.),
+            Vec3::new(0., -300., 900.),
+            Vec3::new(0., 1278., 0.),
+            Vec3::new(15.8, -532.2, -193.7),
+            Vec3::ZERO,
+        ] {
+            let drawn = root.transform_point(shell.transform_point3(x));
+            assert!(near(drawn, planets.transform_point3(x)), "{x:?} {drawn:?}");
         }
-        // The rig's own tent does leave between the ends: the rule above is a choice.
-        assert_ne!(rig.tent_root_at(eye, turn, 0.5), closed);
-        assert_ne!(
-            rig.shell_root_at(eye, turn, 0.5),
-            rig.shell_root_at(eye, turn, 0.)
+        // From a camera placed at the closed eye the tent's top is 1528 up and 1130 in
+        // front, in level units: its level offset, as the game's draws have it.
+        let eye = planets.transform_point3(Vec3::new(0., -250., 1130.));
+        let top = root.transform_point(shell.transform_point3(Vec3::new(0., 1278., 0.)));
+        let offset = (top - eye) / planets.x_axis.x;
+        assert!(
+            (offset - Vec3::new(0., 1528., -1130.)).length() < 0.05,
+            "{offset:?}"
+        );
+        // The same display matrix for both levels: the root is the identity.
+        let same = shell_frame_root(shell, shell).unwrap();
+        assert!(same.translation.length() < 1e-6 && (same.scale.x - 1.).abs() < 1e-6);
+        assert_eq!(shell_frame_root(planets, Mat4::ZERO), None);
+    }
+
+    /// D280. With the tent under that root the dissolve's plane is "level y minus the
+    /// line": the level-to-world matrix `follow_dissolve` hands on (the root times the
+    /// shell's display matrix) is the planets level's display matrix, and the height a
+    /// tent point has over the line is its level y minus camera y minus the constant,
+    /// whatever the camera's y and the change-over value.
+    #[test]
+    fn d280_the_dissolve_line_is_level_y_minus_camera_y_in_the_shared_frame() {
+        let (planets, shell) = two_displays();
+        let root = shell_frame_root(planets, shell).unwrap();
+        let to_world = root.to_matrix() * shell;
+        assert!(to_world.abs_diff_eq(planets, 1e-6));
+        for (camera_y, v) in [(-250., 0.05), (-275., 0.5), (-299.5, 0.95)] {
+            let line = crate::pod_dissolve::line_y(camera_y, v);
+            let rule =
+                camera_y + crate::pod_dissolve::LINE_AT_ZERO - crate::pod_dissolve::LINE_FALL * v;
+            assert!((line - rule).abs() < 1e-3);
+            let plane = crate::pod_dissolve::world_plane(Vec4::new(0., 1., 0., -line), to_world)
+                .expect("the matrix has an inverse");
+            for x in [
+                Vec3::new(0., 1278., 0.),
+                Vec3::new(-640., -560., 310.),
+                Vec3::new(15.8, -1516., -193.7),
+            ] {
+                // Where the entity is drawn is where the camera's frame has the point.
+                let drawn = root.transform_point(shell.transform_point3(x));
+                let over = plane.truncate().dot(drawn) + plane.w;
+                assert!((over - (x.y - line)).abs() < 0.05, "{x:?} {over} {line}");
+            }
+        }
+    }
+
+    /// D280. The depth range of a level in front of the camera is taken from the corners
+    /// of its entities' bounds: a box 100 to 300 in front of a camera that looks down
+    /// -Z, a second box that hangs turned under a root far behind, and a box behind the
+    /// camera.
+    #[test]
+    fn d280_the_depth_range_is_from_the_corners_of_the_bounds() {
+        let camera = Transform::from_xyz(0., -250., 1130.);
+        let to_view = camera.to_matrix().inverse();
+        let mut range = DepthRange::NONE;
+        range.add(to_view, Vec3::new(0., 0., 930.), Vec3::new(50., 20., 100.));
+        assert_eq!((range.near, range.far, range.entities), (100., 300., 1));
+        // Half sizes (10, 10, 40), turned a quarter about Y under a root 31,000 behind
+        // the level's origin: 10 either way along the view.
+        let root = Transform::from_xyz(0., 0., -31_000.)
+            .with_rotation(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2));
+        range.add(
+            to_view * root.to_matrix(),
+            Vec3::ZERO,
+            Vec3::new(10., 10., 40.),
+        );
+        assert_eq!((range.near, range.entities), (100., 2));
+        assert!((range.far - 32_140.).abs() < 0.5, "{}", range.far);
+        let mut behind = DepthRange::NONE;
+        behind.add(to_view, Vec3::new(0., 0., 1184.), Vec3::splat(4.));
+        assert!(behind.far < 0.);
+    }
+
+    /// D280. How near a mesh comes to a box: a wall 500 behind the box is 500 away
+    /// although its corners are far out to the sides; a triangle through the box is at
+    /// 0; a mesh under a matrix is measured where the matrix puts it; no whole triangle,
+    /// or an index out of range, gives nothing.
+    #[test]
+    fn d280_the_nearest_surface_to_the_shell_box_is_measured_on_the_triangles() {
+        let mut target = Box3::NONE;
+        for p in [Vec3::new(-100., -100., -100.), Vec3::new(100., 100., 100.)] {
+            target.add(p);
+        }
+        assert_eq!(target.distance(Vec3::new(50., -20., 99.)), 0.);
+        assert_eq!(target.distance(Vec3::new(100., 400., 500.)), 500.);
+        // A wall across z = -600, its corners 4000 out: the corners are far, the wall
+        // is not.
+        let wall = [
+            [-4000., -4000., -600.],
+            [4000., -4000., -600.],
+            [0., 4000., -600.],
+        ];
+        assert!(target.distance(Vec3::from(wall[0])) > 5000.);
+        let (d, n) = nearest_to_box(&target, Mat4::IDENTITY, &wall, 0..3).unwrap();
+        assert_eq!((d, n), (500., 1));
+        // The same wall twice the size and 31,000 further.
+        let moved =
+            Mat4::from_translation(Vec3::new(0., 0., -31_000.)) * Mat4::from_scale(Vec3::splat(2.));
+        let (d, _) = nearest_to_box(&target, moved, &wall, 0..3).unwrap();
+        assert_eq!(d, 32_100.);
+        // Through the box, twice.
+        let through = [[-500., 0., 0.], [500., 0., 10.], [0., 0., 900.]];
+        let twice = [0, 1, 2, 0, 1, 2].into_iter();
+        let (d, n) = nearest_to_box(&target, Mat4::IDENTITY, &through, twice).unwrap();
+        assert_eq!((d, n), (0., 2));
+        assert_eq!(nearest_to_box(&target, Mat4::IDENTITY, &wall, 0..2), None);
+        assert_eq!(
+            nearest_to_box(&target, Mat4::IDENTITY, &wall, [0, 1, 7].into_iter()),
+            None
         );
     }
 

@@ -1,5 +1,15 @@
 # Development log
 
+## 2026-10-13 - D280 the Pod shell level in its own frame, under the script camera
+
+Pod picture PR 7, viewer only. Under `--level-scripts` with the shell layer pod.bin is no longer placed by the
+rig's fitted shell eyes: both shell roots are the shell's own level frame (`level_play::shell_frame_root`) and
+the planets level's script camera draws both levels, as the two measured end states say. Closed and open
+stills match two earlier RPCS3 frames within about 0.01 of the picture (tent window, Earth, Moon, DualShock,
+platform rim); the DualShock no longer moves against the tent's floor in the change-over. The nearest
+planets-level surface is 14,400 units from the shell's box. Without scripts equal byte for byte.
+`docs/level-scripts.md` part 31.
+
 ## 2026-10-13 - D279 the pod computer entered through the pad zone and the press
 
 Pod picture PR 4b. With the shell level in the viewer's session a Sackboy (not drawn, placeholder) stands on

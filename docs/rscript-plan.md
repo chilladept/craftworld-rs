@@ -368,6 +368,15 @@ UI (`UpdateUI__`) and photo natives are not planned.
   byte for byte; between, the band is white (the placeholder player colour) where it
   was black. Not compared against the game. Left: the viewer's own Sackboy in the
   Pod, the pod computer's menus.
+- After stage 6, "Pod picture" PR 7 (D280, part 31): the shell level in its own frame,
+  viewer only. The rig's fitted shell eyes are dropped under the scripts: both shell
+  roots are the shell's level frame (`level_play::shell_frame_root`) and the planets
+  level's script camera draws both levels (MEASURED at the two end states in part 29,
+  INFERRED between). Closed and open stills match two earlier RPCS3 frames within
+  about 0.01 of the picture; the DualShock keeps its place on the tent's floor through
+  the change-over; the nearest planets-level surface is 14,400 units from the shell.
+  Without scripts equal byte for byte. Left: a frame of the change-over from the game,
+  the script camera's near and far planes, the fitted figure under the scripts.
 
 ## Rules
 

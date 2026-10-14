@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D279
+# Current state (overwrite each milestone) — after D280
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -11,7 +11,52 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D279 the pod computer entered through the pad zone and the press, in the viewer (2026-10-13)
+## Latest: D280 the Pod shell level in its own frame, under the script camera (2026-10-13)
+- "Pod picture" PR 7, viewer only (`docs/level-scripts.md` part 31). Under `--level-scripts
+  --pod-camera N --pod-shell HEX` the shell level (pod.bin) was placed by the viewer's rig: a shell
+  eye fitted to the DualShock that followed the change-over value, a tent eye with a fitted tilt
+  (PLACEHOLDER since parts 26 to 29). Now it stands in its own level frame and the planets level's
+  script camera draws both levels. Nothing is fitted.
+- MEASURED before (part 29, two captured frames): the camera the game hands the pod's draws is the
+  script camera's eye, (0, -250, 1130) closed and (0, -299.5, 902.4) open. INFERRED: one camera and
+  one frame for both levels, also between the end states.
+- Viewer: `level_play::shell_frame_root` (the planets level's display matrix over the shell's: no
+  turn, scale 0.7788 here); both shell roots are spawned with it and stay; `script_camera` places
+  the camera only. Removed: `PodRig::layer_at` / `shell_root_at` / `tent_root_at`,
+  `shell_layer_root` (the rig keeps `layer` for the path without scripts). The dissolve's plane
+  (`follow_dissolve`) is unchanged in code: its matrix is now the planets level's display matrix,
+  so the line is level y minus camera y minus `1150 - 1550 v`. The shell light's display scale is
+  the planets level's; no light turns with the camera any more (part 26's shade issue is gone).
+  `level_play::layer_depths` prints how the two levels lie under the camera.
+- MEASURED (the viewer's line, closed at rest): shell box (-1276, -1521, -846) to (1219, 3438,
+  1184), the camera inside it; along the view the shell reaches 2,161; the planets level's room is
+  around both; the nearest planets-level surface to the shell's box is 14,421 away (14,476 to
+  14,551 on ticks 605 to 619, 14,518 open). Near plane 64 level units, far 636,705. Preview fog
+  25,805 to 78,454: none on the shell.
+- MEASURED (no focus taken; `local-analysis/rscript/stage6/shots/d280-*`): without scripts (closed,
+  `--pod-open`, `--pod-game-camera`, `--pod-t 0.5`) equal byte for byte to main's build; one level
+  with scripts and no shell equal to part 30's. With the shell under scripts every frame differs,
+  by design; closed at 600 twice with equal bytes; in use at 640, press at 641 and `--pod-open`
+  give one frame.
+- Compared by eye against two earlier RPCS3 frames (`local-analysis/d156-rpcs3-pod-default.png`,
+  `d156-rpcs3-pod-open-t2.png`), fractions of the picture, about 0.01: closed, the tent's window
+  0.34 to 0.68 by 0.26 to 0.72 (game 0.34 to 0.68 by 0.25 to 0.73), Earth (0.46, 0.48), Moon
+  (0.56, 0.47), DualShock top 0.68 (game 0.68); open, DualShock 0.40 to 0.61 wide with its top at
+  0.84 and the platform's rim at 0.97 (game 0.41 to 0.61, 0.84, 0.98). The open planets are view 0,
+  not the game's menu view (not modelled).
+- Eye check, 605 / 610 / 615 / 619: the DualShock keeps its place against the tent's floor and
+  back wall (one fixed root for both); the camera's own overshoot takes it half below the frame at
+  615. Ticks 30 and 200 now show the pod from outside, hanging in the room (INFERRED the game's
+  fly-in; not compared).
+- PLACEHOLDER left: the fitted Pod figure (`--select-guid`) under the scripts. Not applied: the
+  script camera's near and far planes.
+- Tests: four viewer tests (`d280_*`); two removed with their code (`d275_layer_at_...`,
+  `d278_the_tent_root_stays_closed_...`). fmt, CI clippy, CI tests (612), Python tests (36),
+  `cargo check` of both viewers and the viewer's clippy pass; the viewer's tests pass (73) but
+  `sackboy_play::tests::input_script_steps` (fails on main). The runtime is untouched.
+- Next: a frame of the change-over from the game; the viewer's own Sackboy in the Pod; `pod_mask.tex`.
+
+## Before: D279 the pod computer entered through the pad zone and the press, in the viewer (2026-10-13)
 - "Pod picture" PR 4b: viewer, one function moved into the runtime (`docs/level-scripts.md` part
   30). The Puter key set "in use" on both worlds itself; now pod.bin's own script does it (the path
   of D273: pad zone, click, `RequestHostUsePod(true)`, the host's answer a tick later).

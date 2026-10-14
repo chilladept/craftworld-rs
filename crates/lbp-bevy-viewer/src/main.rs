@@ -1324,18 +1324,24 @@ fn load(
                 // the Puter state "open" and a `--pod-t` between has no meaning there.
                 let asked = v.level.t0.unwrap_or(0.);
                 let t0 = if scripted { 0. } else { asked };
+                // D280: under `--level-scripts` the shell level is drawn in its own level
+                // frame, by the camera the planets level's script writes: both roots are
+                // that frame and stay there. The rig's fitted shell eyes place the roots
+                // only without the scripts.
+                let frame = scripted
+                    .then(|| level_play::shell_frame_root(planets_normalize, normalize))
+                    .flatten();
+                let (shell_at, tent_at) = match frame {
+                    Some(frame) => (frame, frame),
+                    None => (rig.shell_root(t0), rig.tent_root(t0)),
+                };
                 let root = commands
-                    .spawn((rig.shell_root(t0), Visibility::default(), PodShellRoot))
+                    .spawn((shell_at, Visibility::default(), PodShellRoot))
                     .id();
                 // P2g: pod.mol (the tent) on its own root; the DualShock, cords and the
                 // figure stay on the shell root.
                 let tent = commands
-                    .spawn((
-                        rig.tent_root(t0),
-                        Visibility::default(),
-                        PodShellRoot,
-                        PodTentRoot,
-                    ))
+                    .spawn((tent_at, Visibility::default(), PodShellRoot, PodTentRoot))
                     .id();
                 let tent_flags: Vec<bool> = level.shell.as_ref().map_or(Vec::new(), |shell| {
                     shell_plan
@@ -1393,6 +1399,11 @@ fn load(
                         ..planets_light
                     };
                 }
+                if frame.is_some() {
+                    // D280: in the shared frame a display unit of the shell is the
+                    // planets level's (the shell's own scale times the root's).
+                    shell_light.display_scale = planets_light.display_scale;
+                }
                 v.lighting.shell = Some((first, shell_light));
                 for (i, (entity, ..)) in v.scene[first..].iter().enumerate() {
                     let parent = if tent_flags.get(i).copied().unwrap_or(false) {
@@ -1420,6 +1431,13 @@ fn load(
                     key: None,
                 });
                 v.level.lines.push(rig_line);
+                if let Some(frame) = frame {
+                    v.level.lines.push(format!(
+                        "Pod shell level: drawn in its own level frame under the planets level's script camera (root scale {:.4}, the planets level's display scale over the shell's; no turn; level origin at display {:.4?}); the rig's fitted shell eyes are not used",
+                        frame.scale.x,
+                        planets_normalize.transform_point3(Vec3::ZERO).to_array()
+                    ));
+                }
                 v.level.lines.extend(menu_line.clone());
                 let line = match done.preview {
                     Ok(Some(preview)) => spawn_figure(
@@ -2581,7 +2599,7 @@ fn pod_shell(
         let earth = planets_root(m, 0.).transform_point(m.transform_point3(pod_menu::EARTH_MENU.0));
         rig = rig.with_planets_camera(presets, earth);
         game_line = format!(
-            "; under --level-scripts the planets camera is the script's (vfov {:.1} deg), the shell and the tent are placed from it",
+            "; under --level-scripts the planets camera is the script's (vfov {:.1} deg) and draws the shell level in its own frame: these eyes are not used",
             rig.fov.to_degrees()
         );
     }
@@ -2887,8 +2905,9 @@ fn dissolve_mask_image(
         },
     }
 }
-/// The Pod rig, and (D275) whether the planets level's scripts run: the camera and the
-/// shell and tent roots are then placed by `level_play::script_camera`.
+/// The Pod rig, and (D275) whether the planets level's scripts run: the camera is then
+/// placed by `level_play::script_camera`, and (D280) the shell and tent roots stand in
+/// the shell level's own frame (`level_play::shell_frame_root`).
 #[derive(Resource)]
 struct PodRigRes(pod_menu::PodRig, bool);
 /// Shell, tent and (P2k) planets roots.
@@ -2983,8 +3002,9 @@ fn pod_dolly(
     let (Some(rig), Some(mut state)) = (rig, state) else {
         return;
     };
-    // D275: under `--level-scripts` the script's camera gives the field of view, the
-    // view and the place of the roots (`level_play::script_camera`). D277: `t` is not
+    // D275: under `--level-scripts` the script's camera gives the field of view and the
+    // view (`level_play::script_camera`); D280: the roots stay in the shell level's own
+    // frame. D277: `t` is not
     // moved here either: it is written from pod.bin's change-over value after each tick
     // (`level_play::tick`). D279: the keys do not set `open` there either: the key that
     // went down waits in `key` for the scripts' next step, which presses the engage

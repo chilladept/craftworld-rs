@@ -571,15 +571,11 @@ impl PodRig {
 
     /// `X -> P + scale R^-1 (X - S)` for a layer whose eye is `s` turned by `rot`.
     /// P2k: with a turned planets camera `Rp`, `X -> P + scale Rp R^-1 (X - S)`.
+    /// D280: only without `--level-scripts`. Under the scripts the shell level stands in
+    /// its own level frame (`level_play::shell_frame_root`) and no shell eye is used.
     fn layer(&self, t: f32, s: Vec3, rot: Quat) -> Transform {
-        self.layer_at(self.planet_eye(t), self.planet_turn(t), s, rot)
-    }
-
-    /// D275: [`Self::layer`] for a planets camera at `eye` turned by `turn` that is not
-    /// the rig's own (the camera the planets level's script writes): a layer point seen
-    /// from `s` turned by `rot` shows at the same place of the frame from `eye`.
-    pub fn layer_at(&self, eye: Vec3, turn: Quat, s: Vec3, rot: Quat) -> Transform {
-        let turn = turn * rot.inverse();
+        let eye = self.planet_eye(t);
+        let turn = self.planet_turn(t) * rot.inverse();
         Transform {
             translation: eye - turn * (s * self.scale),
             rotation: turn,
@@ -597,17 +593,6 @@ impl PodRig {
     pub fn tent_root(&self, t: f32) -> Transform {
         let (s, rot) = self.tent_pose(t);
         self.layer(t, s, rot)
-    }
-
-    /// D275: the tent root at `t` under a planets camera at `eye` turned by `turn`.
-    pub fn tent_root_at(&self, eye: Vec3, turn: Quat, t: f32) -> Transform {
-        let (s, rot) = self.tent_pose(t);
-        self.layer_at(eye, turn, s, rot)
-    }
-
-    /// D275: the shell root at `t` under a planets camera at `eye` turned by `turn`.
-    pub fn shell_root_at(&self, eye: Vec3, turn: Quat, t: f32) -> Transform {
-        self.layer_at(eye, turn, Self::at(self.shell, t), self.turn(t))
     }
 
     /// The planets eye at opening progress `t` (0 closed, 1 open, eased).
@@ -804,64 +789,6 @@ mod tests {
         let far = rig.shell_root(0.).transform_point(Vec3::new(0., 0., -0.4));
         let forward = rig.planet_rot[0] * Vec3::NEG_Z;
         assert!(((far - rig.planet[0]).dot(forward) / rig.focus - 0.5).abs() < 0.05);
-    }
-
-    #[test]
-    fn d275_layer_at_keeps_the_shell_projection_under_any_planets_camera() {
-        let fov = GAME_FOV;
-        let globe = (Vec3::new(-0.3, 0.2, 0.0), 0.25);
-        let pad = (Vec3::new(0.01, -0.2, -0.1), 0.12);
-        let presets = [
-            [Vec3::new(0., -0.1, 1.), Vec3::new(0., 0.2, -1.)],
-            [Vec3::new(0., -0.12, 0.8), Vec3::new(0., 0.5, -1.)],
-        ];
-        let bounds = [Vec3::new(-0.5, -0.5, -0.4), Vec3::new(0.5, 0.5, 0.2)];
-        let rig = PodRig::new(globe, pad, -0.4, fov)
-            .with_planets_camera(presets, globe.0)
-            .with_game_camera(Vec3::new(0., -0.1, 0.45), Vec3::new(0., 0.03, -0.6), bounds);
-        // At the rig's own planets poses the two rules are one, bit for bit.
-        for t in [0., 0.3, 0.5, 1.] {
-            let (eye, turn) = (rig.planet_eye(t), rig.planet_turn(t));
-            assert_eq!(rig.shell_root_at(eye, turn, t), rig.shell_root(t));
-            assert_eq!(rig.tent_root_at(eye, turn, t), rig.tent_root(t));
-        }
-        // Planets cameras that are not the rig's: far out and looking steeply up (as the
-        // intro's outer camera), turned and rolled behind the scene, and far back.
-        let cameras = [
-            (Vec3::new(-0.4, -1.7, 1.8), Quat::from_rotation_x(0.8)),
-            (
-                Vec3::new(3., 2., -5.),
-                Quat::from_euler(EulerRot::YXZ, 2.4, -0.3, 0.5),
-            ),
-            (Vec3::new(0., 0., 40.), Quat::IDENTITY),
-        ];
-        let projection = Mat4::perspective_rh(fov, ASPECT, 0.001, 1000.);
-        let frac = |eye: Vec3, turn: Quat, placed: Vec3| {
-            let local = turn.inverse() * (placed - eye);
-            let c = projection.project_point3(local);
-            ([(c.x + 1.) / 2., (1. - c.y) / 2.], -local.z)
-        };
-        let near =
-            |a: [f32; 2], b: [f32; 2]| (a[0] - b[0]).abs() < 1e-4 && (a[1] - b[1]).abs() < 1e-4;
-        for (eye, turn) in cameras {
-            for t in [0., 0.5, 1.] {
-                for q in [Vec3::new(0.05, -0.15, -0.2), Vec3::new(-0.3, 0.2, -0.4)] {
-                    let placed = rig.shell_root_at(eye, turn, t).transform_point(q);
-                    let (got, depth) = frac(eye, turn, placed);
-                    let want = rig.shell_frac(t, q);
-                    assert!(near(got, want), "{eye:?} {t} {got:?} {want:?}");
-                    // In front of the camera by the shell eye's own depth times the scale.
-                    let own = -(rig.turn(t).inverse() * (q - PodRig::at(rig.shell, t))).z;
-                    assert!(own > 0. && (depth - own * rig.scale).abs() < 1e-3 * depth.max(1.));
-                }
-            }
-            // The tent shows where it shows under the rig's own closed camera.
-            let wall = Vec3::new(0.1, 0.1, -0.4);
-            let own = rig.tent_root(0.).transform_point(wall);
-            let (want, _) = frac(rig.planet_eye(0.), rig.planet_turn(0.), own);
-            let placed = rig.tent_root_at(eye, turn, 0.).transform_point(wall);
-            assert!(near(frac(eye, turn, placed).0, want));
-        }
     }
 
     #[test]

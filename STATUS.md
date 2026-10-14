@@ -5444,3 +5444,52 @@ Next: `pod_mask.tex` and the plain UV; PR 4b, the Puter key through the pad zone
 **+0 newly viewable / +0 newly Complete (viewer feature).**
 Next: the viewer's own Sackboy in the Pod; `pod_mask.tex` and the plain UV.
 `docs/level-scripts.md` part 30.
+
+## D280 the Pod shell level in its own frame, under the script camera (2026-10-13)
+- "Pod picture" PR 7, viewer only. Full detail: `docs/level-scripts.md` part 31. No new native.
+- Before: under `--level-scripts --pod-camera N --pod-shell HEX` the shell level was placed by the
+  viewer's rig (a shell eye fitted to the DualShock that followed the change-over value, a tent
+  eye with a fitted tilt; PLACEHOLDER).
+- Basis: MEASURED in part 29, the camera the game hands the pod's draws is the planets script
+  camera's eye at both end states. INFERRED: both levels share one camera and one frame.
+- Viewer: `level_play::shell_frame_root` (the planets level's display matrix over the shell's; no
+  turn, scale 0.7788); both shell roots are spawned with it and nothing moves them;
+  `script_camera` places the camera only. Removed: `PodRig::layer_at`, `shell_root_at`,
+  `tent_root_at`, `shell_layer_root`. `follow_dissolve` unchanged: its matrix is now the planets
+  level's display matrix (the line is level y minus camera y minus `1150 - 1550 v`). The shell
+  light takes the planets level's display scale. `level_play::layer_depths` prints the two
+  levels' depths, the shell's box and the nearest planets-level surface to it.
+- Measured by that line: the shell's box (-1276, -1521, -846) to (1219, 3438, 1184) with the
+  camera inside; the shell reaches 2,161 along the view; the planets level's room is around both
+  levels; the nearest planets-level surface is 14,421 from the box closed, 14,518 open, 14,476
+  to 14,551 on ticks 605 to 619. Near plane 64 level units, far 636,705; preview fog 25,805 to
+  78,454, none on the shell.
+- Viewer captures, no focus taken (`--qa-capture`, hidden window, `--level-guid 00018fdb
+  --pod-camera 1 --pod-shell 000027b9 --window-16-9 --preview-lighting --qa-hide-ui`;
+  `local-analysis/rscript/stage6/shots/d280-*`): without scripts (closed, `--pod-open`,
+  `--pod-game-camera`, `--pod-t 0.5`) equal byte for byte to main's build (`d280-base-*`); the
+  planets level alone at 600 and pod.bin alone in use from 600 at 640 equal byte for byte to
+  D279's. With the shell under scripts all frames differ from D279's, by design; closed at 600
+  taken twice, equal bytes; in use at 640, press at 641 and `--pod-open` at 600 are one frame.
+- Compared by eye against two RPCS3 frames taken earlier (`local-analysis/d156-rpcs3-pod-default.png`,
+  `d156-rpcs3-pod-open-t2.png`): closed, the tent's window, the Earth, the Moon and the DualShock
+  within about 0.01 of the picture; open, the DualShock and the platform's rim within about 0.01.
+  The open planets are view 0, not the game's menu view.
+- Eye check 605, 610, 615, 619: the DualShock stays on the tent's floor at the back wall; the
+  script camera's overshoot takes it half below the frame at 615. Ticks 30 and 200 show the pod
+  from outside (INFERRED the game's fly-in; not compared).
+- Not done: the script camera's near and far planes; the fitted Pod figure under the scripts
+  (PLACEHOLDER); the menu views. Not seen: the motion, the way back. Not compared: frames between
+  the end states and of the intro.
+- Tests: viewer `d280_the_shell_root_is_the_shells_own_level_frame`,
+  `d280_the_dissolve_line_is_level_y_minus_camera_y_in_the_shared_frame`,
+  `d280_the_depth_range_is_from_the_corners_of_the_bounds`,
+  `d280_the_nearest_surface_to_the_shell_box_is_measured_on_the_triangles`; removed with their
+  code `d275_layer_at_keeps_the_shell_projection_under_any_planets_camera` and
+  `d278_the_tent_root_stays_closed_under_the_script_camera`. `cargo fmt --all --check`, CI
+  clippy, CI tests (612), `cargo check` of both viewers, the viewer's clippy and the Python tests
+  (36) pass; `cargo test -q -p lbp-bevy-viewer` 73 pass, 1 fails
+  (`sackboy_play::tests::input_script_steps`, fails on main).
+**+0 newly viewable / +0 newly Complete (viewer feature).**
+Next: a frame of the change-over from the game; the viewer's own Sackboy in the Pod.
+`docs/level-scripts.md` part 31.
