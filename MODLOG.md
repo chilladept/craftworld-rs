@@ -1,5 +1,14 @@
 # Development log
 
+## 2026-10-14 - D291 the dissolve's band mixed in the game's output
+
+Pod picture PR 18, viewer only. The tent's shader (`pod_card_edge`, FOUND) mixes its flat colour and its lit colour
+in the encoded output and fogs after; the viewer mixed linear values and fogged before. The fog is 0 on the tent
+in both Pod captures, so only the mix space shows: the viewer now mixes the encoded pair (and fogs after the mix on
+the level-lighting route). The band's traces ramp darker into the line (up to 51 levels, all pixels in the band);
+the line itself is unchanged. The glow is a separate post pass in the game, left for D292.
+`docs/level-scripts.md` part 42.
+
 ## 2026-10-14 - D290 the glass's blend per channel
 
 Pod picture PR 17, viewer only. Part 38's "left panel twice the game's share over a darker room" was a measuring

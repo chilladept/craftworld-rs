@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D290
+# Current state (overwrite each milestone) — after D291
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -11,7 +11,21 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D290 the glass's blend per channel (2026-10-14)
+## Latest: D291 the dissolve's band mixed in the game's output (2026-10-14)
+- "Pod picture" PR 18, viewer only (`docs/level-scripts.md` part 42). FOUND (`pod_card_edge`,
+  frame 5247): `out = mix((COL0, 0), (lit_encoded, texalpha), t)`, then fog; nothing adds light
+  on the line. Fog is 0 on the tent in both captures (vc[16]). The glow is a post pass reading
+  the scene's alpha (0.7 x (1 - a) x rgb, two 9-tap blurs, added in the final pass, which also
+  scales the frame by 1.2998).
+- Viewer: the dissolve mixes the encoded pair (`dissolve_mix`), then fogs on the level route.
+- MEASURED (`local-analysis/rscript/stage6/shots/d291-base-*` / `d291-new-*`, in use at 600,
+  held at 615/617/618): only the band changes (up to 51 levels darker, green most); the line's
+  pixels at (88, 192, 14) are unchanged.
+- Tests: `d291_*` (three) and the shader text test. fmt passes; viewer tests 107 pass,
+  `sackboy_play::tests::input_script_steps` fails as on main.
+- Next: D292 the glow post pass (alpha = keep while dissolving, a full-screen node).
+
+## Before: D290 the glass's blend per channel (2026-10-14)
 - "Pod picture" PR 17, viewer only (`docs/level-scripts.md` part 41). MEASURED (closed Pod, tick
   600, level lighting, the room from a probe with the glass clear): part 38's left-panel "twice
   the game's share over a darker room" was the planets-only still's room (other pixels behind

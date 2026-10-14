@@ -498,6 +498,21 @@ pub fn glass_blend_per_channel(s: [f32; 3], a: f32) -> ([f32; 3], [f32; 3]) {
     let c = std::array::from_fn(|i| (0.5 * ((y1[i] - t[i] * l1) + (y2[i] - t[i] * l2))).max(0.));
     (c, t.map(|t| 1. - t))
 }
+/// D291 (mirrors the shader's `dissolve_mix` on the routes without the game's fog): the
+/// game mixes the flat colour and the lit colour in its encoded output, `out = mix(COL0,
+/// lit, t)`; the viewer's encoded value is the sRGB encoding of its linear output. Takes
+/// and returns linear colours: `decode(mix(encode(flat), encode(lit), keep))`, the lit
+/// colour itself where it is kept whole.
+#[cfg(test)]
+pub fn dissolve_mix(flat: [f32; 3], lit: [f32; 3], keep: f32) -> [f32; 3] {
+    if keep >= 1. {
+        return lit;
+    }
+    std::array::from_fn(|i| {
+        let (f, l) = (srgb_encode(flat[i]), srgb_encode(lit[i]));
+        srgb_decode(f + (l - f) * keep)
+    })
+}
 /// D286: the glass's opacity, none when the material is not glass.
 #[cfg(test)]
 pub fn glass(material: &ViewerMaterial) -> Option<f32> {
@@ -847,17 +862,33 @@ fn lit_normal(shading: vec3<f32>, face: vec3<f32>, to_view: vec3<f32>, bump: Bum
 // tintcol (4,4,4) into a plain RGBA8 target, so that sqrt is the only output gamma.
 // Bevy sRGB-encodes our linear output, so return the linear value whose encoding is it.
 const GAME_TINT: f32 = 4.0;
+// D291: the game's encoded colour (its 8-bit target's value) before the fog.
+fn lbp_encode(c: vec3<f32>) -> vec3<f32> {
+    return clamp(sqrt(max(c * GAME_TINT, vec3<f32>(0.0))), vec3<f32>(0.0), vec3<f32>(1.0));
+}
 // P2t: then the game's fog in that output space, by view depth (lbp_fog).
-fn lbp_output(c: vec3<f32>, depth: f32) -> vec3<f32> {
-    var v = clamp(sqrt(max(c * GAME_TINT, vec3<f32>(0.0))), vec3<f32>(0.0), vec3<f32>(1.0));
+fn lbp_fog_encoded(e: vec3<f32>, depth: f32) -> vec3<f32> {
+    var v = e;
     if lbp_fog.w > 0.5 {
         let k = clamp((depth - lbp_fog.x) * lbp_fog.y, 0.0, 1.0);
         let fogged = (dot(v, vec3<f32>(0.3, 0.6, 0.1)) * lbp_fog.z + 1.0) * lbp_fog_color.rgb;
         v = clamp(mix(v, fogged, k), vec3<f32>(0.0), vec3<f32>(1.0));
     }
-    let low = v / 12.92;
-    let high = pow((v + 0.055) / 1.055, vec3<f32>(2.4));
-    return select(high, low, v <= vec3<f32>(0.04045));
+    return v;
+}
+fn lbp_output(c: vec3<f32>, depth: f32) -> vec3<f32> {
+    return srgb_decode(lbp_fog_encoded(lbp_encode(c), depth));
+}
+// D291: the game's pod_card_edge mixes the flat colour and the lit colour in its encoded
+// output, out = mix(COL0, lit, t), and fogs after the mix. The viewer's encoded value is
+// the sRGB encoding of its linear output (P2r, D287), and the flat colour's encoding is
+// the game's COL0 (D285), so the mix is taken on the encoded pair. A whole kept share
+// returns the lit colour exactly.
+fn dissolve_mix(lit_encoded: vec3<f32>, keep: f32) -> vec3<f32> {
+    if keep >= 1.0 {
+        return lit_encoded;
+    }
+    return mix(srgb_encode(dissolve_colour.rgb), lit_encoded, keep);
 }
 fn facing_normal(shading: vec3<f32>, face: vec3<f32>, to_view: vec3<f32>) -> vec3<f32> {
     var n = normalize(shading);
@@ -995,6 +1026,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool)
     }
     var rgb = color.rgb;
     var glass_spec = vec3<f32>(0.0);
+    var dissolve_mixed = false;
     // D268: a level script's render-mesh tint (INFERRED: a multiply before lighting).
     if thing_tint.w > 0.5 {
         rgb *= thing_tint.rgb;
@@ -1072,11 +1104,19 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool)
         }
         if light_dir.w > 1.5 {
             let depth = -(view.view_from_world * vec4<f32>(in.world_position.xyz, 1.0)).z;
-            rgb = lbp_output(rgb, depth);
+            if dissolve_on {
+                // D291: the mix in the encoded output, then the fog, as the game does.
+                rgb = srgb_decode(lbp_fog_encoded(dissolve_mix(lbp_encode(rgb), dissolve_keep), depth));
+                dissolve_mixed = true;
+            } else {
+                rgb = lbp_output(rgb, depth);
+            }
         }
     }
-    if dissolve_on {
-        rgb = mix(dissolve_colour.rgb, rgb, dissolve_keep);
+    // D291: the other routes (no fog of the game's) mix the encoded pair too; where the
+    // lit colour is kept whole it is left as it is.
+    if dissolve_on && !dissolve_mixed && dissolve_keep < 1.0 {
+        rgb = srgb_decode(dissolve_mix(srgb_encode(rgb), dissolve_keep));
     }
     // D286: the glass's alpha = opacity x the dissolve's kept share; the rest alpha 1.
     // D287: as the game, the encoded colour times that alpha plus the specular, blended
@@ -1509,6 +1549,45 @@ fn main_pass_post_lighting_processing(p: PbrInputStub, c: vec4<f32>) -> vec4<f32
             super::srgb_encode(c[i] + (1. - cover[i]) * super::srgb_decode(d[i]))
         })
     }
+    /// D291: on the line (keep 0) the output is the flat colour, shown as the game's COL0
+    /// bytes (88, 192, 14), whatever the lit colour.
+    #[test]
+    fn d291_the_line_shows_the_flat_colour() {
+        let vc4 = [0.346_020_8, 0.751_111_2, 0.055_363_3];
+        let flat = vc4.map(super::srgb_decode);
+        for lit in [[0.0; 3], [0.2, 0.5, 0.9], [1.0; 3]] {
+            let out = super::dissolve_mix(flat, lit, 0.);
+            let bytes = out.map(|c| (super::srgb_encode(c) * 255.).round() as u8);
+            assert_eq!(bytes, [88, 192, 14], "{lit:?}");
+        }
+    }
+    /// D291: in the band the mix is the game's, in its encoded output: lit 0.2 and flat
+    /// 0.75 (encoded) at keep 0.5 give 0.475, where the linear mix gave about 0.56.
+    #[test]
+    fn d291_the_band_mixes_in_the_encoded_output() {
+        let (flat, lit) = (super::srgb_decode(0.75), super::srgb_decode(0.2));
+        let out = super::dissolve_mix([flat; 3], [lit; 3], 0.5);
+        for c in out {
+            assert!((super::srgb_encode(c) - 0.475).abs() < 1e-4, "{c}");
+        }
+        let linear = super::srgb_encode(0.5 * (flat + lit));
+        assert!((linear - 0.564).abs() < 1e-3, "{linear}");
+        // Along the band, encoded output = the game's mix of the encoded pair.
+        for k in 0..=10 {
+            let keep = k as f32 / 10.;
+            let e = super::srgb_encode(super::dissolve_mix([flat; 3], [lit; 3], keep)[0]);
+            assert!(
+                (e - (0.75 + (0.2 - 0.75) * keep)).abs() < 1e-4,
+                "{keep}: {e}"
+            );
+        }
+    }
+    /// D291: where the lit colour is kept whole it is returned as it is (also over 1).
+    #[test]
+    fn d291_a_whole_kept_share_is_the_lit_colour() {
+        let lit = [1.5, 0.3, 0.0];
+        assert_eq!(super::dissolve_mix([0.1, 0.5, 0.0], lit, 1.), lit);
+    }
     /// D290: the shader with `#ifdef`s resolved: every define on but `GLASS_DUAL_SOURCE`,
     /// which follows `dual`; `#import` lines dropped, the bind group fixed at 2.
     fn preprocess(dual: bool) -> String {
@@ -1579,7 +1658,14 @@ fn main_pass_post_lighting_processing(p: PbrInputStub, c: vec4<f32>) -> vec4<f32
         assert!(body.contains(
             "textureSampleGrad(dissolve_mask, dissolve_sampler, dissolve_uv, dissolve_dx, dissolve_dy).r"
         ));
-        assert!(body.contains("rgb = mix(dissolve_colour.rgb, rgb, dissolve_keep);"));
+        // D291: the mix in the encoded output, before the fog on the LBP route.
+        assert!(body.contains("return mix(srgb_encode(dissolve_colour.rgb), lit_encoded, keep);"));
+        assert!(body.contains(
+            "rgb = srgb_decode(lbp_fog_encoded(dissolve_mix(lbp_encode(rgb), dissolve_keep), depth));"
+        ));
+        assert!(body.contains("rgb = srgb_decode(dissolve_mix(srgb_encode(rgb), dissolve_keep));"));
+        assert!(body.contains("return srgb_decode(lbp_fog_encoded(lbp_encode(c), depth));"));
+        assert!(!body.contains("mix(dissolve_colour.rgb, rgb, dissolve_keep)"));
         // D286: the glass's green in the edge, its alpha and its premultiplied colour.
         assert!(body.contains("(above - dissolve_consts.x * green)"));
         assert!(body.contains("alpha = glass.x * dissolve_keep;"));
