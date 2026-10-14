@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D291
+# Current state (overwrite each milestone) — after D292
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -11,7 +11,26 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D291 the dissolve's band mixed in the game's output (2026-10-14)
+## Latest: D292 the glow on the dissolve's line (2026-10-14)
+- "Pod picture" PR 19, viewer only (`docs/level-scripts.md` part 43). FOUND (frame 5247): the
+  tent writes alpha = t; post pass 3256 (half size) `0.7 x (1 - a) x rgb`, 3281/3298 a 9-tap
+  blur at a quarter size (0.3, 0.225, 0.15, 0.105, 0.06 at 0, +-2, +-6, +-10, +-14 px; 1.38 per
+  pass), 3454 adds it (and scales the frame by 1.2998, not copied).
+- Viewer: opaque materials under the dissolve write alpha = the kept share (`dual.rs`); new
+  `glow_post.rs`, four full-screen passes on the main camera in `Core3dSystems::PostProcess`
+  (before egui/UI), in encoded values on the sRGB main texture, only while a dissolve is on;
+  `--no-edge-glow` turns it off.
+- MEASURED (`local-analysis/rscript/stage6/shots/d292-new-*` against `d291-new-*`): Da Vinci
+  and the planets at 600 equal; in use at 600, held at 615/617, a halo on both sides of the
+  line, excess above it +26..30 / +21..28 / +19..21 / +12..16 / +6..9 at 1/2/3/5/9 px, about
+  1.5-2 x the game's `open-t1` (19 / 12 / 9 / 5 / 0 over its baseline); 0.7 (FOUND) kept.
+- Tests: `d292_*` (six) with a CPU mirror of the chain; the shader text test checks the alpha
+  write. fmt, the viewer's clippy and `cargo check --workspace` pass; viewer tests 113 pass,
+  `sackboy_play::tests::input_script_steps` fails as on main.
+- Next: the glow's strength and the x1.2998 against t1's own settings; the band's glow against
+  a game frame.
+
+## Before: D291 the dissolve's band mixed in the game's output (2026-10-14)
 - "Pod picture" PR 18, viewer only (`docs/level-scripts.md` part 42). FOUND (`pod_card_edge`,
   frame 5247): `out = mix((COL0, 0), (lit_encoded, texalpha), t)`, then fog; nothing adds light
   on the line. Fog is 0 on the tent in both captures (vc[16]). The glow is a post pass reading

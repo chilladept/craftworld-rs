@@ -15,6 +15,8 @@
 //! under it (the Pod tent's change-over; docs/level-scripts.md part 29, `pod_dissolve.rs`).
 //! D290: the glass draws through dual-source blending where the device has it (one
 //! transmittance per channel); without it, the D287 blend with one T stays.
+//! D292: while the dissolve is on, opaque surfaces write the kept share as their alpha (the
+//! game's alpha = t), which the edge glow (`glow_post.rs`) reads.
 use bevy::{
     mesh::MeshVertexBufferLayoutRef,
     pbr::{ExtendedMaterial, MaterialExtension, MaterialExtensionKey, MaterialExtensionPipeline},
@@ -552,6 +554,10 @@ pub fn dissolve(material: &ViewerMaterial) -> Option<Dissolve> {
         at_one: ext.dissolve_params.w > 0.5,
     })
 }
+/// D292: whether the material draws with a dissolve now (cheap form of [`dissolve`]).
+pub fn dissolve_on(material: &ViewerMaterial) -> bool {
+    material.extension.dissolve.truncate() != Vec3::ZERO
+}
 /// D284: the input of the material's bucket that holds raw UV0 (see `raw_uv0`).
 pub fn raw_uv0(material: &ViewerMaterial) -> u8 {
     material.extension.raw_uv0
@@ -676,6 +682,9 @@ struct BumpInput {
 @group(#{MATERIAL_BIND_GROUP}) @binding(143) var dissolve_island: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(144) var dissolve_island_sampler: sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(145) var<uniform> glass: vec4<f32>;
+// D292: Bevy's alpha-mode bits of StandardMaterial flags (pbr_types.wgsl, pinned 0.19.1).
+const ALPHA_MODE_BITS: u32 = 7u << 29u;
+const ALPHA_MODE_OPAQUE: u32 = 0u;
 // D189 graph texture k at uv with explicit gradients (non-uniform control flow).
 fn graph_texture(k: u32, uv: vec2<f32>, gx: vec2<f32>, gy: vec2<f32>) -> vec4<f32> {
     switch k {
@@ -1123,6 +1132,13 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool)
     // as in encoded space (glass_blend), written premultiplied.
     // D290: with dual sources (the glass's pipeline only) a transmittance per channel.
     var alpha = 1.0;
+    // D292: an opaque surface under the dissolve writes the kept share as its alpha (the
+    // game's pod_card_edge: alpha = t x texalpha; 0 on the line). The opaque pipeline
+    // has no blend, so the target stores it as is; the edge glow reads it (glow_post.rs).
+    // Blended draws (decals) keep alpha 1, the glass its own below.
+    if dissolve_on && (pbr.material.flags & ALPHA_MODE_BITS) == ALPHA_MODE_OPAQUE {
+        alpha = dissolve_keep;
+    }
 #ifdef GLASS_DUAL_SOURCE
     var cover = vec3<f32>(1.0);
 #endif
@@ -1170,6 +1186,7 @@ struct FragmentOutput {
 }
 struct StandardMaterialStub {
     base_color: vec4<f32>,
+    flags: u32,
 }
 struct PbrInputStub {
     material: StandardMaterialStub,
@@ -1178,6 +1195,7 @@ struct PbrInputStub {
 fn pbr_input_from_standard_material(in: VertexOutput, front: bool) -> PbrInputStub {
     var p: PbrInputStub;
     p.material.base_color = vec4<f32>(1.0);
+    p.material.flags = 0u;
     p.V = vec3<f32>(0.0, 0.0, 1.0);
     return p;
 }
@@ -1669,6 +1687,16 @@ fn main_pass_post_lighting_processing(p: PbrInputStub, c: vec4<f32>) -> vec4<f32
         // D286: the glass's green in the edge, its alpha and its premultiplied colour.
         assert!(body.contains("(above - dissolve_consts.x * green)"));
         assert!(body.contains("alpha = glass.x * dissolve_keep;"));
+        // D292: opaque surfaces under the dissolve write the kept share as alpha, before
+        // the glass sets its own.
+        let keep = body
+            .find(
+                "if dissolve_on && (pbr.material.flags & ALPHA_MODE_BITS) == ALPHA_MODE_OPAQUE {
+        alpha = dissolve_keep;",
+            )
+            .expect("D292 alpha write");
+        assert!(keep < body.find("alpha = glass.x * dissolve_keep;").unwrap());
+        assert!(body.contains("const ALPHA_MODE_BITS: u32 = 7u << 29u;"));
         assert!(body.contains("vec4<f32>(rgb, alpha)"));
         // D287: the encoded colour times the alpha plus the specular, through the blend,
         // and the glass's lit colour without the gloss term.

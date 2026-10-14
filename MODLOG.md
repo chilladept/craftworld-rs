@@ -1,5 +1,15 @@
 # Development log
 
+## 2026-10-14 - D292 the glow on the dissolve's line
+
+Pod picture PR 19, viewer only. The game's halo around the tent's green line is a post pass (FOUND, frame 5247):
+the tent writes alpha = t, a half-size pass takes 0.7 x (1 - a) x colour, two 9-tap blurs at a quarter size spread
+it (1.38 per pass) and the final pass adds it. The viewer's opaque surfaces now write the dissolve's kept share as
+alpha, and a new full-screen chain on the main camera (`glow_post.rs`, after the main passes, before egui) does
+the same in the game's encoded values, only while a dissolve is on (`--no-edge-glow` turns it off). The final
+pass's x1.2998 is not copied. In use at 600, the halo reaches about 14 px on both sides of the line, about 1.5 to
+2 times `open-t1`'s (0.7 kept, FOUND); frames without a dissolve are unchanged. `docs/level-scripts.md` part 43.
+
 ## 2026-10-14 - D291 the dissolve's band mixed in the game's output
 
 Pod picture PR 18, viewer only. The tent's shader (`pod_card_edge`, FOUND) mixes its flat colour and its lit colour
