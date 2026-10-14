@@ -1,5 +1,17 @@
 # Development log
 
+## 2026-10-14 - D290 the glass's blend per channel
+
+Pod picture PR 17, viewer only. Part 38's "left panel twice the game's share over a darker room" was a measuring
+error: its room came from the planets-only still, which shows other pixels behind that panel; with the room of
+the same closed run the share and the room are within error of the game's, and the game's left share is about
+twice its right one by design (the sun lights the left panel) (MEASURED). What was left was the blend's one
+transmittance for three channels. The glass now writes the secant per channel through dual-source blending
+(colour One, OneMinusSrc1; its own pipeline and a copy of the shader with `enable dual_source_blending;`), with
+the one-T blend kept where the device lacks the feature. Closed Pod at 600 under the level lighting: the right
+panel (60.5, 82.8, 93.6) is now (64.0, 82.3, 89.4) against the game's (65.9, 83.5, 90.3); frames without glass
+are unchanged. `docs/level-scripts.md` part 41.
+
 ## 2026-10-14 - D289 the script camera's smoothing step as the game's
 
 Pod picture PR 16, script VM only. `Math.Smooth3D__rrrff` now runs the game's step, read from the EBOOT (0x5fed34,

@@ -13,15 +13,46 @@
 //! (docs/d189-mixed-uv-graphs.md); graph textures 0..2 reuse bindings 100/103/105.
 //! D278: a non-zero `dissolve` plane cuts the fragments above a line and tints a band
 //! under it (the Pod tent's change-over; docs/level-scripts.md part 29, `pod_dissolve.rs`).
+//! D290: the glass draws through dual-source blending where the device has it (one
+//! transmittance per channel); without it, the D287 blend with one T stays.
 use bevy::{
-    pbr::{ExtendedMaterial, MaterialExtension},
+    mesh::MeshVertexBufferLayoutRef,
+    pbr::{ExtendedMaterial, MaterialExtension, MaterialExtensionKey, MaterialExtensionPipeline},
     prelude::*,
-    render::render_resource::AsBindGroup,
+    render::{
+        render_resource::{
+            AsBindGroup, BlendComponent, BlendFactor, BlendOperation, RenderPipelineDescriptor,
+            SpecializedMeshPipelineError,
+        },
+        renderer::RenderDevice,
+        settings::WgpuFeatures,
+        RenderApp, RenderStartup,
+    },
     shader::{Shader, ShaderRef},
 };
+use std::sync::atomic::{AtomicBool, Ordering};
 pub type ViewerMaterial = ExtendedMaterial<StandardMaterial, SecondTexture>;
 const SHADER: Handle<Shader> = bevy::asset::uuid_handle!("c1f79fb1-32b7-4f6f-bef7-71a8c677f05c");
+/// D290: the same shader with `enable dual_source_blending;`, used by the glass's pipeline
+/// only, and only when the device has the feature.
+const GLASS_DUAL_SHADER: Handle<Shader> =
+    bevy::asset::uuid_handle!("5b0d6f4e-2c1a-4e8b-9f3d-7a6c2e1b0d90");
+/// D290: whether the render device has `DUAL_SOURCE_BLENDING` (set at render start-up).
+static DUAL_SOURCE: AtomicBool = AtomicBool::new(false);
+/// D290: the pipeline key of the extension: whether the material is glass.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct SecondTextureKey {
+    glass: bool,
+}
+impl From<&SecondTexture> for SecondTextureKey {
+    fn from(material: &SecondTexture) -> Self {
+        Self {
+            glass: material.glass.x > 0.,
+        }
+    }
+}
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone, Default)]
+#[bind_group_data(SecondTextureKey)]
 pub struct SecondTexture {
     #[texture(100)]
     #[sampler(101)]
@@ -151,6 +182,54 @@ impl MaterialExtension for SecondTexture {
     fn fragment_shader() -> ShaderRef {
         SHADER.into()
     }
+    /// D290: the glass's main-pass pipeline takes the dual-source shader and blends the
+    /// colour as One + OneMinusSrc1 (a transmittance per channel); everything else, and
+    /// the glass on a device without the feature, keeps the pipeline as it was.
+    fn specialize(
+        _pipeline: &MaterialExtensionPipeline,
+        descriptor: &mut RenderPipelineDescriptor,
+        _layout: &MeshVertexBufferLayoutRef,
+        key: MaterialExtensionKey<Self>,
+    ) -> Result<(), SpecializedMeshPipelineError> {
+        if !key.bind_group_data.glass || !DUAL_SOURCE.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        let Some(fragment) = descriptor.fragment.as_mut() else {
+            return Ok(());
+        };
+        if fragment.shader != SHADER || fragment.targets.len() != 1 {
+            return Ok(());
+        }
+        let Some(Some(target)) = fragment.targets.first_mut() else {
+            return Ok(());
+        };
+        let Some(blend) = target.blend.as_mut() else {
+            return Ok(());
+        };
+        blend.color = glass_dual_color_blend();
+        fragment.shader = GLASS_DUAL_SHADER;
+        fragment.shader_defs.push("GLASS_DUAL_SOURCE".into());
+        Ok(())
+    }
+}
+/// D290: the glass's colour blend with dual sources: out = S + (1 - src1) D, src1 = 1 - t.
+fn glass_dual_color_blend() -> BlendComponent {
+    BlendComponent {
+        src_factor: BlendFactor::One,
+        dst_factor: BlendFactor::OneMinusSrc1,
+        operation: BlendOperation::Add,
+    }
+}
+/// D290: notes whether the device can blend with two sources.
+fn note_dual_source(device: Res<RenderDevice>) {
+    let on = device
+        .features()
+        .contains(WgpuFeatures::DUAL_SOURCE_BLENDING);
+    DUAL_SOURCE.store(on, Ordering::Relaxed);
+    info!(
+        "D290: glass dual-source blending {}",
+        if on { "on" } else { "off (one T)" }
+    );
 }
 pub fn material(base: StandardMaterial) -> ViewerMaterial {
     ViewerMaterial {
@@ -394,6 +473,7 @@ pub fn srgb_decode(v: f32) -> f32 {
 /// OneMinusSrcAlpha). S and T are the secant of the game's blend, in linear light,
 /// through the destinations [`GLASS_SECANT`]: T the mean of the three slopes, S the mean
 /// of the two points' residuals. Returns (S, 1 - T), the premultiplied colour and alpha.
+/// D290: the fallback, used only where the device has no dual-source blending.
 #[cfg(test)]
 pub fn glass_blend(s: [f32; 3], a: f32) -> ([f32; 3], f32) {
     let [d1, d2] = GLASS_SECANT;
@@ -403,6 +483,20 @@ pub fn glass_blend(s: [f32; 3], a: f32) -> ([f32; 3], f32) {
     let t = ((0..3).map(|i| (y2[i] - y1[i]) / (l2 - l1)).sum::<f32>() / 3.).clamp(0., 1.);
     let c = std::array::from_fn(|i| (0.5 * ((y1[i] - t * l1) + (y2[i] - t * l2))).max(0.));
     (c, 1. - t)
+}
+/// D290 (mirrors the shader's `glass_secant`): the same secant per channel, through
+/// dual-source blending, `out = S + (1 - src1) D`: `t_c = clamp((y2_c - y1_c) / (l2 -
+/// l1), 0, 1)` and `S_c = max(0.5 ((y1_c - t_c l1) + (y2_c - t_c l2)), 0)`. Returns (S,
+/// 1 - t), the colour (source 0) and the per-channel second source.
+#[cfg(test)]
+pub fn glass_blend_per_channel(s: [f32; 3], a: f32) -> ([f32; 3], [f32; 3]) {
+    let [d1, d2] = GLASS_SECANT;
+    let (l1, l2) = (srgb_decode(d1), srgb_decode(d2));
+    let y = |d: f32| s.map(|c| srgb_decode(c + (1. - a) * d));
+    let (y1, y2) = (y(d1), y(d2));
+    let t: [f32; 3] = std::array::from_fn(|i| ((y2[i] - y1[i]) / (l2 - l1)).clamp(0., 1.));
+    let c = std::array::from_fn(|i| (0.5 * ((y1[i] - t[i] * l1) + (y2[i] - t[i] * l2))).max(0.));
+    (c, t.map(|t| 1. - t))
 }
 /// D286: the glass's opacity, none when the material is not glass.
 #[cfg(test)]
@@ -494,6 +588,19 @@ impl Plugin for DualPlugin {
                 Shader::from_wgsl(SOURCE, "authored-dual-preview.wgsl"),
             )
             .unwrap();
+        app.world_mut()
+            .resource_mut::<Assets<Shader>>()
+            .insert(
+                GLASS_DUAL_SHADER.id(),
+                Shader::from_wgsl(
+                    format!("enable dual_source_blending;\n{SOURCE}"),
+                    "authored-dual-preview-glass.wgsl",
+                ),
+            )
+            .unwrap();
+        if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
+            render_app.add_systems(RenderStartup, note_dual_source);
+        }
     }
 }
 // Independently authored preview shader; imported Bevy interfaces are pinned by Cargo.lock.
@@ -680,7 +787,8 @@ fn srgb_decode(e: vec3<f32>) -> vec3<f32> {
 // D287: the game blends the glass in its encoded output, out = s + (1 - a) d. This
 // target blends linear light, out = S + T D (One, OneMinusSrcAlpha, one T), so S and T
 // are the secant of the game's blend through the encoded destinations 0.35 and 0.75:
-// T the mean of the three slopes, S the mean residual. Returns (S, 1 - T).
+// T the mean of the three slopes, S the mean residual. Returns (S, 1 - T). D290: the
+// fallback, used only where the device has no dual-source blending.
 fn glass_blend(s: vec3<f32>, a: f32) -> vec4<f32> {
     let l1 = srgb_decode(vec3<f32>(0.35));
     let l2 = srgb_decode(vec3<f32>(0.75));
@@ -691,6 +799,29 @@ fn glass_blend(s: vec3<f32>, a: f32) -> vec4<f32> {
     let c = max(0.5 * ((y1 - t * l1) + (y2 - t * l2)), vec3<f32>(0.0));
     return vec4<f32>(c, 1.0 - t);
 }
+// D290: the same secant per channel, for dual-source blending (out = S + (1 - src1) D):
+// t the three slopes, each clamped to 0..1, S the residuals. Returns S and the cover 1 - t.
+struct GlassSecant {
+    color: vec3<f32>,
+    cover: vec3<f32>,
+}
+fn glass_secant(s: vec3<f32>, a: f32) -> GlassSecant {
+    let l1 = srgb_decode(vec3<f32>(0.35));
+    let l2 = srgb_decode(vec3<f32>(0.75));
+    let y1 = srgb_decode(s + (1.0 - a) * 0.35);
+    let y2 = srgb_decode(s + (1.0 - a) * 0.75);
+    let t = clamp((y2 - y1) / (l2 - l1), vec3<f32>(0.0), vec3<f32>(1.0));
+    let c = max(0.5 * ((y1 - t * l1) + (y2 - t * l2)), vec3<f32>(0.0));
+    return GlassSecant(c, vec3<f32>(1.0) - t);
+}
+#ifdef GLASS_DUAL_SOURCE
+// D290: the glass's two blend sources at location 0: the colour and the cover 1 - t
+// per channel (1 = opaque).
+struct GlassOutput {
+    @location(0) @blend_src(0) color: vec4<f32>,
+    @location(0) @blend_src(1) cover: vec4<f32>,
+}
+#endif
 // Facing normal, tilted by the bump offset in a cotangent frame built from the
 // position and UV1 derivatives (LBP mode with a bound bump map only).
 fn lit_normal(shading: vec3<f32>, face: vec3<f32>, to_view: vec3<f32>, bump: BumpInput) -> vec3<f32> {
@@ -742,7 +873,12 @@ fn facing_normal(shading: vec3<f32>, face: vec3<f32>, to_view: vec3<f32>) -> vec
     return n;
 }
 @fragment
-fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> FragmentOutput {
+fn fragment(in: VertexOutput, @builtin(front_facing) front: bool)
+#ifdef GLASS_DUAL_SOURCE
+    -> GlassOutput {
+#else
+    -> FragmentOutput {
+#endif
     let pbr = pbr_input_from_standard_material(in, front);
     // Screen-space derivatives stay in uniform control flow.
     let dp1 = dpdx(in.world_position.xyz);
@@ -945,15 +1081,32 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> FragmentOut
     // D286: the glass's alpha = opacity x the dissolve's kept share; the rest alpha 1.
     // D287: as the game, the encoded colour times that alpha plus the specular, blended
     // as in encoded space (glass_blend), written premultiplied.
+    // D290: with dual sources (the glass's pipeline only) a transmittance per channel.
     var alpha = 1.0;
+#ifdef GLASS_DUAL_SOURCE
+    var cover = vec3<f32>(1.0);
+#endif
     if glass.x > 0.0 {
         alpha = glass.x * dissolve_keep;
+#ifdef GLASS_DUAL_SOURCE
+        let secant = glass_secant(alpha * srgb_encode(rgb) + glass_spec, alpha);
+        rgb = secant.color;
+        cover = secant.cover;
+        alpha = 1.0;
+#else
         let blended = glass_blend(alpha * srgb_encode(rgb) + glass_spec, alpha);
         rgb = blended.rgb;
         alpha = blended.a;
+#endif
     }
+#ifdef GLASS_DUAL_SOURCE
+    var out: GlassOutput;
+    out.color = main_pass_post_lighting_processing(pbr, vec4<f32>(rgb, alpha));
+    out.cover = vec4<f32>(cover, 1.0);
+#else
     var out: FragmentOutput;
     out.color = main_pass_post_lighting_processing(pbr, vec4<f32>(rgb, alpha));
+#endif
     return out;
 }
 "#;
@@ -1215,15 +1368,198 @@ fn main_pass_post_lighting_processing(p: PbrInputStub, c: vec4<f32>) -> vec4<f32
             "{c:?} {alpha}"
         );
     }
-    /// D121: the authored shader (all `#ifdef` blocks enabled, imports stubbed) parses
-    /// and validates headlessly. Bevy's own composition is exercised only at run time.
+    /// D290: per channel the blend is exact at both secant destinations, also for a tinted
+    /// glass colour, where one T for the three channels is not.
+    #[test]
+    fn d290_per_channel_secant_is_exact_at_both_points() {
+        let a = 0.2;
+        for s in [
+            [0.0; 3],
+            [0.03, 0.06, 0.08],
+            [0.0, 0.05, 0.15],
+            [0.07, 0.09, 0.09],
+        ] {
+            for d in super::GLASS_SECANT {
+                let v = d290_viewer(s, a, [d; 3]);
+                for i in 0..3 {
+                    let game = d287_game(s[i], a, d);
+                    assert!((v[i] - game).abs() < 1e-4, "s {s:?} d {d}: {v:?}");
+                }
+            }
+        }
+        // One T misses a tinted colour at the same points.
+        let s = [0.0, 0.05, 0.15];
+        let d = super::GLASS_SECANT[0];
+        let v = d287_viewer(s, a, [d; 3]);
+        assert!((v[0] - d287_game(s[0], a, d)).abs() > 3. / 255., "{v:?}");
+    }
+    /// D290: on a grey glass colour the three slopes are equal, so the per-channel blend
+    /// is the D287 one: the same colour, and the cover equal to the alpha.
+    #[test]
+    fn d290_grey_glass_matches_the_mean_t_blend() {
+        for s in [0.0, 0.05, 0.1, 0.3] {
+            for a in [0.1, 0.2, 0.5] {
+                let (c1, alpha) = super::glass_blend([s; 3], a);
+                let (c2, cover) = super::glass_blend_per_channel([s; 3], a);
+                for i in 0..3 {
+                    assert!((c1[i] - c2[i]).abs() < 1e-6, "s {s} a {a}");
+                    assert!((cover[i] - alpha).abs() < 1e-6, "s {s} a {a}");
+                }
+            }
+        }
+    }
+    /// D290: the Pod's closed right panel (pod-glass notes 2, game share and room on the
+    /// game's mask, of 255): per channel within 1 level of the game's s + 0.8 d, where one
+    /// T is 4 to 5 off in red and blue; the left panel within 1.5 either way.
+    #[test]
+    fn d290_pod_panels_follow_the_game_per_channel() {
+        let to = |v: [f32; 3]| v.map(|c| c / 255.);
+        for (s, d, one_t_off) in [
+            (to([7.3, 14.7, 20.8]), to([73.2, 86.0, 86.9]), true),
+            (to([17.3, 21.9, 22.9]), to([145.1, 144.5, 110.7]), false),
+        ] {
+            let v = d290_viewer(s, 0.2, d);
+            let one = d287_viewer(s, 0.2, d);
+            for i in 0..3 {
+                let game = d287_game(s[i], 0.2, d[i]);
+                assert!((v[i] - game).abs() < 1.5 / 255., "{i}: {v:?}");
+            }
+            if one_t_off {
+                assert!(
+                    (one[0] - d287_game(s[0], 0.2, d[0])).abs() > 4. / 255.,
+                    "{one:?}"
+                );
+                assert!(
+                    (one[2] - d287_game(s[2], 0.2, d[2])).abs() > 4. / 255.,
+                    "{one:?}"
+                );
+            }
+        }
+    }
+    /// D290: over the destinations 0.2 to 1 and tinted glass colours the per-channel blend
+    /// is on average within 1.5 / 255 of the game's (one T: 2.6) and at worst 9 (one T: 25).
+    #[test]
+    fn d290_per_channel_blend_beats_one_t_over_the_room() {
+        let a = 0.2;
+        let (mut sum, mut one_sum, mut n, mut worst) = (0., 0., 0., 0f32);
+        for s in [
+            [0.07, 0.09, 0.09],
+            [0.03, 0.06, 0.08],
+            [0.0, 0.0, 0.0],
+            [0.15, 0.15, 0.15],
+            [0.0, 0.05, 0.15],
+        ] {
+            for k in 0..=40 {
+                let d = 0.2 + 0.8 * k as f32 / 40.;
+                let v = d290_viewer(s, a, [d; 3]);
+                let one = d287_viewer(s, a, [d; 3]);
+                for i in 0..3 {
+                    let err = (v[i] - d287_game(s[i], a, d)).abs();
+                    worst = worst.max(err);
+                    sum += err;
+                    one_sum += (one[i] - d287_game(s[i], a, d)).abs();
+                    n += 1.;
+                }
+            }
+        }
+        assert!(sum / n < 1.5 / 255., "mean {}", sum / n * 255.);
+        assert!(
+            one_sum / n > 2.5 / 255.,
+            "one T mean {}",
+            one_sum / n * 255.
+        );
+        assert!(worst < 9. / 255., "worst {}", worst * 255.);
+    }
+    /// D290: the per-channel output is a valid pair (colour at least 0, cover in 0..1),
+    /// and a fully dissolved glass leaves the room as is.
+    #[test]
+    fn d290_per_channel_output_is_valid() {
+        for s in [[0.0, 0.1, 0.5], [1.0, 1.5, 0.0], [0.2; 3]] {
+            for a in [0.0, 0.1, 0.2, 1.0] {
+                let (c, cover) = super::glass_blend_per_channel(s, a);
+                assert!(cover.iter().all(|v| (0. ..=1.).contains(v)), "{s:?} {a}");
+                assert!(c.iter().all(|&v| v >= 0.), "{s:?} {a}: {c:?}");
+            }
+        }
+        let (c, cover) = super::glass_blend_per_channel([0.; 3], 0.);
+        assert!(
+            c.iter().chain(&cover).all(|v| v.abs() < 1e-5),
+            "{c:?} {cover:?}"
+        );
+    }
+    /// D290: only glass keys the dual-source pipeline, and its colour blend is One +
+    /// OneMinusSrc1 (out = S + t D).
+    #[test]
+    fn d290_glass_keys_the_dual_source_pipeline() {
+        use bevy::prelude::*;
+        use bevy::render::render_resource::{BlendFactor, BlendOperation};
+        let mut m = super::material(StandardMaterial::default());
+        assert!(!super::SecondTextureKey::from(&m.extension).glass);
+        super::enable_glass(&mut m, 0.2, 0.117_65, 6.);
+        assert!(super::SecondTextureKey::from(&m.extension).glass);
+        let blend = super::glass_dual_color_blend();
+        assert_eq!(blend.src_factor, BlendFactor::One);
+        assert_eq!(blend.dst_factor, BlendFactor::OneMinusSrc1);
+        assert_eq!(blend.operation, BlendOperation::Add);
+    }
+    /// D290: what the viewer's dual-source blend of the per-channel output gives, encoded.
+    fn d290_viewer(s: [f32; 3], a: f32, d: [f32; 3]) -> [f32; 3] {
+        let (c, cover) = super::glass_blend_per_channel(s, a);
+        std::array::from_fn(|i| {
+            super::srgb_encode(c[i] + (1. - cover[i]) * super::srgb_decode(d[i]))
+        })
+    }
+    /// D290: the shader with `#ifdef`s resolved: every define on but `GLASS_DUAL_SOURCE`,
+    /// which follows `dual`; `#import` lines dropped, the bind group fixed at 2.
+    fn preprocess(dual: bool) -> String {
+        let mut active = vec![true];
+        let mut body = String::new();
+        for line in super::SOURCE.lines() {
+            let t = line.trim_start();
+            if let Some(def) = t.strip_prefix("#ifdef ") {
+                let on = def.trim() != "GLASS_DUAL_SOURCE" || dual;
+                let parent = *active.last().unwrap();
+                active.push(parent && on);
+            } else if t.starts_with("#else") {
+                let parent = active[active.len() - 2];
+                let now = active.last_mut().unwrap();
+                *now = parent && !*now;
+            } else if t.starts_with("#endif") {
+                active.pop();
+            } else if t.starts_with('#') {
+                assert!(t.starts_with("#import"), "{t}");
+            } else if *active.last().unwrap() {
+                body += &(line.replace("#{MATERIAL_BIND_GROUP}", "2") + "\n");
+            }
+        }
+        assert_eq!(active.len(), 1);
+        body
+    }
+    /// D290: the glass's dual-source variant parses and validates with the extension on.
+    #[test]
+    fn d290_dual_source_variant_validates() {
+        let body = preprocess(true);
+        assert!(body.contains("@location(0) @blend_src(1) cover: vec4<f32>,"));
+        assert!(body.contains("glass_secant(alpha * srgb_encode(rgb) + glass_spec, alpha)"));
+        assert!(body.contains("out.cover = vec4<f32>(cover, 1.0);"));
+        assert!(!body.contains("glass_blend(alpha * srgb_encode(rgb)"));
+        let source = format!("enable dual_source_blending;\n{STUBS}{body}");
+        let module = naga::front::wgsl::parse_str(&source)
+            .unwrap_or_else(|e| panic!("{}", e.emit_to_string(&source)));
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .unwrap();
+    }
+    /// D121: the authored shader (all `#ifdef` blocks enabled but D290's dual source,
+    /// imports stubbed) parses and validates headlessly. Bevy's own composition is
+    /// exercised only at run time.
     #[test]
     fn authored_shader_validates_with_every_branch_enabled() {
-        let body: String = super::SOURCE
-            .lines()
-            .filter(|l| !l.trim_start().starts_with('#'))
-            .map(|l| l.replace("#{MATERIAL_BIND_GROUP}", "2") + "\n")
-            .collect();
+        let body = preprocess(false);
+        assert!(!body.contains("@blend_src"));
         assert!(body.contains("lit_normal(shading, face, pbr.V, bump)"));
         assert!(body.contains("preview_light(n, pbr.V, shadow, ao, baked)"));
         assert!(body.contains("gloss_term(n, pbr.V, factor, spec_tint, shadow * baked)"));

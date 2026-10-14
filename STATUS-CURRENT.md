@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D289
+# Current state (overwrite each milestone) — after D290
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -11,7 +11,31 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D289 the script camera's smoothing step as the game's (2026-10-14)
+## Latest: D290 the glass's blend per channel (2026-10-14)
+- "Pod picture" PR 17, viewer only (`docs/level-scripts.md` part 41). MEASURED (closed Pod, tick
+  600, level lighting, the room from a probe with the glass clear): part 38's left-panel "twice
+  the game's share over a darker room" was the planets-only still's room (other pixels behind
+  that panel); the real room (142.7, 142.2, 108.2) and share (15.0, 19.7, 22.1) are within error
+  of the game's (145.1, 144.5, 110.7), (17.3, 21.9, 22.9). The game's left share is about twice
+  its right by design (the sun lights the left panel, N.L 0.52). Part 38's lines corrected.
+- Viewer, glass GUID 0x1d14c only: the secant of the encoded blend per channel (t_c, S_c),
+  written as two blend sources (S, 1) and (1 - t, 1) with the colour blend One + OneMinusSrc1;
+  a pipeline key marks the glass, which alone takes a copy of the shader with `enable
+  dual_source_blending;`. Bevy 0.19.1 / wgpu 29 already asks for every adapter feature; without
+  `DUAL_SOURCE_BLENDING` the glass keeps the one-T blend (D287).
+- MEASURED (`local-analysis/rscript/stage6/shots/d290-*`, D289 build against this one): planets
+  at 600 with the pod camera and Da Vinci (0001e786) equal; the closed Pod changes 377,445
+  pixels, all inside the glass. Panel means (left; right): before (129.2, 133.5, 108.6); (60.5,
+  82.8, 93.6), now (129.6, 133.4, 107.8); (64.0, 82.3, 89.4), game (133.4, 137.6, 111.5); (65.9,
+  83.5, 90.3).
+- Tests: `d290_*` (seven); the D287 tests stay on the fallback; the shader validation resolves
+  the `#ifdef`s.
+  fmt, CI clippy, CI tests, `cargo check` of both viewers and the viewer's clippy pass; viewer
+  tests 104 pass, `sackboy_play::tests::input_script_steps` fails as on main.
+- Next: the left panel's remaining (-4, -4, -4) (room 0.8 x -2.4 plus the bump, within error);
+  `Smooth2D` and the scalar `Smooth` from the EBOOT; the change-over stills against `open-t1`.
+
+## Before: D289 the script camera's smoothing step as the game's (2026-10-14)
 - "Pod picture" PR 16, script VM only (`docs/level-scripts.md` part 40). FOUND (EBOOT 01.33,
   `native_Smooth3D` 0x5fed34 -> core 0x3905b8 -> 1-D step 0x38ef7c): the velocity is projected on
   the direction to the target, clamped to the top speed (arg 5), and one fixed step of 1.0 of a
