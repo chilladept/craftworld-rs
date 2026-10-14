@@ -1528,11 +1528,12 @@ fn follow_dissolve(
         None => "none yet".to_string(),
     };
     println!(
-        "Pod tent dissolve at tick {}: value {v:.2}, {written} draw entities; cut above level y {:.1} (camera y {camera_y:.1} + {} - {} x value), flat colour {colour:.3?}; mask {preloaded} {}; the script's mask GUID: {same}; {uv}",
+        "Pod tent dissolve at tick {}: value {v:.2}, {written} draw entities; cut above level y {:.1} (camera y {camera_y:.1} + {} - {} x value), flat colour {colour:.3?} (shown as display bytes {:?}); mask {preloaded} {}; the script's mask GUID: {same}; {uv}",
         play.scripts.ticks,
         crate::pod_dissolve::line_y(camera_y, v),
         crate::pod_dissolve::LINE_AT_ZERO,
         crate::pod_dissolve::LINE_FALL,
+        crate::pod_dissolve::shown_bytes(colour),
         mask.as_ref().map_or("not asked for", |m| m.note.as_str()),
     );
 }

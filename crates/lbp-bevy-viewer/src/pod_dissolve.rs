@@ -26,8 +26,12 @@
 //! mesh's raw UV0 (FOUND: the captured draws have an identity UV transform); which
 //! input of a draw bucket holds raw UV0 is [`uv0_source`].
 //!
+//! D285 (part 36): the flat colour is the pod's shape colour, which the script sets to
+//! the player's colour (FOUND, part 21), with its red, green and blue squared as the
+//! engine passes them to the shader ([`uniforms`]).
+//!
 //! Left out: the glass material's constant in place of its colour's green, the fog over
-//! the flat colour, the player's own colour as the flat colour (part 30).
+//! the flat colour.
 use crate::dual::Dissolve;
 use bevy::prelude::*;
 
@@ -119,6 +123,12 @@ pub fn world_plane(level_plane: Vec4, level_to_world: Mat4) -> Option<Vec4> {
     (back.is_finite() && plane.is_finite()).then_some(plane)
 }
 
+/// D285: the flat colour as the frame shows it, display bytes: the stored red, green
+/// and blue squared ([`uniforms`]). The default player colour gives (88, 192, 14).
+pub fn shown_bytes(colour: [f32; 3]) -> [u8; 3] {
+    colour.map(|c| (c.clamp(0., 1.).powi(2) * 255.).round() as u8)
+}
+
 /// The constants as the shader takes them (`dual::Dissolve::consts`).
 pub fn consts() -> Vec4 {
     Vec4::new(GREEN_RISE, BAND, FLAT_ABOVE, MASK_TILES)
@@ -127,8 +137,12 @@ pub fn consts() -> Vec4 {
 /// What the shader takes for change-over value `v`: the line as a plane in world
 /// space whose value is the height above the line in level units (so the band and the
 /// ragged edge keep their size under any scale of the level's root), the flat colour,
-/// and the mask's position coordinates. `colour` is the pod's shape colour as stored
-/// (INFERRED: a display value, so it is decoded to linear here and shows as it is).
+/// and the mask's position coordinates. `colour` is the pod's shape colour as stored.
+/// MEASURED (part 36): the game's shader takes each of its red, green and blue squared
+/// (the player's (150, 221, 60) arrives as (150/255)^2 and so on, alpha not squared)
+/// and mixes it in after the lit colour is encoded for display, so the frame shows the
+/// squares as display values: (88, 192, 14). Here the squares are decoded to linear,
+/// and the output's encoding shows them as the game's frame does.
 /// D284: `island` is `pod_mask` for the card materials (none for the glass); at `v` = 1
 /// the rule's last term is on.
 pub fn uniforms(
@@ -141,7 +155,7 @@ pub fn uniforms(
 ) -> Option<Dissolve> {
     let plane = |p: Vec4| world_plane(p, level_to_world);
     let tile = 1. / POSITION_TILE;
-    let [r, g, b] = colour.map(|c| c.clamp(0., 1.));
+    let [r, g, b] = colour.map(|c| c.clamp(0., 1.).powi(2));
     Some(Dissolve {
         plane: plane(Vec4::new(0., 1., 0., -line_y(camera_y, v)))?,
         colour: Color::srgb(r, g, b).to_linear().to_vec3(),
@@ -204,9 +218,10 @@ mod tests {
             assert!((d.mask_u.dot(w) - (p.x + p.z) / POSITION_TILE).abs() < 1e-2);
             assert!((d.mask_v.dot(w) - p.y / POSITION_TILE).abs() < 1e-2);
         }
-        // The flat colour is decoded: it shows as the stored value after the output's
-        // encoding. Black stays black.
-        assert!((d.colour.x - 1.).abs() < 1e-6 && (d.colour.y - 0.214).abs() < 1e-3);
+        // The flat colour is the square of the stored one, decoded: stored 0.5 shows as
+        // 0.25 after the output's encoding. Black stays black, 1 stays 1.
+        let shown = Color::srgb(0.25, 0.25, 0.25).to_linear().red;
+        assert!((d.colour.x - 1.).abs() < 1e-6 && (d.colour.y - shown).abs() < 1e-6);
         assert_eq!(d.colour.z, 0.);
         assert_eq!(d.consts, consts());
         assert!(uniforms(0.5, [0.; 3], 0., Mat4::ZERO, None, None).is_none());
@@ -278,6 +293,24 @@ mod tests {
         let d = d.unwrap();
         assert!(d.at_one && d.island.is_some());
         assert!((d.plane.dot(Vec4::new(0., camera_y - 400., 0., 1.))).abs() < 1e-3);
+    }
+
+    /// D285: the flat colour is the stored colour with red, green and blue squared
+    /// (MEASURED: the captured vc[4] for the player's (150, 221, 60) is
+    /// (0.346, 0.751, 0.055)), so the default player colour shows as (88, 192, 14).
+    #[test]
+    fn d285_pod_flat_colour_is_the_square_of_the_stored_colour() {
+        let stored = [150. / 255., 221. / 255., 60. / 255.];
+        let d = uniforms(0.5, stored, 0., Mat4::IDENTITY, None, None).unwrap();
+        let shown = Color::LinearRgba(LinearRgba::from_vec3(d.colour)).to_srgba();
+        let vc4 = [0.346_020_8, 0.751_111_2, 0.055_363_3];
+        for (s, e) in [shown.red, shown.green, shown.blue].into_iter().zip(vc4) {
+            assert!((s - e).abs() < 1e-4, "{s} {e}");
+        }
+        let bytes = [shown.red, shown.green, shown.blue].map(|c| (c * 255.).round() as u8);
+        assert_eq!(bytes, [88, 192, 14]);
+        assert_eq!(shown_bytes(stored), [88, 192, 14]);
+        assert_eq!(shown_bytes([1., 0.5, 0.]), [255, 64, 0]);
     }
 
     /// D284: the input that holds raw UV0 per draw bucket, by the route of its material:

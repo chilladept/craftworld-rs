@@ -4654,7 +4654,7 @@ fn d272_a_written_camera_stands_for_its_tick_and_the_world_thing_moves_the_level
 #[test]
 fn d273_the_pad_zone_the_engage_press_and_the_players_colour() {
     use lbp_runtime::POD_TRIGGER_CLASS;
-    use lbp_script_vm::natives::{PLACEHOLDER_PLAYER_COLOUR, START_BUTTON};
+    use lbp_script_vm::natives::{DEFAULT_PLAYER_COLOUR, START_BUTTON};
     // Thing 2: a circle trigger at x 100, radius 10 in a space scaled by 2, z 0.
     let mut vm = Vm::default();
     let mut host = Bindings::new(LevelWorld::from_things(&trigger_level(0)));
@@ -4765,7 +4765,8 @@ fn d273_the_pad_zone_the_engage_press_and_the_players_colour() {
     w.set_pad_buttons(0, START_BUTTON);
     assert_eq!(start(w), Ok(Value::Bool(true)));
 
-    // The colour: the record's word as (R, G, B, A) / 255; the placeholder until set.
+    // The colour: the record's word as (R, G, B, A) / 255; a new player's is palette
+    // entry 0, (150, 221, 60), until set.
     let colour = |w: &mut LevelWorld, t: Option<u32>| {
         let args = [Value::Thing(t)];
         match native(w, "Native", "GetPlayerColour__Q5Thing", &args) {
@@ -4773,8 +4774,12 @@ fn d273_the_pad_zone_the_engage_press_and_the_players_colour() {
             other => panic!("{other:?}"),
         }
     };
-    assert_eq!(w.player_records[0].colour, PLACEHOLDER_PLAYER_COLOUR);
-    assert_eq!(colour(w, Some(p)), [1.; 4]);
+    assert_eq!(w.player_records[0].colour, DEFAULT_PLAYER_COLOUR);
+    assert_eq!(DEFAULT_PLAYER_COLOUR, 0xff96_dd3c);
+    assert_eq!(
+        colour(w, Some(p)),
+        [150., 221., 60., 255.].map(|b: f32| b / 255.)
+    );
     w.player_records[0].colour = 0x8040_2010;
     w.player_records[1].colour = 0xff00_00ff;
     assert_eq!(

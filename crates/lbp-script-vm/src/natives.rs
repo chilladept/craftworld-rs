@@ -62,14 +62,17 @@ pub struct PlayerRecord {
     /// The player's colour, 0xAARRGGBB: what `Native.GetPlayerColour__Q5Thing` unpacks.
     /// FOUND (01.33, 0x139308, 0x15894c): the first of four 32-bit colours of an object
     /// the record points at (record +0x16c, object +0x4c). INFERRED: that object is the
-    /// player's profile. Who writes the colour and what a new profile holds were not
-    /// read, so the start value here is [`PLACEHOLDER_PLAYER_COLOUR`].
+    /// player's profile. A record starts with [`DEFAULT_PLAYER_COLOUR`], what a new
+    /// profile holds.
     pub colour: u32,
 }
 
-/// PLACEHOLDER, not a game value: the colour a [`PlayerRecord`] starts with (opaque
-/// white). The game's stored colour and its default per player were not established.
-pub const PLACEHOLDER_PLAYER_COLOUR: u32 = 0xffff_ffff;
+/// The colour a [`PlayerRecord`] starts with: (150, 221, 60), opaque. FOUND (01.33,
+/// 0x1589a8, given index 0 by both its callers 0x17ff90 and 0x18b388): a new profile
+/// takes entry 0 of the palette of the script class `PlayerColour` (12 entries), and
+/// this is that entry's primary colour. The viewer reads no profile, so every player
+/// has it unless `--player-colour` gives another.
+pub const DEFAULT_PLAYER_COLOUR: u32 = 0xff96_dd3c;
 
 impl Default for PlayerRecord {
     fn default() -> Self {
@@ -82,7 +85,7 @@ impl Default for PlayerRecord {
             multiplier_source: None,
             multiplier_visible: false,
             pad: None,
-            colour: PLACEHOLDER_PLAYER_COLOUR,
+            colour: DEFAULT_PLAYER_COLOUR,
         }
     }
 }
@@ -3429,8 +3432,12 @@ mod tests {
         assert_eq!(colour_vector(0x3366_99cc)[0], 0x66 as f32 / 255.);
         assert_eq!(
             PlayerRecord::default().colour,
-            PLACEHOLDER_PLAYER_COLOUR,
-            "a record starts with the placeholder"
+            DEFAULT_PLAYER_COLOUR,
+            "a record starts with palette entry 0"
+        );
+        assert_eq!(
+            colour_vector(DEFAULT_PLAYER_COLOUR),
+            [150. / 255., 221. / 255., 60. / 255., 1.]
         );
 
         // Action 8: bit 0x80 newly down, its context in both masks.

@@ -1,5 +1,16 @@
 # Development log
 
+## 2026-10-14 - D285 the player's default colour as the Pod's flat colour
+
+Pod picture PR 12, runtime and viewer. A player record now starts with the game's default colour, entry 0 of the
+script class `PlayerColour`'s palette, (150, 221, 60) (FOUND: a new profile is given index 0 of that table),
+in place of the white placeholder; `--player-colour` still overrides it. The Pod's flat colour reaches the shader
+with its red, green and blue squared (MEASURED in the captured draws), and the shader takes no root of it, so the
+viewer now squares the stored colour before the decode and the tent's line and traces show (88, 192, 14) as in
+the game's frame. Frames without the dissolve are unchanged byte for byte; 610 and 615 turn green. Over the 378
+levels the faulted Things stay 3 / 3 / 3 and only pod.bin's shape colour count changes. The owner reports a
+texture on the Pod's side walls where the game has clear glass (next). `docs/level-scripts.md` part 36.
+
 ## 2026-10-14 - D284 the Pod's second mask, by the mesh's own UV
 
 Pod picture PR 11, viewer only. The Pod tent's dissolve now has the card materials' second mask, `pod_mask.tex`:

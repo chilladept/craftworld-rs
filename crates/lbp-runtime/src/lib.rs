@@ -2305,7 +2305,8 @@ impl World for LevelWorld {
     /// without that record, the first record's. Here the Sackboys
     /// [`LevelWorld::add_player`] made have a number; any other Thing with a PYellowHead
     /// gets the first record's colour. No record at all: the game reads a word that was
-    /// not read; here [`lbp_script_vm::natives::PLACEHOLDER_PLAYER_COLOUR`].
+    /// not read; here [`lbp_script_vm::natives::DEFAULT_PLAYER_COLOUR`] (PLACEHOLDER
+    /// for that case: the default a new profile holds, not the word the game reads).
     fn player_colour(&mut self, thing: u32) -> Result<Option<u32>, String> {
         if !self.state(thing)?.parts.contains(&"YELLOWHEAD") {
             return Ok(None);
@@ -2316,7 +2317,7 @@ impl World for LevelWorld {
             .and_then(|p| self.player_records.iter().find(|r| r.number == p.number))
             .or(self.player_records.first());
         Ok(Some(record.map_or(
-            lbp_script_vm::natives::PLACEHOLDER_PLAYER_COLOUR,
+            lbp_script_vm::natives::DEFAULT_PLAYER_COLOUR,
             |r| r.colour,
         )))
     }

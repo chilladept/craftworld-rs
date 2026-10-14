@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D284
+# Current state (overwrite each milestone) — after D285
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -11,7 +11,34 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D284 the Pod's second mask, by the mesh's own UV (2026-10-14)
+## Latest: D285 the player's default colour as the Pod's flat colour (2026-10-14)
+- "Pod picture" PR 12, runtime and viewer (`docs/level-scripts.md` part 36). FOUND (01.33,
+  evidence only): a new profile takes entry 0 of the script class `PlayerColour`'s palette (12
+  entries; 0x1589a8 given index 0 by both callers); entry 0's primary is (150, 221, 60). The Pod
+  script sets the tent's shape colour from `GetPlayerColour(avatar)` (part 21).
+- Runtime: `lbp_script_vm::natives::DEFAULT_PLAYER_COLOUR = 0xff96dd3c` replaces the white
+  placeholder as a player record's start colour; `level_scripts --player-colour` still overrides.
+- Viewer: `pod_dissolve::uniforms` squares the stored rgb before the decode (MEASURED: the captured
+  vc[4] is exactly the squares of (150, 221, 60) / 255, alpha not squared, and the shader takes no
+  root of it), so the frame shows (88, 192, 14) as the game's does. The dissolve line prints the
+  display bytes.
+- MEASURED (`local-analysis/rscript/stage6/shots/d285-*`, base `d285-base-*` = d284 bytes): without
+  scripts, closed at 600, the planets level, 619 and 640 equal main's build; 610 and 615 (both
+  lightings) changed, the line and traces green. Edge pixels: viewer 615 median (88, 191, 14);
+  game `open-t1` median (84, 158, 24), (93, 180, 24) at the same brightness, a brighter glow
+  (121, 222, 36) the viewer does not draw.
+- MEASURED (378 levels, 60 ticks; plain / trigger visit / pulsed; `d285-play-all-*.json`): Things
+  stopped by a fault 3 / 3 / 3; plain equal to D274's in every value; with the visit only pod.bin's
+  shape colour now differs from the level file (one more level and Thing in `changed` and
+  `shape_colour`).
+- Tests: `d285_pod_flat_colour_is_the_square_of_the_stored_colour`, the start colour in
+  `d273_pod_computer_natives` and the runtime's `d273_*` play test. fmt, CI clippy, CI tests (612),
+  `cargo check` of both viewers and the viewer's clippy pass; viewer tests 89 pass,
+  `sackboy_play::tests::input_script_steps` fails as on main.
+- Next: the Pod's side walls show a texture where the game has clear glass (owner report; glass
+  material 0x1d14c drawn with a placeholder); the camera's timing.
+
+## Before: D284 the Pod's second mask, by the mesh's own UV (2026-10-14)
 - "Pod picture" PR 11, viewer only (`docs/level-scripts.md` part 35). The card materials'
   `pod_mask.tex` (0x1fbc7) is sampled at the mesh's raw UV0 (FOUND: identity UV transform in
   the captured draws): where its red is over one half the line stands one band higher, and at
