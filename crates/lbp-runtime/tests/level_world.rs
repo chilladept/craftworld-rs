@@ -5301,3 +5301,146 @@ fn d274_the_pod_computer_updates_its_video_after_the_things() {
     let t = level.tick_level(&mut vm, &mut host, 1000);
     assert_eq!((t.video_updates, t.thread_faults.len()), (0, 0));
 }
+
+/// `PodComputer` with `PerFrameUpdate__b(bool @4)` from `frame` and `UpdateVideo__`, which
+/// writes 7.
+fn d295_puter(frame: Vec<u64>) -> Script {
+    let mut s = d274_class(
+        "PodComputer",
+        lbp_runtime::POD_COMPUTER_PER_FRAME,
+        16,
+        frame,
+    );
+    s.strings_a
+        .push(lbp_runtime::POD_COMPUTER_UPDATE_VIDEO.into());
+    let begin = s.bytecode.len() as u32;
+    s.bytecode.extend([
+        u64::from(0x03u8) | 4 << 16 | 7 << 32, // r4 = 7
+        i(0xa2, 0, 0, 4, 0),                   // WRITE r4
+        i(0xa5, 0, 0, 0, 0),                   // RETURN
+    ]);
+    s.function_defs
+        .push(function(0, s.strings_a.len() as u32 - 1, begin, begin + 3));
+    s
+}
+
+/// A level whose world Thing (0) carries `PlanetsWorld` when `planets`, with the Lamp of
+/// [`level`] (`Update__` writes 1) and the pod computer of [`d295_puter`].
+fn d295_level(planets: bool, frame: Vec<u64>) -> (Vm, Bindings<LevelWorld>, LevelScripts) {
+    const WORLD: u32 = 0x2d09;
+    let write_1 = vec![
+        u64::from(0x03u8) | 4 << 16 | 1 << 32, // r4 = 1
+        i(0xa2, 0, 0, 4, 0),                   // WRITE r4
+        i(0xa5, 0, 0, 0, 0),                   // RETURN
+    ];
+    let mut vm = Vm::default();
+    vm.load(
+        d274_class("Lamp", lbp_runtime::UPDATE, 16, write_1),
+        Some(GUID),
+    );
+    vm.load(d295_puter(frame), Some(BASE));
+    vm.load(
+        d274_class(lbp_runtime::PLANETS_WORLD_CLASS, "Unused", 16, vec![]),
+        Some(WORLD),
+    );
+    let mut things = level();
+    if planets {
+        things[0].data.script = Some(ScriptPart {
+            script: Some(desc(WORLD)),
+            fields: vec![],
+        });
+    }
+    let mut host = Bindings::new(LevelWorld::from_things(&things));
+    assert_eq!(host.world.world, Some(0));
+    assert!(lbp_runtime::add_engine_objects(&mut vm, &mut host, 1000).is_empty());
+    let level = LevelScripts::new(&vm, &host.world);
+    (vm, host, level)
+}
+
+#[test]
+fn d295_the_pod_computer_steps_once_a_tick_in_the_planets_level_only() {
+    let write_arg = vec![
+        i(0xa2, 0, 0, 4, 0), // WRITE r4
+        i(0xa5, 0, 0, 0, 0), // RETURN
+    ];
+    assert_eq!(lbp_runtime::POD_COMPUTER_PER_FRAME, "PerFrameUpdate__b");
+    let (mut vm, mut host, mut level) = d295_level(true, write_arg.clone());
+    // The Things' part of a tick alone does not make the call.
+    let t = level.tick(&mut vm, &mut host, 1000);
+    assert_eq!((t.done, t.pod_computer_frames), (1, 0));
+    assert_eq!(host.world.written, ["Int(1)"]);
+    // A whole tick: once with false, after the Things and before the video call; not
+    // tied to "in use".
+    for n in 1..=3 {
+        host.world.pod_computer_in_use = n == 3;
+        let t = level.tick_level(&mut vm, &mut host, 1000);
+        assert_eq!((t.done, t.pod_computer_frames, t.video_updates), (1, 1, 1));
+        assert!(t.thread_faults.is_empty());
+        assert_eq!(
+            host.world.written[1 + 3 * (n - 1)..],
+            ["Int(1)", "Bool(false)", "Int(7)"]
+        );
+    }
+    // A level of a session makes its own call.
+    let t = level.tick_level_in_session(&mut vm, &mut host, 1000);
+    assert_eq!(t.pod_computer_frames, 1);
+    assert!(!level.pod_computer_frame_stopped);
+
+    // A level whose world script is not PlanetsWorld (the shell's): no step, the video
+    // call as before.
+    let (mut vm, mut host, mut level) = d295_level(false, write_arg);
+    host.world.pod_computer_in_use = true;
+    for _ in 0..2 {
+        let t = level.tick_level(&mut vm, &mut host, 1000);
+        assert_eq!((t.done, t.pod_computer_frames, t.video_updates), (1, 0, 1));
+    }
+    assert_eq!(host.world.written, ["Int(1)", "Int(7)", "Int(1)", "Int(7)"]);
+}
+
+#[test]
+fn d295_a_pod_computer_step_that_faults_is_not_made_again() {
+    let assert_false = vec![
+        u64::from(0x03u8) | 4 << 16, // r4 = 0
+        i(0xc2, 0, 0, 4, 0),         // ASSERT r4
+        i(0xa5, 0, 0, 0, 0),         // RETURN
+    ];
+    let (mut vm, mut host, mut level) = d295_level(true, assert_false);
+    let t = level.tick_level(&mut vm, &mut host, 1000);
+    assert_eq!(
+        (t.done, t.pod_computer_frames, t.thread_faults.len()),
+        (1, 0, 1)
+    );
+    assert!(t.thread_faults[0].starts_with("PodComputer PerFrameUpdate__b"));
+    assert!(level.pod_computer_frame_stopped && level.stopped.is_empty());
+    // The video call goes on; the step is not made or reported again.
+    assert_eq!(t.video_updates, 1);
+    for _ in 0..2 {
+        let t = level.tick_level(&mut vm, &mut host, 1000);
+        assert_eq!(
+            (
+                t.done,
+                t.pod_computer_frames,
+                t.video_updates,
+                t.thread_faults.len()
+            ),
+            (1, 0, 1, 0)
+        );
+    }
+}
+
+#[test]
+fn d295_the_build_and_message_queries_are_false() {
+    let mut w = LevelWorld::from_things(&level());
+    for (class, name) in [
+        ("Game", "IsMoveDemoBuild__"),
+        ("System", "IsE3__"),
+        ("System", "IsE3CrossplayDemo__"),
+        ("PodComputer", "IsSendingSetUserMessage__"),
+    ] {
+        assert_eq!(
+            native(&mut w, class, name, &[]),
+            Ok(Value::Bool(false)),
+            "{name}"
+        );
+    }
+}

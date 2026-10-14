@@ -1885,6 +1885,7 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
     pod.levels_with_a_planet = usize::from(!level.planets.is_empty());
     pod.video_updates = sum.video_updates;
     json["pod"] = pod.json();
+    json["pod"]["pod_computer_per_frame_calls"] = serde_json::json!(sum.pod_computer_frames);
     json["planets"] = serde_json::json!({
         "unit": "a planet Thing (class Earth or OrbitingMoon) after that tick: the point it is told to turn toward the camera (a placeholder while the host sets none), arrived, calls of its per-frame function, place and axis lengths of its world matrix in level units, the script's Spin, Pitch and SpinOffset in radians. Ticks 1, 226, 452 and the last",
         "after_tick": planets_after,
@@ -2021,6 +2022,16 @@ struct SessionSide<'a> {
     eye: Option<[f32; 3]>,
     camera_moving: bool,
     in_zone: bool,
+    /// Part 46: the step reports' planet entries, those that answered "arrived", the pod
+    /// computer's video calls and its per-frame steps, summed over the session; the first
+    /// thread faults (the pod computer's calls report theirs there).
+    planet_updates: usize,
+    planets_arrived: usize,
+    video_updates: usize,
+    pod_computer_frames: usize,
+    thread_faults: Vec<String>,
+    /// The planets world's view type and blend the path was last told.
+    view: Option<serde_json::Value>,
 }
 
 impl<'a> SessionSide<'a> {
@@ -2049,6 +2060,12 @@ impl<'a> SessionSide<'a> {
             eye: None,
             camera_moving: false,
             in_zone: false,
+            planet_updates: 0,
+            planets_arrived: 0,
+            video_updates: 0,
+            pod_computer_frames: 0,
+            thread_faults: Vec::new(),
+            view: None,
         }
     }
 
@@ -2059,16 +2076,49 @@ impl<'a> SessionSide<'a> {
                 self.first_faults.push(format!("thing {thing}: {f}"));
             }
         }
+        self.planet_updates += r.planet_updates;
+        self.planets_arrived += r.planets_arrived;
+        self.video_updates += r.video_updates;
+        self.pod_computer_frames += r.pod_computer_frames;
+        for f in &r.thread_faults {
+            if self.thread_faults.len() < MAX_FAULTS {
+                self.thread_faults.push(f.clone());
+            }
+        }
+    }
+
+    /// Part 46: the planets world's `ViewType` and `ViewTransition` (members of the
+    /// level's world script), or `None` in a level without them.
+    fn planets_view(&self) -> Option<serde_json::Value> {
+        let w = &self.host.world;
+        let world = w.things.get(w.world? as usize)?;
+        let members = world.members.as_ref()?;
+        let value = |name: &str| match members.get(name)? {
+            lbp_script_vm::Value::Int(i) => Some(serde_json::json!(i)),
+            lbp_script_vm::Value::Float(f) => Some(serde_json::json!(f)),
+            lbp_script_vm::Value::Bool(b) => Some(serde_json::json!(b)),
+            other => Some(serde_json::json!(format!("{other:?}"))),
+        };
+        let (view_type, transition) = (value("ViewType")?, value("ViewTransition")?);
+        Some(serde_json::json!({"view_type": view_type, "transition": transition}))
     }
 
     /// What changed in this level on the tick that just ended, for the path.
     fn events(&mut self, tick: u64, path: &mut Vec<serde_json::Value>) {
         let level = self.label;
+        let view = self.planets_view();
+        let view_changed = view != self.view;
+        if view_changed {
+            self.view.clone_from(&view);
+        }
         let mut say = |event: &str, value: serde_json::Value| {
             path.push(serde_json::json!({
                 "tick": tick, "level": level, "event": event, "value": value,
             }));
         };
+        if view_changed {
+            say("planets_view", serde_json::json!(view));
+        }
         let w = &self.host.world;
         let in_zone = self.avatar.is_some_and(|a| w.in_pad_zone(a));
         if in_zone != self.in_zone {
@@ -2117,7 +2167,13 @@ impl<'a> SessionSide<'a> {
         let mut unbound: Vec<_> = self.host.unbound.iter().collect();
         unbound.sort_by(|a, b| b.1.cmp(a.1));
         let pod_thing = w.pod_thing(true);
-        let mut pod = PodSums::of(w).json();
+        let mut sums = PodSums::of(w);
+        sums.planet_updates = self.planet_updates;
+        sums.planets_arrived = self.planets_arrived;
+        sums.levels_with_a_planet = usize::from(!self.scripts.planets.is_empty());
+        sums.video_updates = self.video_updates;
+        let mut pod = sums.json();
+        pod["pod_computer_per_frame_calls"] = serde_json::json!(self.pod_computer_frames);
         pod["at_end"] = serde_json::json!({
             "our_pod": w.our_pod,
             "pod_computer_in_use": w.pod_computer_in_use,
@@ -2137,6 +2193,7 @@ impl<'a> SessionSide<'a> {
             "stopped_by_fault": self.scripts.stopped.len(),
             "faults": self.faults,
             "first_faults": self.first_faults,
+            "first_thread_faults": self.thread_faults,
             "engine_object_faults": self.engine_faults,
             "threads_running_at_end": self.scripts.threads(),
             "unbound_natives": unbound

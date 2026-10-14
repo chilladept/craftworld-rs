@@ -2202,6 +2202,10 @@ impl World for LevelWorld {
     /// `Profile.HasPlayedLBP1AndUnlockedPod__` and `...UnlockedMoon__` are false
     /// (INFERRED: a profile without save data of the first game, as the fresh profile
     /// of the progression flags).
+    ///
+    /// D295, INFERRED: `Game.IsMoveDemoBuild__`, `System.IsE3__`,
+    /// `System.IsE3CrossplayDemo__` and `PodComputer.IsSendingSetUserMessage__` are false:
+    /// the retail game, and no user message being sent.
     fn state_query(&mut self, native: &str) -> Result<Value, String> {
         Ok(match native {
             "GameMessagingManager.Messaging_ShouldFilterMessageStrings__" => {
@@ -2229,6 +2233,10 @@ impl World for LevelWorld {
             | "Profile.HasPlayedLBP1AndUnlockedPod__"
             | "Profile.HasPlayedLBP1AndUnlockedMoon__" => Value::Bool(false),
             "Game.IsVcrPaused__" | "Game.IsPSNDemoBuild__" => Value::Bool(false),
+            "Game.IsMoveDemoBuild__"
+            | "System.IsE3__"
+            | "System.IsE3CrossplayDemo__"
+            | "PodComputer.IsSendingSetUserMessage__" => Value::Bool(false),
             "Game.IsTutorialLevel__" => Value::Bool(self.tutorial_level),
             "Game.CurrentLevelIsOurPod__" => Value::Bool(self.our_pod),
             "Game.GetPartyLeadersPlayerNumber__" => {
@@ -2415,11 +2423,25 @@ fn run_on_object(
     function: &str,
     budget: u64,
 ) -> Result<(), String> {
+    run_on_object_with(vm, host, class, object, function, &[], budget)
+}
+
+/// [`run_on_object`] with argument registers after `this`.
+fn run_on_object_with(
+    vm: &mut Vm,
+    host: &mut dyn Host,
+    class: ClassId,
+    object: ObjectId,
+    function: &str,
+    args: &[(u16, Value)],
+    budget: u64,
+) -> Result<(), String> {
     if !vm.has_code(class, function) {
         return Ok(());
     }
     let mut b = budget;
-    let regs = [(0, Value::Object(Some(object)))];
+    let mut regs = vec![(0, Value::Object(Some(object)))];
+    regs.extend_from_slice(args);
     match vm.start_registers(host, class, function, &regs, &mut b) {
         Ok(Step::Done(_)) => Ok(()),
         Ok(Step::Yielded(_)) => Err(format!("{function} yielded")),
@@ -2840,6 +2862,10 @@ pub const FRAME_ENTRIES: &[FrameEntry] = &[
 /// frame ([`LevelScripts::update_video`]).
 pub const POD_COMPUTER_UPDATE_VIDEO: &str = "UpdateVideo__";
 
+/// The function of the engine's PodComputer script object that the engine calls once a
+/// frame with one bool ([`LevelScripts::pod_computer_frame`]).
+pub const POD_COMPUTER_PER_FRAME: &str = "PerFrameUpdate__b";
+
 /// The per-tick entry for a class, if it has one other than [`UPDATE`].
 pub fn frame_entry(vm: &Vm, class: ClassId) -> Option<&'static FrameEntry> {
     let name = vm.class_name(class);
@@ -2878,6 +2904,9 @@ pub struct StepReport {
     /// Calls of the pod computer's per-frame video function that ran to their end
     /// ([`LevelScripts::update_video`]).
     pub video_updates: usize,
+    /// Calls of the pod computer's per-frame step that ran to their end
+    /// ([`LevelScripts::pod_computer_frame`]).
+    pub pod_computer_frames: usize,
 }
 
 /// Counts of one or more switch passes. Unit: a visited output target (one Thing on one
@@ -2951,6 +2980,7 @@ impl StepReport {
         self.planet_updates += other.planet_updates;
         self.planets_arrived += other.planets_arrived;
         self.video_updates += other.video_updates;
+        self.pod_computer_frames += other.pod_computer_frames;
     }
 
     fn add(&mut self, thing: u32, o: Outcome) {
@@ -2997,6 +3027,9 @@ pub struct LevelScripts {
     /// The pod computer's per-frame video function faulted or yielded: it is not called
     /// again ([`LevelScripts::update_video`]).
     pub video_update_stopped: bool,
+    /// The pod computer's per-frame step faulted or yielded: it is not called again
+    /// ([`LevelScripts::pod_computer_frame`]).
+    pub pod_computer_frame_stopped: bool,
 }
 
 impl LevelScripts {
@@ -3009,6 +3042,7 @@ impl LevelScripts {
             ticks: 0,
             planets: BTreeMap::new(),
             video_update_stopped: false,
+            pod_computer_frame_stopped: false,
         }
     }
 
@@ -3046,6 +3080,82 @@ impl LevelScripts {
             }
         }
         order
+    }
+
+    /// The level's world script is an instance of [`PLANETS_WORLD_CLASS`].
+    fn is_planets_level(&self, vm: &Vm, world: &LevelWorld) -> bool {
+        let Some(thing) = world.world else {
+            return false;
+        };
+        let found = self.instances.binary_search_by_key(&thing, |i| i.thing);
+        found
+            .ok()
+            .and_then(|i| self.instances[i].class)
+            .is_some_and(|c| vm.class_name(c) == PLANETS_WORLD_CLASS)
+    }
+
+    /// The engine's per-frame call of `PerFrameUpdate__b(false)` on its PodComputer
+    /// script object ([`LevelWorld::pod_computer`]), in the planets level only; nothing
+    /// happens without that object or when its class has no such function.
+    ///
+    /// FOUND in the 01.33 executable (0x40663c, slot 0x14 of the pod computer object's
+    /// vtable 0xd73d40): the object's per-frame function returns early unless its script
+    /// holder is valid (0x89479c) and a test of the object (0x3fcaa8) passes, then, when a
+    /// word of the object is not 0, calls the script function (0x8947dc -> 0x503a48 ->
+    /// the wrapper 0x659c58) with a byte of the object and clears that byte. It is not tied
+    /// to "in use". FOUND in the script listing: while the computer is in use, its state
+    /// stack is empty and no user message is being sent (and the build is not a Move, E3 or
+    /// E3 crossplay demo), the function makes a `PodStateMainMenu` and pushes it; the
+    /// state's focus handler sets the planets view to its type (1 for the main menu), and
+    /// the pod computer hands that view to `PlanetsWorld.SetView`, which starts the
+    /// planets world's blend to it.
+    ///
+    /// INFERRED: the bool is false (the byte's setter was not read); the two conditions
+    /// of the call hold on every frame; a tick is a frame. The function casts `GetWorld()`
+    /// to PlanetsWorld, and in the shell level that cast fails, so the game's one pod
+    /// computer belongs to the planets level (INFERRED): the call is made only in a level
+    /// whose world script is a [`PLANETS_WORLD_CLASS`]. Its place in the frame against the
+    /// planets object's function (0x43ac68, which ends in `UpdatePlanetsView`) was not read;
+    /// here it runs after the Things' entries and before [`Self::update_video`], so the
+    /// blend's first step is on the tick after the push. A call that faults or yields is
+    /// reported once in [`StepReport::thread_faults`] and not made again.
+    pub fn pod_computer_frame(
+        &mut self,
+        vm: &mut Vm,
+        host: &mut Bindings<LevelWorld>,
+        budget: u64,
+    ) -> StepReport {
+        let mut report = StepReport::default();
+        if self.pod_computer_frame_stopped || !self.is_planets_level(vm, &host.world) {
+            return report;
+        }
+        let Some(object) = host.world.pod_computer else {
+            return report;
+        };
+        let Some(class) = vm.class_of(object) else {
+            return report;
+        };
+        if !vm.has_code(class, POD_COMPUTER_PER_FRAME) {
+            return report;
+        }
+        let args = [(4, Value::Bool(false))];
+        match run_on_object_with(
+            vm,
+            host,
+            class,
+            object,
+            POD_COMPUTER_PER_FRAME,
+            &args,
+            budget,
+        ) {
+            Ok(()) => report.pod_computer_frames += 1,
+            Err(e) => {
+                self.pod_computer_frame_stopped = true;
+                report.thread_faults.push(format!("PodComputer {e}"));
+            }
+        }
+        self.start_threads(vm, host, budget, &mut report);
+        report
     }
 
     /// The engine's per-frame call of `UpdateVideo__()` on its PodComputer script
@@ -3375,7 +3485,8 @@ impl LevelScripts {
     /// One game tick of a level: [`Self::tick`], then [`Self::trigger_events`], so a
     /// script an event suspends is resumed on the next tick (order INFERRED), then
     /// [`Self::switch_reactions`], then [`Self::apply_global_settings`], then the pod
-    /// computer's per-frame video call ([`Self::update_video`]: FOUND once a rendered
+    /// computer's per-frame step in the planets level ([`Self::pod_computer_frame`], place
+    /// INFERRED), then the pod computer's per-frame video call ([`Self::update_video`]: FOUND once a rendered
     /// frame after the update, its place as the last script call INFERRED), then the
     /// camera's step ([`LevelWorld::step_camera`], place INFERRED).
     ///
@@ -3415,6 +3526,7 @@ impl LevelScripts {
         report.absorb(self.trigger_events(vm, host, budget));
         report.absorb(self.switch_reactions(vm, host, budget));
         report.absorb(self.apply_global_settings(vm, host, budget));
+        report.absorb(self.pod_computer_frame(vm, host, budget));
         report.absorb(self.update_video(vm, host, budget));
         host.world.step_camera();
         host.world.advance_frame();

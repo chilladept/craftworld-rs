@@ -2084,6 +2084,20 @@ const TABLE: &[(&str, &str, NativeFn)] = &[
     ("Game", "IsPSNDemoBuild__", |w, _| {
         bool_query(w, "Game.IsPSNDemoBuild__")
     }),
+    // D295, INFERRED from the names and the one script that asks them (the pod computer's
+    // per-frame step, which opens the main menu only when all are false): queries of the
+    // build (a Move demo, an E3 show build, its crossplay demo) and of a message the pod
+    // computer is sending. The natives' code was not read.
+    ("Game", "IsMoveDemoBuild__", |w, _| {
+        bool_query(w, "Game.IsMoveDemoBuild__")
+    }),
+    ("System", "IsE3__", |w, _| bool_query(w, "System.IsE3__")),
+    ("System", "IsE3CrossplayDemo__", |w, _| {
+        bool_query(w, "System.IsE3CrossplayDemo__")
+    }),
+    ("PodComputer", "IsSendingSetUserMessage__", |w, _| {
+        bool_query(w, "PodComputer.IsSendingSetUserMessage__")
+    }),
     // FOUND (0x5f9054 -> 0x73273c -> 0x2c6a14). Declared static
     // `bool IsSafeToTriggerMusic(s32)`: true at once in play mode. Edit mode makes more
     // tests, which were not read: an error here.
@@ -3002,7 +3016,7 @@ const TABLE: &[(&str, &str, NativeFn)] = &[
 ];
 
 /// The natives bound through [`World::state_query`], with their return type.
-pub const STATE_QUERIES: [(&str, &str); 30] = [
+pub const STATE_QUERIES: [(&str, &str); 34] = [
     ("Game.IsNonInteractive__", "bool"),
     ("Game.GetNumPendingLinks__", "s32"),
     ("Game.GetNumAvatars__", "s32"),
@@ -3042,6 +3056,10 @@ pub const STATE_QUERIES: [(&str, &str); 30] = [
     ("Profile.HasPlayedLBP1AndUnlockedPod__", "bool"),
     ("Profile.HasPlayedLBP1AndUnlockedMoon__", "bool"),
     ("Game.CurrentLevelIsOurPod__", "bool"),
+    ("Game.IsMoveDemoBuild__", "bool"),
+    ("System.IsE3__", "bool"),
+    ("System.IsE3CrossplayDemo__", "bool"),
+    ("PodComputer.IsSendingSetUserMessage__", "bool"),
 ];
 
 /// Bound natives that return nothing and whose whole effect here is a record in the world
@@ -3688,8 +3706,8 @@ mod tests {
         let pressed = dispatch(&mut w, "Video", start, &[]).unwrap();
         assert_eq!(pressed, Ok(Value::Bool(false)));
         assert_eq!(w.0[7].pad.unwrap().now, START_BUTTON);
-        // The table: 249 natives before these six; D274 added two.
-        assert_eq!(bound().count(), 257);
+        // The table: 249 natives before these six; D274 added two, D295 four.
+        assert_eq!(bound().count(), 261);
     }
 
     #[test]
@@ -3748,8 +3766,8 @@ mod tests {
         assert!((wrap(-2. * TAU - 0.5) + 0.5).abs() < 1e-4);
         assert!(call("Math", "ModAngleToWithinPI__f", &[Value::Int(1)]).is_err());
         assert_eq!(mod_angle_to_within_pi(0.25), wrap(0.25));
-        // The table: 255 natives before these two.
-        assert_eq!(bound().count(), 257);
+        // The table: 255 natives before these two; D295 added four.
+        assert_eq!(bound().count(), 261);
     }
 
     #[test]
@@ -3874,8 +3892,8 @@ mod tests {
             ]
         );
         assert_eq!(w.0, 3);
-        // The table: 238 natives before these eleven; D273 added six, D274 two.
-        assert_eq!(bound().count(), 257);
+        // The table: 238 natives before these eleven; D273 added six, D274 two, D295 four.
+        assert_eq!(bound().count(), 261);
     }
 
     #[test]
