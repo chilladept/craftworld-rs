@@ -23,8 +23,8 @@ use bevy::{
     prelude::*,
     render::{
         render_resource::{
-            AsBindGroup, BlendComponent, BlendFactor, BlendOperation, RenderPipelineDescriptor,
-            SpecializedMeshPipelineError,
+            AsBindGroup, BlendComponent, BlendFactor, BlendOperation, Face,
+            RenderPipelineDescriptor, SpecializedMeshPipelineError,
         },
         renderer::RenderDevice,
         settings::WgpuFeatures,
@@ -567,7 +567,11 @@ pub fn raw_uv0(material: &ViewerMaterial) -> u8 {
 /// without it lays the transition mask over the position (`mask_u`, `mask_v`) and has no
 /// `pod_mask`. Without a mask the band under the line is not tinted. The alpha mode is
 /// not touched: the cut is a `discard` in the opaque pass, as the alpha test's.
+/// D296: while it is on, back faces are culled, as the game's tent and platform draws do
+/// (FOUND: cull back on all four captured pod draws). Double-sided, the inside of a post
+/// shows through the cut with a second line on its far wall.
 pub fn set_dissolve(material: &mut ViewerMaterial, dissolve: Option<&Dissolve>) {
+    material.base.cull_mode = dissolve.map(|_| Face::Back);
     let ext = &mut material.extension;
     match dissolve {
         Some(d) => {
@@ -1277,8 +1281,10 @@ fn main_pass_post_lighting_processing(p: PbrInputStub, c: vec4<f32>) -> vec4<f32
         assert_eq!(m.extension.dissolve_params, Vec4::new(1., 1., 0., 0.));
         assert_eq!(super::dissolve(&m).as_ref(), Some(&d));
         assert_eq!(m.base.alpha_mode, AlphaMode::Opaque);
+        assert_eq!(m.base.cull_mode, Some(super::Face::Back));
         super::set_dissolve(&mut m, None);
         assert!(super::dissolve(&m).is_none() && m.extension.dissolve_mask.is_none());
+        assert_eq!(m.base.cull_mode, None);
         assert_eq!(m.extension.dissolve_params, Vec4::ZERO);
         assert_eq!(m.extension.thing_tint, Vec4::new(0.5, 0.25, 1., 1.));
         assert!(super::tinted(&m));
