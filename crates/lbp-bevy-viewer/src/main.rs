@@ -2211,6 +2211,7 @@ fn upload(
     images: &mut Assets<Image>,
 ) -> (Handle<Mesh>, Handle<ViewerMaterial>, Option<Handle<Image>>) {
     let blend = alpha_mode(&p);
+    let bias = depth_bias(&p);
     let image = p.image.map(|i| images.add(i));
     let mut surface = dual::material(StandardMaterial {
         base_color: p.color,
@@ -2218,7 +2219,7 @@ fn upload(
         unlit: true,
         cull_mode: None,
         alpha_mode: blend,
-        depth_bias: if p.decal { 8.0 } else { 0.0 },
+        depth_bias: bias,
         ..default()
     });
     if let Some(second) = p.second_image {
@@ -2302,6 +2303,28 @@ fn alpha_mode(p: &Prepared) -> AlphaMode {
         AlphaMode::Blend
     } else {
         AlphaMode::Opaque
+    }
+}
+/// D160: a sticker decal is drawn this much in front of its surface.
+const DECAL_DEPTH_BIAS: f32 = 8.0;
+/// D288 (docs/level-scripts.md, part 39): the constant depth bias of a bucket, so that a
+/// mesh's later material bucket wins where two of its buckets lie on the same triangles.
+/// The planets room's hanging cloths are such a pair: a plain cloth (gfx material
+/// 0001f3ad, the mesh's earlier bucket) under the painted cloths (0001f3b3, 0001f3b4,
+/// later buckets) at the same depth. The game shows the painted ones (MEASURED, the d156
+/// frame); Bevy's opaque pass draws buckets in an order of its own, so which one won the
+/// equal depth changed with the pipelines (the preview route, the level alone, any change
+/// to the draw list). Each bucket is one bias step nearer than the one before it
+/// (INFERRED: the game draws a mesh's primitives in order and keeps the later fragment at
+/// equal depth). Bucket 0, so every one-material mesh, keeps no bias; decals and the
+/// glass keep theirs.
+fn depth_bias(p: &Prepared) -> f32 {
+    if p.decal {
+        DECAL_DEPTH_BIAS
+    } else if p.glass.is_some() {
+        0.0
+    } else {
+        p.bucket.min(adapter::MAX_DRAWS) as f32
     }
 }
 /// D113: display plan for a level scene, built without GPU or window. Per scene mesh the
@@ -4615,6 +4638,53 @@ mod tests {
         assert_eq!(material.base.alpha_mode, AlphaMode::Opaque);
         assert_eq!(dual::glass(material), None);
         assert!((GLASS_DISSOLVE_GREEN - 30. / 255.).abs() < 1e-5);
+    }
+    /// D288: two material buckets on the same triangles (the planets room's plain cloth,
+    /// then its painted cloth): the later bucket is uploaded nearer by its index, so it
+    /// wins the equal depth whatever order Bevy draws them in. Bucket 0 has no bias; a
+    /// decal keeps its own and the glass none. Nothing here depends on the lighting route.
+    #[test]
+    fn d288_a_later_bucket_on_the_same_triangles_is_drawn_nearer() {
+        let tri = [[0u32, 1, 2]];
+        let plain = std::sync::Arc::new(1u8);
+        let painted = std::sync::Arc::new(2u8);
+        let bindings = [Ok(plain.clone()), Ok(painted.clone()), Ok(plain)];
+        let triangles = [tri[0], tri[0], tri[0]];
+        let buckets = adapter::buckets(&triangles, &[0..1, 1..2, 2..3], &bindings).unwrap();
+        assert_eq!(
+            buckets.len(),
+            2,
+            "first appearance order, one bucket per material"
+        );
+        assert!(std::sync::Arc::ptr_eq(
+            buckets[1].0.as_ref().unwrap(),
+            &painted
+        ));
+        let (mut meshes, mut materials, mut images) = (
+            Assets::<Mesh>::default(),
+            Assets::<ViewerMaterial>::default(),
+            Assets::<Image>::default(),
+        );
+        let mut bias = |p: Prepared| {
+            let (_, m, _) = upload(p, &mut meshes, &mut materials, &mut images);
+            materials.get(&m).unwrap().base.depth_bias
+        };
+        let mut later = d286_bucket(0);
+        later.bucket = 1;
+        let (first, second) = (bias(d286_bucket(0)), bias(later));
+        assert_eq!(first, 0.);
+        assert!(second > first, "{second} > {first}");
+        let mut last = d286_bucket(0);
+        last.bucket = adapter::MAX_DRAWS + 10;
+        assert_eq!(bias(last), adapter::MAX_DRAWS as f32);
+        let mut decal = d286_bucket(0);
+        decal.decal = true;
+        decal.bucket = 3;
+        assert_eq!(bias(decal), DECAL_DEPTH_BIAS);
+        let mut glass = d286_bucket(0);
+        glass.bucket = 2;
+        mark_glass(&mut glass, None);
+        assert_eq!(bias(glass), 0.);
     }
     /// D287: the uploaded glass carries the specular scale added after its alpha (6); a
     /// plain bucket has none.

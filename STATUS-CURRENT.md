@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D287
+# Current state (overwrite each milestone) — after D288
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -11,7 +11,29 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D287 the Pod's glass blended as the game does (2026-10-14)
+## Latest: D288 the hanging cloths' art on every lighting route (2026-10-14)
+- "Pod picture" PR 15, viewer only (`docs/level-scripts.md` part 39). FOUND: each hanging cloth
+  of the planets room is two buckets of the backdrop mesh on the same triangles, a plain cloth
+  (0x1f3ad, earlier) and the art (0x1f3b3 left, 0x1f3b4 right, later, slot 0). MEASURED: which
+  one won the equal depth followed Bevy's draw order, not the lighting (the level alone lost the
+  art under its own lighting too; `--bump-gloss` brought it back under the preview). The game
+  shows the art.
+- Viewer: every opaque bucket gets a constant depth bias equal to its index in the mesh (capped
+  at 65), so a later material wins an equal depth; bucket 0 and one-material meshes unchanged,
+  decals 8, glass 0.
+- The preview's washed-out room is its own design (D121 Lambert preview, "not game lighting"):
+  MEASURED mostly its Bevy distance fog (the level's fog colour as linear light); unchanged.
+- MEASURED (`local-analysis/rscript/stage6/shots/d288-*`): planets at 600, pod camera, preview
+  331,393 pixels and level lighting 290,610 (art and the easel's canvas now drawn); closed Pod
+  with the preview 290,699, under the level lighting 6; Da Vinci rookie test (0001e786) equal
+  with the preview, 28 pixels (at most 8) under its own lighting.
+- Tests: `d288_a_later_bucket_on_the_same_triangles_is_drawn_nearer`. fmt, CI clippy, CI tests,
+  `cargo check` of both viewers and the viewer's clippy pass; viewer tests 97 pass,
+  `sackboy_play::tests::input_script_steps` fails as on main.
+- Next: the left panel's larger glass share; the camera's timing; the game's depth rule for
+  coplanar primitives from a capture.
+
+## Before: D287 the Pod's glass blended as the game does (2026-10-14)
 - "Pod picture" PR 14, viewer only (`docs/level-scripts.md` part 38). MEASURED (the captured
   frame, before and after the glass draw): the target is `R8G8B8A8_UNORM` without sRGB, so the
   game blends its encoded output, out = s + 0.8 d; the glass's share s is (17, 22, 23) left and

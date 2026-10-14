@@ -1,5 +1,15 @@
 # Development log
 
+## 2026-10-14 - D288 the hanging cloths' art on every lighting route
+
+Pod picture PR 15, viewer only. The planets room's hanging cloths are drawn twice on the same triangles, a plain
+cloth (gfx material 0x1f3ad) and the art (0x1f3b3, 0x1f3b4, later in the mesh) (FOUND). Which one showed followed
+Bevy's draw order of material buckets, not the lighting: `--preview-lighting` lost the art, and so did the planets
+level alone under its own lighting (MEASURED). Every opaque bucket now takes a constant depth bias equal to its
+index in the mesh, so the later primitive wins as in the game's frame (INFERRED order rule); one-material meshes,
+decals and the glass are unchanged. The preview's washed-out room is its Bevy distance fog and Lambert fit, the
+route's own design, and stays. `docs/level-scripts.md` part 39.
+
 ## 2026-10-14 - D287 the Pod's glass blended as the game does
 
 Pod picture PR 14, viewer only. In the captured frame the glass draws into a plain 8-bit target, so the game
