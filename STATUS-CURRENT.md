@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D283
+# Current state (overwrite each milestone) — after D284
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -11,7 +11,40 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D283 the script camera's lens (2026-10-14)
+## Latest: D284 the Pod's second mask, by the mesh's own UV (2026-10-14)
+- "Pod picture" PR 11, viewer only (`docs/level-scripts.md` part 35). The card materials'
+  `pod_mask.tex` (0x1fbc7) is sampled at the mesh's raw UV0 (FOUND: identity UV transform in
+  the captured draws): where its red is over one half the line stands one band higher, and at
+  value 1 the rule's last term adds a band where it is black: `edge = (above - 100 g)/400 + 1 -
+  m6 + at_one (1 - m6)` (`pod_dissolve::edge`, the shader's arithmetic).
+- MEASURED (throwaway probe, value for value against the mesh's channels): `pod_card` 0x2f6a's
+  primary coordinates are UV0; `pod_card_edge` 0x2fda's primary are UV1 and its second
+  sample's are UV0 (tent and platform); the glass is solid. Each bucket now records which input
+  holds raw UV0 (`pod_dissolve::uv0_source`: `in.uv`, `in.uv_b` or none, the glass keeping the
+  position tile) and its material GUID; the transition mask moves to UV0 x 40 on 0x2fda too.
+- `thing_view::apply`: at alpha 0 the platform's 0x2fda entities keep the dissolve at value 1
+  (`LevelThings::dissolve_edge`), 0x252f3 gets nothing; `follow_dissolve` gives `pod_mask` to
+  the two card materials only. MEASURED: all 291 triangles of the platform's card edge have
+  their UV0 on the white strip and patch, so at value 1 the rim is kept whole (lit), not cut.
+  The raised parts of the tent are its floor, the block beside it and its rim (mesh height 204
+  to 991 and 883 to 892).
+- MEASURED (`local-analysis/rscript/stage6/shots/d284-*`, base `d284-base-*` = d283 bytes): the
+  intro, the four without scripts, closed at 600, 640, 641, the planets captures and pod.bin alone
+  equal D283's; in use at 619, 620 and 640 (both lightings) equal main's build. Changed: 610 and
+  615 (the card edge's band pattern now at UV0). A check build painting `m6` = 1 shows none of the
+  raised parts in view at 610 to 619 and the platform's rim in 146 pixels at 640. Also changed:
+  the viewer's Sackboy in the two `--play-sackboy` closed stills (zipper and leg patches); bisected
+  to the material type holding one more image handle (INFERRED: coplanar draw order), not the rule.
+- Game frame `d156-rpcs3-pod-open-t1.png` (mid change-over, camera at the open eye): posts with a
+  green top line and green traces. The viewer's 619 shows none (its camera is not at the open eye
+  until 628); its 615 is closer (posts with a white line). INFERRED: the game's posts are plain
+  tent near value 0.7, not raised parts. 640 against `open-t2`: unchanged, the camera's height.
+- Tests: four viewer tests (`d284_*`) and the shader validation extended. fmt, CI clippy, CI tests
+  (612), `cargo check` of both viewers and the viewer's clippy pass; viewer tests 88 pass,
+  `sackboy_play::tests::input_script_steps` fails as on main. The runtime is untouched.
+- Next: the player's green as the flat colour (part 30's stored colour); the camera's timing.
+
+## Before: D283 the script camera's lens (2026-10-14)
 - "Pod picture" PR 10, viewer only (`docs/level-scripts.md` part 34). FOUND (01.33, static
   reading, evidence only): the render camera's lens is ortho factor, vertical FOV (radians),
   aspect, near, far; perspective when the ortho factor is 0. `Cam.SetCameraFromToUp` writes near,

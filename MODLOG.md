@@ -1,5 +1,18 @@
 # Development log
 
+## 2026-10-14 - D284 the Pod's second mask, by the mesh's own UV
+
+Pod picture PR 11, viewer only. The Pod tent's dissolve now has the card materials' second mask, `pod_mask.tex`:
+sampled at the mesh's raw UV0 (FOUND: identity transform in the captured draws), it raises the line one band
+where it is white, and at value 1 the rule's last term keeps only those parts. Each draw bucket records which
+input holds raw UV0 (MEASURED against the mesh: `pod_card` its primary coordinates, `pod_card_edge` its second
+sample's, the glass none), so the transition mask moves from UV1 to UV0 on the card edge. At alpha 0 the
+platform's card edge keeps the dissolve at value 1; its UV0 lies wholly on the mask's white strip and patch, so
+its rim stays whole. Changed frames: the band's pattern at ticks 610 and 615; the raised parts are out of view at
+610 to 619 and 640 equals D283. The viewer's Sackboy draws his coplanar parts in another order once the material
+holds one more image (two closed stills). The game frame `open-t1` shows the player's green line and traces,
+not drawn yet. `docs/level-scripts.md` part 35.
+
 ## 2026-10-14 - D283 the script camera's lens
 
 Pod picture PR 10, viewer only. A camera a script writes with `Cam.SetCameraFromToUp` now draws with the

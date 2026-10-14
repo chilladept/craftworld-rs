@@ -100,6 +100,8 @@ struct Play {
     script_eye_y: Option<f32>,
     /// Part 29: the dissolve's first line was printed.
     dissolve_printed: bool,
+    /// D284: the platform edge's line at value 1 was printed.
+    dissolve_edge_printed: bool,
 }
 
 /// The script world of the Pod's shell layer (part 28): the second level of the
@@ -536,6 +538,7 @@ pub fn install(app: &mut App) -> Result<(), String> {
         shell,
         script_eye_y: None,
         dissolve_printed: false,
+        dissolve_edge_printed: false,
     })
     .insert_resource(crate::CaptureHold(hold_at.is_some()))
     .insert_resource(Time::<Fixed>::from_hz(f64::from(TICK_HZ)))
@@ -1448,7 +1451,11 @@ fn follow_dissolve(
         return;
     };
     let image = mask.as_ref().and_then(|m| m.image.clone());
+    let island = mask.as_ref().and_then(|m| m.island.clone());
     let (mut written, mut value) = (0, None);
+    // D284: entities written per input that holds raw UV0 (none, `in.uv`, `in.uv_b`), and
+    // those given `pod_mask`.
+    let (mut sources, mut islands) = ([0; 3], 0);
     for (tag, material, parent) in &tagged {
         let Some(dissolve) = tag.dissolve else {
             continue;
@@ -1456,12 +1463,17 @@ fn follow_dissolve(
         let root = parent
             .and_then(|p| roots.get(p.parent()).ok())
             .map_or(Mat4::IDENTITY, Transform::to_matrix);
+        // D284: `pod_mask` on the two card materials only (the glass has no slot 6).
+        let card = tag.material.is_some_and(|g| {
+            [crate::pod_dissolve::CARD, crate::pod_dissolve::CARD_EDGE].contains(&g)
+        });
         let Some(wanted) = crate::pod_dissolve::uniforms(
             dissolve.value,
             dissolve.colour,
             camera_y,
             root * things.0.normalize,
             image.clone(),
+            island.clone().filter(|_| card),
         ) else {
             continue;
         };
@@ -1473,12 +1485,37 @@ fn follow_dissolve(
         if let Some(mut m) = materials.get_mut(id) {
             crate::dual::set_dissolve(&mut m, Some(&wanted));
             written += 1;
+            sources[usize::from(crate::dual::raw_uv0(&m).min(2))] += 1;
+            islands += usize::from(wanted.island.is_some());
             value = Some((dissolve.value, dissolve.colour));
         }
     }
-    let Some((v, colour)) = value.filter(|_| !play.dissolve_printed) else {
+    let Some((v, colour)) = value else {
         return;
     };
+    let uv = format!(
+        "masks at raw UV0 from in.uv {}, in.uv_b {}, none (position) {}; pod_mask on {islands} ({})",
+        sources[1],
+        sources[2],
+        sources[0],
+        mask.as_ref().map_or("not asked for", |m| m.island_note.as_str()),
+    );
+    if v >= 1. {
+        // D284: the platform's card edge at value 1, once.
+        if !play.dissolve_edge_printed {
+            play.dissolve_edge_printed = true;
+            println!(
+                "Pod platform edge at tick {}: value 1, {written} draw entities; cut above level y {:.1} where pod_mask is black, {} bands higher where it is white (camera y {camera_y:.1}); {uv}",
+                play.scripts.ticks,
+                crate::pod_dissolve::line_y(camera_y, v) - crate::pod_dissolve::BAND,
+                2. * crate::pod_dissolve::ISLAND_RISE,
+            );
+        }
+        return;
+    }
+    if play.dissolve_printed {
+        return;
+    }
     play.dissolve_printed = true;
     let preloaded = crate::pod_dissolve::TRANSITION_MASK;
     let named = play
@@ -1491,7 +1528,7 @@ fn follow_dissolve(
         None => "none yet".to_string(),
     };
     println!(
-        "Pod tent dissolve at tick {}: value {v:.2}, {written} draw entities; cut above level y {:.1} (camera y {camera_y:.1} + {} - {} x value), flat colour {colour:.3?}; mask {preloaded} {}; the script's mask GUID: {same}",
+        "Pod tent dissolve at tick {}: value {v:.2}, {written} draw entities; cut above level y {:.1} (camera y {camera_y:.1} + {} - {} x value), flat colour {colour:.3?}; mask {preloaded} {}; the script's mask GUID: {same}; {uv}",
         play.scripts.ticks,
         crate::pod_dissolve::line_y(camera_y, v),
         crate::pod_dissolve::LINE_AT_ZERO,

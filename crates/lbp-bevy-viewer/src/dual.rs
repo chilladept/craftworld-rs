@@ -108,8 +108,9 @@ pub struct SecondTexture {
     /// + w` is the height above the line in the level's own units. Zero = off.
     #[uniform(133)]
     dissolve: Vec4,
-    /// D278: x = 1 when `in.uv` is usable for the mask (the bucket has a diffuse
-    /// texture), y = 1 when the mask is bound.
+    /// D278: y = 1 when the mask is bound. D284: x = the input that holds raw UV0 (1 =
+    /// `in.uv`, 2 = `in.uv_b`, 0 = none: the mask goes over the position), z = 1 when
+    /// `pod_mask` is bound, w = 1 at value 1 (the rule's last term).
     #[uniform(134)]
     dissolve_params: Vec4,
     /// D278: the transition mask (linear, repeating).
@@ -130,8 +131,16 @@ pub struct SecondTexture {
     dissolve_mask_u: Vec4,
     #[uniform(142)]
     dissolve_mask_v: Vec4,
+    /// D284: `pod_mask` (linear, clamped), sampled at raw UV0: where its red is over one
+    /// half the line stands one band higher.
+    #[texture(143)]
+    #[sampler(144)]
+    dissolve_island: Option<Handle<Image>>,
     /// D121: generated normals passed `adapter::normal_trust`; otherwise stays unlit.
     pub normals_trusted: bool,
+    /// D284: the input of this bucket that holds the mesh's raw UV0
+    /// (`pod_dissolve::uv0_source`): 1 = `in.uv`, 2 = `in.uv_b`, 0 = none.
+    pub raw_uv0: u8,
 }
 impl MaterialExtension for SecondTexture {
     fn fragment_shader() -> ShaderRef {
@@ -350,6 +359,10 @@ pub struct Dissolve {
     pub mask_u: Vec4,
     pub mask_v: Vec4,
     pub mask: Option<Handle<Image>>,
+    /// D284: `pod_mask`, for the card materials only.
+    pub island: Option<Handle<Image>>,
+    /// D284: value 1, the rule's last term on.
+    pub at_one: bool,
 }
 /// D278: the dissolve a material draws with now; none when it is off.
 pub fn dissolve(material: &ViewerMaterial) -> Option<Dissolve> {
@@ -361,15 +374,20 @@ pub fn dissolve(material: &ViewerMaterial) -> Option<Dissolve> {
         mask_u: ext.dissolve_mask_u,
         mask_v: ext.dissolve_mask_v,
         mask: ext.dissolve_mask.clone(),
+        island: ext.dissolve_island.clone(),
+        at_one: ext.dissolve_params.w > 0.5,
     })
 }
-/// D278: sets (Some) or takes off (None) the top-down dissolve. A material whose base
-/// has no diffuse texture has no usable `in.uv` (all zeros on a solid-colour bucket): its
-/// mask coordinates come from the position (`mask_u`, `mask_v`). Without a mask the band
-/// under the line is not tinted. The alpha mode is not touched: the cut is a `discard`
-/// in the opaque pass, as the alpha test's.
+/// D284: the input of the material's bucket that holds raw UV0 (see `raw_uv0`).
+pub fn raw_uv0(material: &ViewerMaterial) -> u8 {
+    material.extension.raw_uv0
+}
+/// D278: sets (Some) or takes off (None) the top-down dissolve. D284: both masks are
+/// sampled at the bucket's raw UV0 (`raw_uv0`, set when the bucket is built); a bucket
+/// without it lays the transition mask over the position (`mask_u`, `mask_v`) and has no
+/// `pod_mask`. Without a mask the band under the line is not tinted. The alpha mode is
+/// not touched: the cut is a `discard` in the opaque pass, as the alpha test's.
 pub fn set_dissolve(material: &mut ViewerMaterial, dissolve: Option<&Dissolve>) {
-    let uv = material.base.base_color_texture.is_some();
     let ext = &mut material.extension;
     match dissolve {
         Some(d) => {
@@ -379,8 +397,14 @@ pub fn set_dissolve(material: &mut ViewerMaterial, dissolve: Option<&Dissolve>) 
             ext.dissolve_mask_u = d.mask_u;
             ext.dissolve_mask_v = d.mask_v;
             ext.dissolve_mask.clone_from(&d.mask);
+            ext.dissolve_island.clone_from(&d.island);
             let flag = |on: bool| f32::from(u8::from(on));
-            ext.dissolve_params = Vec4::new(flag(uv), flag(d.mask.is_some()), 0., 0.);
+            ext.dissolve_params = Vec4::new(
+                f32::from(ext.raw_uv0.min(2)),
+                flag(d.mask.is_some()),
+                flag(d.island.is_some()),
+                flag(d.at_one),
+            );
         }
         None => {
             ext.dissolve = Vec4::ZERO;
@@ -389,6 +413,7 @@ pub fn set_dissolve(material: &mut ViewerMaterial, dissolve: Option<&Dissolve>) 
             ext.dissolve_mask_u = Vec4::ZERO;
             ext.dissolve_mask_v = Vec4::ZERO;
             ext.dissolve_mask = None;
+            ext.dissolve_island = None;
             ext.dissolve_params = Vec4::ZERO;
         }
     }
@@ -461,6 +486,8 @@ struct BumpInput {
 @group(#{MATERIAL_BIND_GROUP}) @binding(138) var<uniform> dissolve_consts: vec4<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(139) var<uniform> dissolve_mask_u: vec4<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(142) var<uniform> dissolve_mask_v: vec4<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(143) var dissolve_island: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(144) var dissolve_island_sampler: sampler;
 // D189 graph texture k at uv with explicit gradients (non-uniform control flow).
 fn graph_texture(k: u32, uv: vec2<f32>, gx: vec2<f32>, gy: vec2<f32>) -> vec4<f32> {
     switch k {
@@ -629,17 +656,32 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> FragmentOut
 #endif
     var color = pbr.material.base_color;
     // D278: the dissolve mask's coordinates (in tiles) and their gradients, taken here in
-    // uniform control flow: from the position, or from the diffuse coordinates.
+    // uniform control flow: from the position, or (D284) from the input that holds the
+    // mesh's raw UV0, which `pod_mask` is sampled at too.
     var dissolve_uv = vec2<f32>(
         dot(dissolve_mask_u.xyz, in.world_position.xyz) + dissolve_mask_u.w,
         dot(dissolve_mask_v.xyz, in.world_position.xyz) + dissolve_mask_v.w);
+    var raw_uv0 = vec2<f32>(0.0);
+    var has_raw_uv0 = false;
 #ifdef VERTEX_UVS_A
-    if dissolve_params.x > 0.5 {
-        dissolve_uv = in.uv * dissolve_consts.w;
+    if dissolve_params.x > 0.5 && dissolve_params.x < 1.5 {
+        raw_uv0 = in.uv;
+        has_raw_uv0 = true;
     }
 #endif
+#ifdef VERTEX_UVS_B
+    if dissolve_params.x > 1.5 {
+        raw_uv0 = in.uv_b;
+        has_raw_uv0 = true;
+    }
+#endif
+    if has_raw_uv0 {
+        dissolve_uv = raw_uv0 * dissolve_consts.w;
+    }
     let dissolve_dx = dpdx(dissolve_uv);
     let dissolve_dy = dpdy(dissolve_uv);
+    let raw_uv0_dx = dpdx(raw_uv0);
+    let raw_uv0_dy = dpdy(raw_uv0);
 #ifdef VERTEX_UVS_A
 #ifdef VERTEX_UVS_B
     // D189: gradients taken here, in uniform control flow, for textureSampleGrad.
@@ -686,12 +728,18 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> FragmentOut
     // D278: the top-down dissolve. `edge` is 1 on the line and 0 one band below it; the
     // line stands higher where the surface colour is greener. Above the line the fragment
     // is cut; in the band under it the colour goes toward the flat colour where the mask
-    // is dark (`dissolve_keep` is the share of the lit colour kept).
+    // is dark (`dissolve_keep` is the share of the lit colour kept). D284: where `pod_mask`
+    // is white (m6 = 1) the line stands one band higher, and at value 1 (w) a band is
+    // added where it is black: `pod_dissolve::edge`.
     let dissolve_on = dot(dissolve.xyz, dissolve.xyz) > 0.0;
     var dissolve_keep = 1.0;
     if dissolve_on {
         let above = dot(dissolve.xyz, in.world_position.xyz) + dissolve.w;
-        let edge = (above - dissolve_consts.x * color.g) / dissolve_consts.y + 1.0;
+        var m6 = 0.0;
+        if dissolve_params.z > 0.5 && has_raw_uv0 {
+            m6 = step(0.5, textureSampleGrad(dissolve_island, dissolve_island_sampler, raw_uv0, raw_uv0_dx, raw_uv0_dy).r);
+        }
+        let edge = (above - dissolve_consts.x * color.g) / dissolve_consts.y + 1.0 - m6 + dissolve_params.w * (1.0 - m6);
         if edge > 1.0 {
             discard;
         }
@@ -881,14 +929,16 @@ fn main_pass_post_lighting_processing(p: PbrInputStub, c: vec4<f32>) -> vec4<f32
             mask_u: Vec4::new(1., 0., 1., 0.),
             mask_v: Vec4::new(0., 1., 0., 0.),
             mask: None,
+            island: None,
+            at_one: false,
         };
-        // No diffuse texture and no mask: position coordinates, no tint.
+        // No raw UV0 and no mask: position coordinates, no tint.
         super::set_dissolve(&mut m, Some(&d));
         assert_eq!(super::dissolve(&m).as_ref(), Some(&d));
         assert_eq!(m.extension.dissolve_params, Vec4::ZERO);
         assert_eq!(m.extension.dissolve_colour, Vec4::new(0.1, 0.2, 0.3, 1.));
-        // A diffuse texture and a mask.
-        m.base.base_color_texture = Some(Handle::default());
+        // Raw UV0 in `in.uv` (D284; D278 took a diffuse texture for it) and a mask.
+        m.extension.raw_uv0 = 1;
         d.mask = Some(Handle::default());
         super::set_dissolve(&mut m, Some(&d));
         assert_eq!(m.extension.dissolve_params, Vec4::new(1., 1., 0., 0.));
@@ -901,6 +951,41 @@ fn main_pass_post_lighting_processing(p: PbrInputStub, c: vec4<f32>) -> vec4<f32
         assert!(super::tinted(&m));
         super::set_thing_tint(&mut m, None);
         assert!(!super::tinted(&m));
+    }
+    /// D284: the input that holds raw UV0 goes to the shader as x, `pod_mask` as z and
+    /// value 1 as w; the dissolve read back has them, and taking it off clears them. A
+    /// diffuse texture alone no longer says where the mask's coordinates are.
+    #[test]
+    fn d284_the_dissolve_carries_the_island_mask_and_the_uv_source() {
+        use bevy::prelude::*;
+        let mut m = super::material(StandardMaterial::default());
+        m.base.base_color_texture = Some(Handle::default());
+        let d = super::Dissolve {
+            plane: Vec4::Y,
+            mask: Some(Handle::default()),
+            island: Some(Handle::default()),
+            at_one: true,
+            ..Default::default()
+        };
+        super::set_dissolve(&mut m, Some(&d));
+        assert_eq!(m.extension.dissolve_params, Vec4::new(0., 1., 1., 1.));
+        m.extension.raw_uv0 = 2;
+        assert_eq!(super::raw_uv0(&m), 2);
+        super::set_dissolve(&mut m, Some(&d));
+        assert_eq!(m.extension.dissolve_params, Vec4::new(2., 1., 1., 1.));
+        assert_eq!(super::dissolve(&m).as_ref(), Some(&d));
+        let plain = super::Dissolve {
+            island: None,
+            at_one: false,
+            ..d.clone()
+        };
+        assert_ne!(super::dissolve(&m).as_ref(), Some(&plain));
+        super::set_dissolve(&mut m, Some(&plain));
+        assert_eq!(m.extension.dissolve_params, Vec4::new(2., 1., 0., 0.));
+        super::set_dissolve(&mut m, None);
+        assert!(m.extension.dissolve_island.is_none());
+        assert_eq!(m.extension.dissolve_params, Vec4::ZERO);
+        assert_eq!(super::raw_uv0(&m), 2);
     }
     /// D121: the authored shader (all `#ifdef` blocks enabled, imports stubbed) parses
     /// and validates headlessly. Bevy's own composition is exercised only at run time.
@@ -919,7 +1004,14 @@ fn main_pass_post_lighting_processing(p: PbrInputStub, c: vec4<f32>) -> vec4<f32
         assert!(body.contains("graph_color(refl_count, rv.xy, rv.xy, d, d, rv,"));
         assert!(body.contains("graph_color(graph_info.x, in.uv, in.uv_b, graph_d0, graph_d1, "));
         // D278: the dissolve's cut, its mask sample with explicit gradients and its tint.
-        assert!(body.contains("dissolve_uv = in.uv * dissolve_consts.w;"));
+        assert!(body.contains("dissolve_uv = raw_uv0 * dissolve_consts.w;"));
+        // D284: the raw UV0 selector, pod_mask at raw UV0 with gradients, and the edge
+        // with the island and value-1 terms.
+        assert!(body.contains("raw_uv0 = in.uv;") && body.contains("raw_uv0 = in.uv_b;"));
+        assert!(body.contains(
+            "textureSampleGrad(dissolve_island, dissolve_island_sampler, raw_uv0, raw_uv0_dx, raw_uv0_dy).r"
+        ));
+        assert!(body.contains("+ 1.0 - m6 + dissolve_params.w * (1.0 - m6);"));
         assert!(body.contains(
             "textureSampleGrad(dissolve_mask, dissolve_sampler, dissolve_uv, dissolve_dx, dissolve_dy).r"
         ));

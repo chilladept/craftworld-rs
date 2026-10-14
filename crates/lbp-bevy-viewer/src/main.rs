@@ -98,6 +98,8 @@ struct LevelLoaded {
     /// D278: the transition mask of the tent's dissolve, decoded when the shell layer
     /// has a script world (`LevelMode::shell_scripted`); an error when it is not there.
     dissolve_mask: Option<Result<lbp_texture::Texture, String>>,
+    /// D284: pod_mask, the card materials' second mask, decoded with it.
+    pod_mask: Option<Result<lbp_texture::Texture, String>>,
 }
 /// D278: the mask of the Pod tent's dissolve (`pod_dissolve::TRANSITION_MASK`) as an
 /// image, with a word on how the load went; there while the shell layer has a script
@@ -106,6 +108,10 @@ struct LevelLoaded {
 pub(crate) struct PodDissolveMask {
     pub(crate) image: Option<Handle<Image>>,
     pub(crate) note: String,
+    /// D284: pod_mask (pod_dissolve::POD_MASK); without it no part of the tent stands
+    /// higher and the platform's edge is cut whole at value 1.
+    pub(crate) island: Option<Handle<Image>>,
+    pub(crate) island_note: String,
 }
 /// D278: reads and decodes one texture by GUID (the recipe of the level scene's
 /// runtime textures).
@@ -453,12 +459,17 @@ impl Viewer {
                             let guid = pod_dissolve::TRANSITION_MASK;
                             decode_texture(&catalog, &source, guid, &worker)
                         });
+                        let pod_mask = dissolve_mask_wanted.then(|| {
+                            let guid = pod_dissolve::POD_MASK;
+                            decode_texture(&catalog, &source, guid, &worker)
+                        });
                         Ok(LevelLoaded {
                             scene,
                             identity,
                             shell,
                             shell_feet,
                             dissolve_mask,
+                            pod_mask,
                         })
                     });
                     let load_clip = |guid: &str| {
@@ -1369,16 +1380,22 @@ fn load(
                     scripted,
                 );
                 if let Some(mut things) = shell_things {
-                    // D278: the tent of the shell's pod Thing is drawn with the dissolve.
+                    // D278: the tent of the shell's pod Thing is drawn with the dissolve;
+                    // D284: and the platform's card edge at value 1.
                     things.dissolve_mesh = Some(POD_TENT_MESH);
+                    things.dissolve_edge =
+                        Some((pod_dissolve::PLATFORM_MESH, pod_dissolve::CARD_EDGE));
                     commands.insert_resource(thing_view::ShellThings(things));
                 }
                 if let Some(mask) = level.dissolve_mask.take() {
-                    let mask = dissolve_mask_image(mask, &mut images);
+                    let island = level.pod_mask.take();
+                    let mask = dissolve_mask_image(mask, island, &mut images);
                     v.level.lines.push(format!(
-                        "Pod tent dissolve mask {:08x}: {}",
+                        "Pod tent dissolve mask {:08x}: {}; pod_mask {:08x}: {}",
                         pod_dissolve::TRANSITION_MASK,
-                        mask.note
+                        mask.note,
+                        pod_dissolve::POD_MASK,
+                        mask.island_note
                     ));
                     commands.insert_resource(mask);
                 }
@@ -1647,6 +1664,51 @@ struct Prepared {
     graph: Option<(Vec<Image>, Vec<lbp_preview::FragmentStep>)>,
     /// P3k: backdrop baked-AO lightmap (R8, mipped) sampled on UV1.
     lightmap: Option<Image>,
+    /// D284: the bucket's index in the list prepare_buckets was given.
+    bucket: usize,
+    /// D284: GUID of the bucket's material (model meshes only; none for a neutral bucket).
+    material: Option<u32>,
+    /// D284: the input that holds the mesh's raw UV0 (`pod_dissolve::uv0_source`).
+    raw_uv0: u8,
+}
+/// D284: which input of a bucket holds raw UV0: the primary coordinates when they are
+/// channel 0 unchanged, else the second sample's (drawn as UV_1) when they are.
+fn raw_uv0_source(asset: Option<&lbp_preview::MaterialAsset>) -> u8 {
+    let Some(a) = asset.and_then(|a| a.texture()) else {
+        return 0;
+    };
+    let unchanged = |t: lbp_preview::SamplingTransform| match t {
+        lbp_preview::SamplingTransform::ScaleOffset(t) => t.is_identity(),
+        lbp_preview::SamplingTransform::Matrix(m) => m.values() == [1., 0., 0., 0., 1., 0.],
+    };
+    let primary = (a.selection.uv_channel, a.sampling_uv == a.uv);
+    let second = a
+        .dual
+        .as_ref()
+        .and(a.selection.second_sample)
+        .filter(|_| a.instance_projection.is_none())
+        .map(|s| (s.uv_channel, unchanged(s.uv_transform)));
+    pod_dissolve::uv0_source(Some(primary), second)
+}
+/// D284: the material GUID of each bucket `adapter::buckets` makes, in its order: the
+/// first primitive's of the bucket (every primitive joins one, as there), none for the
+/// neutral bucket.
+fn bucket_materials(preview: &lbp_preview::GroupedMesh) -> Vec<Option<u32>> {
+    type Seen<'a> = Option<&'a std::sync::Arc<lbp_preview::MaterialAsset>>;
+    let mut seen: Vec<(Seen, Option<u32>)> = Vec::new();
+    let primitives = &preview.geometry.metadata.primitives;
+    for (primitive, binding) in primitives.iter().zip(&preview.bindings) {
+        let asset = binding.as_ref().ok();
+        let known = seen.iter().any(|(a, _)| match (a, asset) {
+            (None, None) => true,
+            (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b),
+            _ => false,
+        });
+        if !known {
+            seen.push((asset, asset.and(primitive.material_guid)));
+        }
+    }
+    seen.into_iter().map(|(_, guid)| guid).collect()
 }
 fn prepare(
     preview: &lbp_preview::GroupedMesh,
@@ -1657,6 +1719,7 @@ fn prepare(
     let g = &preview.geometry;
     let (triangles, ranges) = drop_materialless(preview)?;
     let buckets = adapter::buckets(&triangles, &ranges, &preview.bindings)?;
+    let materials = bucket_materials(preview);
     for (index, (range, binding)) in g
         .primitive_triangles
         .iter()
@@ -1699,7 +1762,7 @@ fn prepare(
             range.len()
         ));
     }
-    prepare_buckets(
+    let mut prepared = prepare_buckets(
         &g.positions,
         preview.normals.as_deref(),
         buckets,
@@ -1707,7 +1770,11 @@ fn prepare(
         None,
         evidence,
         details,
-    )
+    )?;
+    for p in &mut prepared {
+        p.material = materials.get(p.bucket).copied().flatten();
+    }
+    Ok(prepared)
 }
 /// D192: triangles and primitive ranges without the material-less groups. The game's
 /// per-primitive draw loop skips a primitive whose material is null (no bind, no draw;
@@ -1750,7 +1817,7 @@ fn prepare_buckets(
     // Prepare all adapters before allocating GPU assets. Shared full-mesh bounds
     // keep different groups aligned; supported groups share one draw per binding.
     let mut prepared = Vec::new();
-    for (asset, triangles) in buckets {
+    for (bucket, (asset, triangles)) in buckets.into_iter().enumerate() {
         if triangles.is_empty() {
             continue;
         }
@@ -2076,6 +2143,8 @@ fn prepare_buckets(
             }
             None => None,
         };
+        // D284: decided after every coordinate set above has been put on the mesh.
+        let raw_uv0 = raw_uv0_source(asset.as_deref());
         prepared.push(Prepared {
             mesh,
             image,
@@ -2094,6 +2163,9 @@ fn prepare_buckets(
             reflection,
             graph,
             lightmap,
+            bucket,
+            material: None,
+            raw_uv0,
         });
     }
     if prepared.is_empty() {
@@ -2180,6 +2252,7 @@ fn upload(
         dual::enable_spec_map(&mut surface, images.add(map), mode);
     }
     surface.extension.normals_trusted = p.normals_trusted;
+    surface.extension.raw_uv0 = p.raw_uv0;
     (meshes.add(p.mesh), materials.add(surface), image)
 }
 /// D113: display plan for a level scene, built without GPU or window. Per scene mesh the
@@ -2904,24 +2977,35 @@ fn clear_pod_shell(mut commands: Commands, v: Res<Viewer>, roots: Query<Entity, 
     }
 }
 /// D278: the decoded transition mask as a data texture (linear, repeating, with mips).
+/// D284: and `pod_mask` (linear, clamped, with mips: it is sampled at plain UV0 inside
+/// the unit square).
 fn dissolve_mask_image(
     mask: Result<lbp_texture::Texture, String>,
+    island: Option<Result<lbp_texture::Texture, String>>,
     images: &mut Assets<Image>,
 ) -> PodDissolveMask {
-    let image = mask.and_then(|t| {
-        let size = (t.header.width, t.header.height);
-        let wrap = lbp_preview::TextureWrapping::uniform(true);
-        adapter::linear_image(size.0, size.1, t.rgba, wrap).map(|image| (image, size))
-    });
-    match image {
-        Ok((image, (width, height))) => PodDissolveMask {
-            image: Some(images.add(image)),
-            note: format!("loaded, {width} x {height}"),
-        },
-        Err(e) => PodDissolveMask {
-            image: None,
-            note: format!("not loaded ({e}); the band under the line is not tinted"),
-        },
+    let mut load = |texture: Result<lbp_texture::Texture, String>, repeat: bool, without: &str| {
+        let image = texture.and_then(|t| {
+            let size = (t.header.width, t.header.height);
+            let wrap = lbp_preview::TextureWrapping::uniform(repeat);
+            adapter::linear_image(size.0, size.1, t.rgba, wrap).map(|image| (image, size))
+        });
+        match image {
+            Ok((image, (width, height))) => (
+                Some(images.add(image)),
+                format!("loaded, {width} x {height}"),
+            ),
+            Err(e) => (None, format!("not loaded ({e}); {without}")),
+        }
+    };
+    let (image, note) = load(mask, true, "the band under the line is not tinted");
+    let island = island.unwrap_or_else(|| Err("not asked for".into()));
+    let (island, island_note) = load(island, false, "no part of the tent stands higher");
+    PodDissolveMask {
+        image,
+        note,
+        island,
+        island_note,
     }
 }
 /// The Pod rig, and (D275) whether the planets level's scripts run: the camera is then
@@ -3109,7 +3193,11 @@ fn spawn_level(
         .map(|p| {
             p.map(|list| {
                 list.into_iter()
-                    .map(|p| upload(p, meshes, materials, images))
+                    .map(|p| {
+                        let guid = p.material;
+                        let (mesh, material, image) = upload(p, meshes, materials, images);
+                        (mesh, material, image, guid)
+                    })
                     .collect()
             })
             .unwrap_or_default()
@@ -3119,7 +3207,7 @@ fn spawn_level(
     for (n, (mesh_index, transform)) in plan.placed.into_iter().enumerate() {
         let item = plan.things.get(n).copied().flatten();
         let hidden = plan.hidden.get(n).copied().unwrap_or(false);
-        for (mesh, material, image) in &uploaded[mesh_index] {
+        for (mesh, material, image, guid) in &uploaded[mesh_index] {
             let entity = commands
                 .spawn((
                     Mesh3d(mesh.clone()),
@@ -3137,6 +3225,7 @@ fn spawn_level(
                     scene_row: v.scene.len(),
                     own_material: false,
                     dissolve: None,
+                    material: *guid,
                 });
                 things.add(item.thing, entity);
             }

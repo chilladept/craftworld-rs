@@ -19,15 +19,33 @@
 //! frame and that camera's frame are one frame in the game, and so that the camera y
 //! between the end states is the script camera's too.
 //!
-//! Left out: the second mask of the two card materials (islands where the line stands
-//! one band higher), the glass material's constant in place of its colour's green, the
-//! fog over the flat colour.
+//! D284 (part 35): the second mask of the two card materials, `pod_mask.tex`
+//! ([`POD_MASK`]): where its red is over one half the line stands [`ISLAND_RISE`] band
+//! higher, and at `v` = 1 (the platform's card edge, the only material of the platform
+//! with the rule) only those parts are drawn ([`edge`]). Both masks are sampled at the
+//! mesh's raw UV0 (FOUND: the captured draws have an identity UV transform); which
+//! input of a draw bucket holds raw UV0 is [`uv0_source`].
+//!
+//! Left out: the glass material's constant in place of its colour's green, the fog over
+//! the flat colour, the player's own colour as the flat colour (part 30).
 use crate::dual::Dissolve;
 use bevy::prelude::*;
 
 /// GUID of `transition_mask.tex`, the mask the pod's script names for every backdrop
 /// but six (FOUND; the other six masks are not loaded).
 pub const TRANSITION_MASK: u32 = 132_243;
+/// D284: GUID of `pod_mask.tex`, texture slot 6 of the two card materials (FOUND).
+pub const POD_MASK: u32 = 0x0001_fbc7;
+/// D284: the card materials that sample [`POD_MASK`]: `pod_card` and `pod_card_edge`
+/// (FOUND; `window_glassy` has no slot 6).
+pub const CARD: u32 = 0x0000_2f6a;
+pub const CARD_EDGE: u32 = 0x0000_2fda;
+/// D284: `pod_platform.mol`, the mesh the script puts on the pod Thing at `v` = 1
+/// (FOUND, part 27). Of its two materials only [`CARD_EDGE`] has the rule.
+pub const PLATFORM_MESH: u32 = 0x0002_3959;
+/// D284: how many bands higher the line stands where `pod_mask` is white, and how many
+/// bands the `v` = 1 term adds where it is black (FOUND: one each).
+pub const ISLAND_RISE: f32 = 1.;
 /// The line's height over the camera at `v` = 0, level units (FOUND).
 pub const LINE_AT_ZERO: f32 = 1150.;
 /// How far the line falls over `v` 0..1, level units (FOUND).
@@ -56,6 +74,37 @@ pub fn value(alpha: f32) -> Option<f32> {
     (v > 0. && v < 1.).then_some(v)
 }
 
+/// D284: the value of the platform's card edge, drawn with the rule's `v` = 1 term while
+/// the shape colour's alpha is 0 (FOUND: the alpha-0 draw of the captured frame); none
+/// otherwise.
+pub fn value_at_one(alpha: f32) -> Option<f32> {
+    (1. - alpha >= 1.).then_some(1.)
+}
+
+/// D284: the edge value of the game's rule, the shader's `edge` (1 on the line, 0 one
+/// band under it; above 1 the fragment is cut). `above` is the height over the line
+/// ([`line_y`]), `g` the green of the surface colour, `m6` 1 where `pod_mask` is white
+/// and `at_one` 1 at `v` = 1:
+/// `(above - 100 g) / 400 + 1 - m6 + at_one (1 - m6)`. The CPU mirror the tests hold the
+/// shader's arithmetic to.
+#[cfg(test)]
+pub fn edge(above: f32, g: f32, m6: f32, at_one: f32) -> f32 {
+    (above - GREEN_RISE * g) / BAND + 1. - ISLAND_RISE * m6 + at_one * ISLAND_RISE * (1. - m6)
+}
+
+/// D284: which input of a draw bucket holds the mesh's raw UV0, for the masks: 1 =
+/// `in.uv` (the primary coordinates are raw UV0), 2 = `in.uv_b` (the second sample's
+/// coordinates are), 0 = neither (the mask is laid over the position,
+/// [`POSITION_TILE`]). Each argument is the raw channel of that coordinate set and
+/// whether the set is that channel unchanged; none when the bucket has no such set.
+pub fn uv0_source(primary: Option<(usize, bool)>, second: Option<(usize, bool)>) -> u8 {
+    match (primary, second) {
+        (Some((0, true)), _) => 1,
+        (_, Some((0, true))) => 2,
+        _ => 0,
+    }
+}
+
 /// The line's height in the level for a camera at height `camera_y`.
 pub fn line_y(camera_y: f32, v: f32) -> f32 {
     camera_y + LINE_AT_ZERO - LINE_FALL * v
@@ -80,12 +129,15 @@ pub fn consts() -> Vec4 {
 /// ragged edge keep their size under any scale of the level's root), the flat colour,
 /// and the mask's position coordinates. `colour` is the pod's shape colour as stored
 /// (INFERRED: a display value, so it is decoded to linear here and shows as it is).
+/// D284: `island` is `pod_mask` for the card materials (none for the glass); at `v` = 1
+/// the rule's last term is on.
 pub fn uniforms(
     v: f32,
     colour: [f32; 3],
     camera_y: f32,
     level_to_world: Mat4,
     mask: Option<Handle<Image>>,
+    island: Option<Handle<Image>>,
 ) -> Option<Dissolve> {
     let plane = |p: Vec4| world_plane(p, level_to_world);
     let tile = 1. / POSITION_TILE;
@@ -98,6 +150,8 @@ pub fn uniforms(
         mask_u: plane(Vec4::new(tile, 0., tile, 0.))?,
         mask_v: plane(Vec4::new(0., tile, 0., 0.))?,
         mask,
+        island,
+        at_one: v >= 1.,
     })
 }
 
@@ -137,7 +191,7 @@ mod tests {
         };
         let to_world = root.to_matrix() * normalize;
         let line = line_y(-275., 0.5);
-        let d = uniforms(0.5, [1., 0.5, 0.], -275., to_world, None).unwrap();
+        let d = uniforms(0.5, [1., 0.5, 0.], -275., to_world, None, None).unwrap();
         for p in [
             Vec3::new(0., line, 0.),
             Vec3::new(700., line + 400., -300.),
@@ -155,7 +209,91 @@ mod tests {
         assert!((d.colour.x - 1.).abs() < 1e-6 && (d.colour.y - 0.214).abs() < 1e-3);
         assert_eq!(d.colour.z, 0.);
         assert_eq!(d.consts, consts());
-        assert!(uniforms(0.5, [0.; 3], 0., Mat4::ZERO, None).is_none());
+        assert!(uniforms(0.5, [0.; 3], 0., Mat4::ZERO, None, None).is_none());
         assert!(world_plane(Vec4::Y, Mat4::IDENTITY) == Some(Vec4::Y));
+        assert!(!d.at_one && d.island.is_none());
+    }
+
+    /// D284: the edge value against the game's rule `E = (e / 400 - m6) + (v >= 1)(1 -
+    /// m6)` with `e = TC4.y + 1550 v - 750 - 100 g` (TC4.y = level y - camera y, part 29):
+    /// for v under 1 and at v = 1, pod_mask white and black. At v = 1 a fragment is cut
+    /// above camera y - 800 + 100 g + 800 m6 (pod_dissolve-notes.md, the v = 1 table).
+    #[test]
+    fn d284_edge_matches_the_shader_rule() {
+        let camera_y = -299.48;
+        let game = |y: f32, v: f32, g: f32, m6: f32| {
+            let e = (y - camera_y) + 1550. * v - 750. - 100. * g;
+            let a = 1. - v;
+            let lt = f32::from(u8::from(a < 1.));
+            let at_one = f32::from(u8::from(v >= 1.));
+            (e * 0.0025 - m6) * lt + at_one * (1. - m6)
+        };
+        for v in [0.05, 0.5, 0.95, 1.] {
+            let at_one = f32::from(u8::from(v >= 1.));
+            for g in [0., 0.4, 1.] {
+                for m6 in [0., 1.] {
+                    for y in [-1500., -560., -250., 0., 700., 1300.] {
+                        let above = y - line_y(camera_y, v);
+                        let ours = edge(above, g, m6, at_one);
+                        let theirs = game(y, v, g, m6);
+                        assert!(
+                            (ours - theirs).abs() < 1e-3,
+                            "{v} {g} {m6} {y}: {ours} {theirs}"
+                        );
+                    }
+                }
+            }
+        }
+        // At v = 1 the cut is at camera y - 800 + 100 g + 800 m6.
+        for (g, m6) in [(0., 0.), (0.5, 0.), (0., 1.), (1., 1.)] {
+            let cut = camera_y - 800. + 100. * g + 800. * m6;
+            let above = |y: f32| y - line_y(camera_y, 1.);
+            assert!(edge(above(cut - 1.), g, m6, 1.) <= 1.);
+            assert!(edge(above(cut + 1.), g, m6, 1.) > 1.);
+        }
+        // The platform's edge (level y camera - 260.7 .. - 239.7, MEASURED) at v = 1: cut
+        // where pod_mask is black, drawn and tinted where it is white.
+        for y in [camera_y - 260.7, camera_y - 239.7] {
+            let above = y - line_y(camera_y, 1.);
+            assert!(edge(above, 0.5, 0., 1.) > 1.);
+            let kept = edge(above, 0.5, 1., 1.);
+            assert!(kept > 0.2 && kept < 0.45, "{kept}");
+        }
+        // Under 1 the island stands one band higher; without it nothing changes from D278.
+        let above = 100.;
+        assert!((edge(above, 0.2, 0., 0.) - ((above - 20.) / 400. + 1.)).abs() < 1e-6);
+        assert!((edge(above, 0.2, 0., 0.) - edge(above, 0.2, 1., 0.) - 1.).abs() < 1e-6);
+        assert_eq!(value_at_one(0.), Some(1.));
+        assert_eq!(value_at_one(0.05), None);
+        assert_eq!(value_at_one(1.), None);
+        assert_eq!(value(0.), None);
+        let d = uniforms(
+            1.,
+            [1.; 3],
+            camera_y,
+            Mat4::IDENTITY,
+            None,
+            Some(Handle::default()),
+        );
+        let d = d.unwrap();
+        assert!(d.at_one && d.island.is_some());
+        assert!((d.plane.dot(Vec4::new(0., camera_y - 400., 0., 1.))).abs() < 1e-3);
+    }
+
+    /// D284: the input that holds raw UV0 per draw bucket, by the route of its material:
+    /// `pod_card` (primary UV0, unchanged) takes `in.uv`; `pod_card_edge` (primary UV1,
+    /// second sample UV0 unchanged) takes `in.uv_b`; a solid bucket, or one whose UV0 set
+    /// is transformed, takes the position.
+    #[test]
+    fn d284_the_uv_source_follows_the_route() {
+        assert_eq!(uv0_source(Some((0, true)), Some((1, false))), 1);
+        assert_eq!(uv0_source(Some((1, true)), Some((0, true))), 2);
+        assert_eq!(uv0_source(Some((0, true)), Some((0, true))), 1);
+        assert_eq!(uv0_source(None, None), 0);
+        assert_eq!(uv0_source(Some((0, false)), None), 0);
+        assert_eq!(uv0_source(Some((1, true)), Some((0, false))), 0);
+        assert_eq!(uv0_source(Some((2, true)), None), 0);
+        assert_eq!([CARD, CARD_EDGE, PLATFORM_MESH], [0x2f6a, 0x2fda, 145_753]);
+        assert_eq!(POD_MASK, 129_991);
     }
 }

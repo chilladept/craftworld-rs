@@ -61,10 +61,13 @@ pub struct LevelThing {
     pub own_material: bool,
     /// D278: the entity is drawn with the dissolve, at this value and flat colour.
     pub dissolve: Option<Dissolving>,
+    /// D284: GUID of the material of the entity's draw bucket (none for a neutral one).
+    pub material: Option<u32>,
 }
 
 /// D278: the dissolve of one draw entity: the pod's change-over value, strictly between
-/// 0 and 1, and the red, green and blue of the pod Thing's shape colour as stored.
+/// 0 and 1, and the red, green and blue of the pod Thing's shape colour as stored. D284:
+/// or 1, on the entities of [`LevelThings::dissolve_edge`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Dissolving {
     pub value: f32,
@@ -83,6 +86,9 @@ pub struct LevelThings {
     /// dissolve; none (the default) for a level without it. The viewer sets it on the
     /// Pod shell layer's map only.
     pub dissolve_mesh: Option<u32>,
+    /// D284: the mesh and the material GUIDs whose entities of the pod Thing keep the
+    /// dissolve at value 1 (the platform's card edge); none for a level without it.
+    pub dissolve_edge: Option<(u32, u32)>,
 }
 
 static SCENES: AtomicU64 = AtomicU64::new(1);
@@ -94,6 +100,7 @@ impl LevelThings {
             entities: HashMap::new(),
             scene: SCENES.fetch_add(1, Ordering::Relaxed),
             dissolve_mesh: None,
+            dissolve_edge: None,
         }
     }
 
@@ -251,7 +258,9 @@ pub type Parts<'a> = (
 ///   the change-over value the alpha of its shape colour stands for
 ///   (`pod_dissolve::value`) and the colour's red, green and blue on their tag, and a
 ///   material of their own on the first value. At alpha 1 nothing is touched. The shape
-///   colour's change is then not counted as "not drawn".
+///   colour's change is then not counted as "not drawn". D284: at alpha 0 the entities
+///   of [`LevelThings::dissolve_edge`] (the platform's card edge) get value 1 the same
+///   way, and lose it at any other alpha.
 pub fn apply(
     world: &LevelWorld,
     list: &[(u32, DisplayChange)],
@@ -291,13 +300,22 @@ pub fn apply(
         let pod = things.dissolve_mesh.is_some()
             && world.pod_thing(true) == Some(thing)
             && sets(&|item| !item.decoration && dissolves(item));
-        let dissolving = now.shape_colour.filter(|_| pod).and_then(|[r, g, b, a]| {
-            let value = crate::pod_dissolve::value(a)?;
-            Some(Dissolving {
-                value,
-                colour: [r, g, b],
+        let dissolving_by = |value: fn(f32) -> Option<f32>| {
+            now.shape_colour.filter(|_| pod).and_then(|[r, g, b, a]| {
+                Some(Dissolving {
+                    value: value(a)?,
+                    colour: [r, g, b],
+                })
             })
-        });
+        };
+        let dissolving = dissolving_by(crate::pod_dissolve::value);
+        // D284: the platform's card edge keeps the rule at value 1.
+        let at_one = dissolving_by(crate::pod_dissolve::value_at_one);
+        let edge_of = |tag: &LevelThing| {
+            things.dissolve_edge.is_some_and(|(mesh, material)| {
+                tag.item.mesh == Some(mesh) && tag.material == Some(material)
+            })
+        };
         // A shape colour that is drawn as the dissolve is not "not drawn".
         let only_shape_colour = packed(now.mesh_colour) == packed(was.mesh_colour)
             && tint_of(now.shape_tint) == tint_of(was.shape_tint);
@@ -362,10 +380,17 @@ pub fn apply(
                     *visibility = want;
                 }
             }
-            if pod && !tag.item.decoration && dissolves(&tag.item) && tag.dissolve != dissolving {
+            let wanted = if dissolves(&tag.item) {
+                Some(dissolving)
+            } else if edge_of(&tag) {
+                Some(at_one)
+            } else {
+                None
+            };
+            if let Some(wanted) = wanted.filter(|w| pod && tag.dissolve != *w) {
                 // The line itself is written each frame (`level_play::follow_dissolve`);
                 // taken off, it is cleared here.
-                let ready = match dissolving {
+                let ready = match wanted {
                     Some(_) => own_material(&mut tag, &mut material, materials, scene),
                     None => {
                         if let Some(mut m) = materials.get_mut(material.0.id()) {
@@ -375,7 +400,7 @@ pub fn apply(
                     }
                 };
                 if ready {
-                    tag.dissolve = dissolving;
+                    tag.dissolve = wanted;
                     dissolved = true;
                 }
             }
@@ -506,6 +531,7 @@ mod tests {
                         scene_row: row,
                         own_material: false,
                         dissolve: None,
+                        material: None,
                     },
                 ))
                 .id();
@@ -673,6 +699,7 @@ mod tests {
                 scene_row: row,
                 own_material: false,
                 dissolve: None,
+                material: None,
             };
             let parts = (
                 Transform::IDENTITY,
@@ -820,6 +847,7 @@ mod tests {
                 scene_row: row,
                 own_material: false,
                 dissolve: None,
+                material: None,
             };
             let parts = (
                 Transform::IDENTITY,
@@ -969,6 +997,150 @@ mod tests {
         assert!(sum.any() && sum.dissolved == 2);
     }
 
+    /// D284. The pod Thing with the tent's three buckets and the platform's two: under 1
+    /// the tent's entities dissolve and the platform's do not; at alpha 0 (the swap) the
+    /// tent's dissolve is off, the platform's card edge gets value 1 and a material of
+    /// its own, its other material and the decoration nothing; back under 1 the edge
+    /// loses it, in the tag and in the material.
+    #[test]
+    fn d284_the_platform_edge_keeps_the_dissolve_at_one() {
+        use crate::pod_dissolve::{CARD, CARD_EDGE, PLATFORM_MESH};
+        let [[tent, platform]] = SWAPPED_MESHES;
+        assert_eq!(platform, PLATFORM_MESH);
+        let mut world = level();
+        world.things[1].mesh_guid = Some(tent);
+        world.things[1].shape_colour = Some([1.; 4]);
+        world.pod.mesh_resources.extend([tent, platform]);
+        let mut app = App::new();
+        app.insert_resource(Assets::<ViewerMaterial>::default());
+        let shared = app
+            .world_mut()
+            .resource_mut::<Assets<ViewerMaterial>>()
+            .add(dual::material(StandardMaterial::default()));
+        let mut things = LevelThings::new(Mat4::IDENTITY);
+        things.dissolve_mesh = Some(tent);
+        things.dissolve_edge = Some((PLATFORM_MESH, CARD_EDGE));
+        let glass = 0x0001_d14c;
+        let platform_card = 0x0002_52f3;
+        let mut spawned = Vec::new();
+        for (row, (mesh, alternate, decoration, material)) in [
+            (tent, false, false, CARD),
+            (tent, false, false, CARD_EDGE),
+            (tent, false, false, glass),
+            (platform, true, false, CARD_EDGE),
+            (platform, true, false, platform_card),
+            (platform, false, true, CARD_EDGE),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let tag = LevelThing {
+                item: Item {
+                    thing: 1,
+                    decoration,
+                    world: Mat4::IDENTITY,
+                    mesh: Some(mesh),
+                    alternate,
+                },
+                scene_row: row,
+                own_material: false,
+                dissolve: None,
+                material: Some(material),
+            };
+            let parts = (
+                Transform::IDENTITY,
+                Visibility::default(),
+                MeshMaterial3d(shared.clone()),
+                tag,
+            );
+            let entity = app.world_mut().spawn(parts).id();
+            things.add(1, entity);
+            spawned.push(entity);
+        }
+        app.insert_resource(things);
+        let mut scene: Vec<crate::OwnedScene> = spawned
+            .iter()
+            .map(|&e| (e, Handle::default(), shared.clone(), None))
+            .collect();
+        let values = |app: &App| -> Vec<Option<f32>> {
+            let tag = |e: &Entity| app.world().get::<LevelThing>(*e).unwrap();
+            spawned
+                .iter()
+                .map(|e| tag(e).dissolve.map(|d| d.value))
+                .collect()
+        };
+        let step = |app: &mut App, world: &mut LevelWorld, scene: &mut [crate::OwnedScene]| {
+            let list = world.take_display_dirty();
+            run(app, world, list, scene)
+        };
+
+        // Under 1: the tent's three buckets, not the platform's.
+        world
+            .set_shape_editor_colour(1, [0.3, 0.7, 0.1, 0.5])
+            .unwrap();
+        let done = step(&mut app, &mut world, &mut scene);
+        assert_eq!(done.dissolved, 1);
+        let half = Some(0.5);
+        assert_eq!(values(&app), [half, half, half, None, None, None]);
+
+        // Alpha 0 and the swap: the card edge of the platform at 1, nothing else.
+        world
+            .set_shape_editor_colour(1, [0.3, 0.7, 0.1, 0.])
+            .unwrap();
+        world.set_render_mesh_mesh(1, Some(platform)).unwrap();
+        let done = step(&mut app, &mut world, &mut scene);
+        assert_eq!((done.dissolved, done.mesh_swapped), (1, 1));
+        assert_eq!(values(&app), [None, None, None, Some(1.), None, None]);
+        let tag = app.world().get::<LevelThing>(spawned[3]).unwrap();
+        assert_eq!(tag.dissolve.unwrap().colour, [0.3, 0.7, 0.1]);
+        assert!(tag.own_material);
+        let edge = scene[3].2.clone();
+        assert_ne!(edge, shared);
+        assert_eq!(scene[4].2, shared);
+        assert_eq!(scene[5].2, shared);
+        // The same list again changes nothing.
+        let again = run(
+            &mut app,
+            &world,
+            vec![(1, DisplayChange::COLOUR)],
+            &mut scene,
+        );
+        assert_eq!(again.dissolved, 0);
+        // As `level_play::follow_dissolve` writes it.
+        {
+            let mut materials = app.world_mut().resource_mut::<Assets<ViewerMaterial>>();
+            let mut m = materials.get_mut(edge.id()).unwrap();
+            let d = dual::Dissolve {
+                plane: Vec4::Y,
+                at_one: true,
+                ..Default::default()
+            };
+            dual::set_dissolve(&mut m, Some(&d));
+        }
+
+        // Back under 1 with the tent's mesh: the edge loses value 1, the tent has 0.95.
+        world
+            .set_shape_editor_colour(1, [0.3, 0.7, 0.1, 0.05])
+            .unwrap();
+        world.set_render_mesh_mesh(1, Some(tent)).unwrap();
+        let done = step(&mut app, &mut world, &mut scene);
+        assert_eq!(done.dissolved, 1);
+        let now = values(&app);
+        assert!((now[0].unwrap() - 0.95).abs() < 1e-6);
+        assert_eq!(now[3..], [None; 3]);
+        let materials = app.world().resource::<Assets<ViewerMaterial>>();
+        assert!(dual::dissolve(materials.get(edge.id()).unwrap()).is_none());
+
+        // A map without the edge (D278's): the platform is left alone at alpha 0.
+        app.world_mut().resource_mut::<LevelThings>().dissolve_edge = None;
+        world
+            .set_shape_editor_colour(1, [0.3, 0.7, 0.1, 0.])
+            .unwrap();
+        world.set_render_mesh_mesh(1, Some(platform)).unwrap();
+        step(&mut app, &mut world, &mut scene);
+        assert_eq!(values(&app), [None; 6]);
+    }
+
     /// D277. Two levels drawn at once, each with its own map and script world, and the
     /// same Thing number (1) in both: a change in one world reaches the entities of its
     /// own map only, placed by that map's display matrix.
@@ -999,6 +1171,7 @@ mod tests {
                 scene_row: row,
                 own_material: false,
                 dissolve: None,
+                material: None,
             };
             let parts = (
                 Transform::from_matrix(map.normalize * item.world),
