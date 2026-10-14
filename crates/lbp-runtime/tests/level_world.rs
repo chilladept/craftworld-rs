@@ -5369,7 +5369,7 @@ fn d295_the_pod_computer_steps_once_a_tick_in_the_planets_level_only() {
     let t = level.tick(&mut vm, &mut host, 1000);
     assert_eq!((t.done, t.pod_computer_frames), (1, 0));
     assert_eq!(host.world.written, ["Int(1)"]);
-    // A whole tick: once with false, after the Things and before the video call; not
+    // A whole tick: once with false, before the Things (D301) and the video call; not
     // tied to "in use".
     for n in 1..=3 {
         host.world.pod_computer_in_use = n == 3;
@@ -5378,7 +5378,7 @@ fn d295_the_pod_computer_steps_once_a_tick_in_the_planets_level_only() {
         assert!(t.thread_faults.is_empty());
         assert_eq!(
             host.world.written[1 + 3 * (n - 1)..],
-            ["Int(1)", "Bool(false)", "Int(7)"]
+            ["Bool(false)", "Int(1)", "Int(7)"]
         );
     }
     // A level of a session makes its own call.
@@ -5443,4 +5443,126 @@ fn d295_the_build_and_message_queries_are_false() {
             "{name}"
         );
     }
+}
+
+/// A planets level: the world Thing (0) carries `PlanetsWorld`, whose `UpdatePlanetsView`
+/// writes its +16 bool ("snap"); Thing 1 the Lamp of [`level`] (`Update__` writes 1);
+/// Thing 2 an `Earth` whose `Update__rb` writes 2; the pod computer of [`d295_puter`]
+/// (`PerFrameUpdate__b` writes its bool, `UpdateVideo__` writes 7).
+fn d301_level(frame: Vec<u64>) -> (Vm, Bindings<LevelWorld>, LevelScripts) {
+    const WORLD: u32 = 0x2d09;
+    const EARTH: u32 = 0x2d0a;
+    let write = |r: u16, v: u64| {
+        vec![
+            u64::from(0x03u8) | u64::from(r) << 16 | v << 32, // r = v
+            i(0xa2, 0, 0, r, 0),                              // WRITE r
+            i(0xa5, 0, 0, 0, 0),                              // RETURN
+        ]
+    };
+    let mut vm = Vm::default();
+    vm.load(
+        d274_class("Lamp", lbp_runtime::UPDATE, 16, write(4, 1)),
+        Some(GUID),
+    );
+    vm.load(d295_puter(frame), Some(BASE));
+    vm.load(
+        d274_class(
+            lbp_runtime::PLANETS_WORLD_CLASS,
+            "UpdatePlanetsView__bQ11PlanetThingQ11PlanetThingbb",
+            32,
+            vec![i(0xa2, 0, 0, 16, 0), i(0xa5, 0, 0, 0, 0)],
+        ),
+        Some(WORLD),
+    );
+    vm.load(
+        d274_class("Earth", lbp_runtime::PLANET_UPDATE, 48, write(36, 2)),
+        Some(EARTH),
+    );
+    let mut things = level();
+    things[0].data.script = Some(ScriptPart {
+        script: Some(desc(WORLD)),
+        fields: vec![],
+    });
+    things[2].data.script = Some(ScriptPart {
+        script: Some(desc(EARTH)),
+        fields: vec![],
+    });
+    let mut host = Bindings::new(LevelWorld::from_things(&things));
+    assert!(lbp_runtime::add_engine_objects(&mut vm, &mut host, 1000).is_empty());
+    let level = LevelScripts::new(&vm, &host.world);
+    (vm, host, level)
+}
+
+#[test]
+fn d301_the_pod_computer_step_comes_first_and_the_planets_view_last() {
+    let write_arg = vec![
+        i(0xa2, 0, 0, 4, 0), // WRITE r4
+        i(0xa5, 0, 0, 0, 0), // RETURN
+    ];
+    let (mut vm, mut host, mut level) = d301_level(write_arg.clone());
+    // FOUND (0x40663c -> 0x4064bc -> 0x4381d8): `PerFrameUpdate__b`, then the planets
+    // level's world update (the Lamp), then the planet, then `UpdatePlanetsView`; the
+    // video call after them. "Snap" on the level's first tick only.
+    for n in 0..3 {
+        let t = level.tick_level(&mut vm, &mut host, 1000);
+        assert_eq!(
+            (
+                t.done,
+                t.pod_computer_frames,
+                t.planet_updates,
+                t.video_updates
+            ),
+            (3, 1, 1, 1)
+        );
+        assert!(t.faults.is_empty() && t.thread_faults.is_empty());
+        let snap = if n == 0 { "Bool(true)" } else { "Bool(false)" };
+        assert_eq!(
+            host.world.written[5 * n..],
+            ["Bool(false)", "Int(1)", "Int(2)", snap, "Int(7)"]
+        );
+    }
+    assert_eq!(level.ticks, 3);
+
+    // The Things' part alone keeps its one pass: the planet, the world script (snap on
+    // the first tick), then the Lamp in Thing order; no step and no video call.
+    let (mut vm, mut host, mut level) = d301_level(write_arg);
+    let t = level.tick(&mut vm, &mut host, 1000);
+    assert_eq!((t.done, t.pod_computer_frames, t.video_updates), (3, 0, 0));
+    assert_eq!(host.world.written, ["Int(2)", "Bool(true)", "Int(1)"]);
+}
+
+#[test]
+fn d301_a_stopped_pod_computer_step_leaves_the_planets_running() {
+    let assert_false = vec![
+        u64::from(0x03u8) | 4 << 16, // r4 = 0
+        i(0xc2, 0, 0, 4, 0),         // ASSERT r4
+        i(0xa5, 0, 0, 0, 0),         // RETURN
+    ];
+    let (mut vm, mut host, mut level) = d301_level(assert_false);
+    let t = level.tick_level(&mut vm, &mut host, 1000);
+    assert_eq!((t.pod_computer_frames, t.thread_faults.len()), (0, 1));
+    assert!(level.pod_computer_frame_stopped);
+    let t = level.tick_level(&mut vm, &mut host, 1000);
+    assert_eq!(
+        (
+            t.done,
+            t.planet_updates,
+            t.video_updates,
+            t.thread_faults.len()
+        ),
+        (3, 1, 1, 0)
+    );
+    assert_eq!(
+        host.world.written,
+        [
+            "Int(1)",
+            "Int(2)",
+            "Bool(true)",
+            "Int(7)",
+            "Int(1)",
+            "Int(2)",
+            "Bool(false)",
+            "Int(7)"
+        ]
+    );
 }

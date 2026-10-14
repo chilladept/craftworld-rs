@@ -2820,6 +2820,12 @@ fn planet_args(cx: &FrameContext<'_>) -> Vec<(u16, Value)> {
 /// `UpdatePodCamera` (false); +8 the Earth (a PlanetThing; it gets `EarthSpinOffset`); +12 the
 /// moon (`MoonSpinOffset`); +16 bool "snap the view" (true on the first tick only); +17
 /// bool "take the zoom from the pod computer's state" (true).
+///
+/// FOUND (D301, 0x4064bc -> 0x43d900 -> 0x4381d8 -> 0x43ac68): in the pod computer's
+/// step the +4 bool is the last argument 0x4064bc hands the planets object, 0: false, as
+/// here. The +17 bool is the first byte of a record 0x3fce40 fills: 1 when the pod
+/// computer (+0x98c, +0x990) or a global object (+0x38, +0x3c) has a pair of ids set; not
+/// modelled (the zoom it reaches is 0 in the main menu's state either way).
 fn planets_view_args(cx: &FrameContext<'_>) -> Vec<(u16, Value)> {
     let find = |name: &str| {
         cx.instances
@@ -2834,6 +2840,15 @@ fn planets_view_args(cx: &FrameContext<'_>) -> Vec<(u16, Value)> {
         (16, Value::Bool(cx.tick == 0)),
         (17, Value::Bool(true)),
     ]
+}
+
+/// Which Things' entries a pass of a tick runs: every one, all but the planets
+/// object's ([`FRAME_ENTRIES`]), or only those (D301, [`LevelScripts::tick_level`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Entries {
+    All,
+    WithoutPlanets,
+    Planets,
 }
 
 /// Per-tick entries other than [`UPDATE`], by class (docs/level-scripts.md "Part 6").
@@ -3003,8 +3018,10 @@ impl StepReport {
 /// A class listed in [`FRAME_ENTRIES`] runs that entry with its arguments instead of
 /// [`UPDATE`]. The planets' entries run just before the entry of the planets level's
 /// world script, as the engine's planets function calls them (FOUND, see
-/// [`FRAME_ENTRIES`]); where that function stands among the other Things' updates was
-/// not read.
+/// [`FRAME_ENTRIES`]). In [`LevelScripts::tick_level`] they run after the other Things'
+/// updates and the world passes, as the game's planets function runs the planets level's
+/// world update first (FOUND, D301); [`LevelScripts::tick`] alone runs them in its one
+/// pass.
 ///
 /// Script threads (`Thread.Start__` -> `Thread.StartImpl__(this)`, docs/script-vm.md):
 /// a thread started during a step runs `ThreadMain__` on the thread object at the end of
@@ -3114,11 +3131,12 @@ impl LevelScripts {
     /// of the call hold on every frame; a tick is a frame. The function casts `GetWorld()`
     /// to PlanetsWorld, and in the shell level that cast fails, so the game's one pod
     /// computer belongs to the planets level (INFERRED): the call is made only in a level
-    /// whose world script is a [`PLANETS_WORLD_CLASS`]. Its place in the frame against the
-    /// planets object's function (0x43ac68, which ends in `UpdatePlanetsView`) was not read;
-    /// here it runs after the Things' entries and before [`Self::update_video`], so the
-    /// blend's first step is on the tick after the push. A call that faults or yields is
-    /// reported once in [`StepReport::thread_faults`] and not made again.
+    /// whose world script is a [`PLANETS_WORLD_CLASS`]. FOUND (D301): the same function then
+    /// runs the planets object's per-frame function (the planets level's world update, the
+    /// planets' entries, `UpdatePlanetsView`), so it is the first step of the level's tick
+    /// ([`Self::tick_level`]) and the blend's first step is on the tick of the push. A call
+    /// that faults or yields is reported once in [`StepReport::thread_faults`] and not made
+    /// again.
     pub fn pod_computer_frame(
         &mut self,
         vm: &mut Vm,
@@ -3217,7 +3235,15 @@ impl LevelScripts {
 
     /// Runs [`CREATE`] on every instance; `budget` is per call.
     pub fn create(&mut self, vm: &mut Vm, host: &mut dyn Host, budget: u64) -> StepReport {
-        let mut report = self.run_all(vm, host, Some(CREATE), budget, &BTreeSet::new());
+        let mut report = self.run_all(
+            vm,
+            host,
+            Some(CREATE),
+            budget,
+            &BTreeSet::new(),
+            Entries::All,
+            self.ticks,
+        );
         self.start_threads(vm, host, budget, &mut report);
         report
     }
@@ -3482,11 +3508,13 @@ impl LevelScripts {
         report
     }
 
-    /// One game tick of a level: [`Self::tick`], then [`Self::trigger_events`], so a
+    /// One game tick of a level: the pod computer's per-frame step in the planets level
+    /// ([`Self::pod_computer_frame`]), then the Things' part of [`Self::tick`] without the
+    /// planets object's entries ([`FRAME_ENTRIES`]), then [`Self::trigger_events`], so a
     /// script an event suspends is resumed on the next tick (order INFERRED), then
-    /// [`Self::switch_reactions`], then [`Self::apply_global_settings`], then the pod
-    /// computer's per-frame step in the planets level ([`Self::pod_computer_frame`], place
-    /// INFERRED), then the pod computer's per-frame video call ([`Self::update_video`]: FOUND once a rendered
+    /// [`Self::switch_reactions`], then [`Self::apply_global_settings`], then the planets'
+    /// [`PLANET_UPDATE`] and the world script's `UpdatePlanetsView`, then the pod
+    /// computer's per-frame video call ([`Self::update_video`]: FOUND once a rendered
     /// frame after the update, its place as the last script call INFERRED), then the
     /// camera's step ([`LevelWorld::step_camera`], place INFERRED).
     ///
@@ -3501,6 +3529,20 @@ impl LevelScripts {
     /// found (the one engine function that calls a script function of that name by its
     /// name object, 0x625780, is reached from a single game-state object outside the
     /// world update, 0x3f8d24).
+    ///
+    /// FOUND (D301) for the planets level: the game's frame function (0x18558, called
+    /// once a frame by the main loop 0x19348 after its step loop, which runs the main
+    /// level's world update through 0x1a077c) makes the one call of the pod computer
+    /// object's slot 0x14 (0x40663c). That function calls `PerFrameUpdate__b` and then,
+    /// through 0x4064bc, the planets object's slot 0x1c (0x43d900 -> 0x4381d8), which
+    /// runs the planets level's world update (0x895adc -> 0xebe08 -> 0xeacd4), then each
+    /// planet's [`PLANET_UPDATE`] (slot 0x28) in list order, then its own slot 0x58
+    /// (0x43ac68), the caller of `UpdatePlanetsView`. So a state the step pushes (the
+    /// main menu's `SetView`) is blended once in the same frame. The planets object's
+    /// slot 0x1c has one other caller (0x3fd018, slot 0x14 of the other pod object kept
+    /// beside the pod computer, vtable 0xd73f38), and `UpdatePlanetsView` no other.
+    /// INFERRED: the planets' and the world script's entries run in a level without a
+    /// pod computer object too, as before.
     ///
     /// Before anything else the world takes the host's answer to a pod computer request
     /// of the tick before ([`LevelWorld::begin_session_tick`]).
@@ -3522,11 +3564,16 @@ impl LevelScripts {
         host: &mut Bindings<LevelWorld>,
         budget: u64,
     ) -> StepReport {
-        let mut report = self.tick(vm, host, budget);
+        let frame_tick = self.ticks;
+        let mut report = self.pod_computer_frame(vm, host, budget);
+        let (things, busy) = self.tick_entries(vm, host, budget, Entries::WithoutPlanets);
+        report.absorb(things);
         report.absorb(self.trigger_events(vm, host, budget));
         report.absorb(self.switch_reactions(vm, host, budget));
         report.absorb(self.apply_global_settings(vm, host, budget));
-        report.absorb(self.pod_computer_frame(vm, host, budget));
+        let mut planets = self.run_all(vm, host, None, budget, &busy, Entries::Planets, frame_tick);
+        self.start_threads(vm, host, budget, &mut planets);
+        report.absorb(planets);
         report.absorb(self.update_video(vm, host, budget));
         host.world.step_camera();
         host.world.advance_frame();
@@ -3536,6 +3583,18 @@ impl LevelScripts {
 
     /// One game tick; `budget` is per call or resume.
     pub fn tick(&mut self, vm: &mut Vm, host: &mut dyn Host, budget: u64) -> StepReport {
+        self.tick_entries(vm, host, budget, Entries::All).0
+    }
+
+    /// [`Self::tick`] with the entries `entries` picks; also the Things suspended at the
+    /// start of the tick.
+    fn tick_entries(
+        &mut self,
+        vm: &mut Vm,
+        host: &mut dyn Host,
+        budget: u64,
+        entries: Entries,
+    ) -> (StepReport, BTreeSet<u32>) {
         // A Thing suspended at the start of the tick is resumed, not updated again.
         let busy = self.runner.pending_things();
         let mut resume_budget = budget.saturating_mul(self.runner.pending() as u64);
@@ -3554,7 +3613,7 @@ impl LevelScripts {
             let step = vm.resume(host, task, &mut b);
             self.settle_thread(vm, id, step, &mut report);
         }
-        let update = self.run_all(vm, host, None, budget, &busy);
+        let update = self.run_all(vm, host, None, budget, &busy, entries, self.ticks);
         report.done += update.done;
         report.yielded += update.yielded;
         report.planet_updates += update.planet_updates;
@@ -3564,9 +3623,11 @@ impl LevelScripts {
         report.faults.extend(update.faults);
         self.start_threads(vm, host, budget, &mut report);
         self.ticks += 1;
-        report
+        (report, busy)
     }
 
+    /// `frame_tick`: the tick count the frame entries see ([`FrameContext::tick`]).
+    #[allow(clippy::too_many_arguments)]
     fn run_all(
         &mut self,
         vm: &mut Vm,
@@ -3574,6 +3635,8 @@ impl LevelScripts {
         function: Option<&str>,
         budget: u64,
         skip: &BTreeSet<u32>,
+        entries: Entries,
+        frame_tick: u64,
     ) -> StepReport {
         let mut report = StepReport::default();
         let order = match function {
@@ -3583,6 +3646,17 @@ impl LevelScripts {
         for inst in order {
             if skip.contains(&inst.thing) || self.stopped.contains(&inst.thing) {
                 continue;
+            }
+            if function.is_none() {
+                let planets_object = inst.class.and_then(|c| frame_entry(vm, c)).is_some();
+                let run = match entries {
+                    Entries::All => true,
+                    Entries::WithoutPlanets => !planets_object,
+                    Entries::Planets => planets_object,
+                };
+                if !run {
+                    continue;
+                }
             }
             let mut b = budget;
             // `None`: the tick's entry, a frame entry or `Update__`.
@@ -3595,7 +3669,7 @@ impl LevelScripts {
                     let args = (e.args)(&FrameContext {
                         vm,
                         instances: &self.instances,
-                        tick: self.ticks,
+                        tick: frame_tick,
                         thing: inst.thing,
                         planets: &self.planets,
                     });
