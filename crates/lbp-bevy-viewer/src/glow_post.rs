@@ -10,6 +10,17 @@
 //! runs on every frame: with no dissolve the glow term is 0 and only the scale and the
 //! vignette apply.
 //!
+//! D300 (part 51): the pass ends in the game's `lerp(c, scene, scene.a)` (FOUND, PS 14857 and
+//! the Moon's eid 5403): where the scene's alpha is 1 it returns the scene. In the Pod's
+//! frames the scene reaching it has alpha 0 on every pixel of the 3-D image: after the depth
+//! of field and the glow's source pass the game copies the frame to main memory, an SPU
+//! anti-aliasing job (the EBOOT's "EDGE MLAA" task) works on it there and the result comes
+//! back with alpha 0 (MEASURED in frames 5247 and 14790). In a level's frames the pass is not
+//! seen (part 50), so there the scene keeps its own alpha (1 on opaque surfaces). On by
+//! default on the level-lighting route: the Pod picture (`--pod-camera`) mixes back by alpha
+//! 0 ([`clear_scene_alpha`]), every other level by the scene's alpha, a no-op where that is
+//! 1. `--no-final-pass` turns it off.
+//!
 //! One full-screen chain on the main 3D camera ([`EdgeGlow`]), after the main passes and
 //! before egui/UI (`Core3dSystems::PostProcess`). The glow runs only while a `ViewerMaterial`
 //! dissolve is on (other draws keep alpha 1 but are not relied on) and not under
@@ -75,18 +86,34 @@ pub fn disable() {
     NO_EDGE_GLOW.store(true, Ordering::Relaxed);
 }
 /// D294 `--final-pass` (level-lighting route only, `main.rs`): the final pass's scale and
-/// vignette on every frame.
+/// vignette on every frame. D300: on by default on that route (`--no-final-pass` off).
 static FINAL_PASS: AtomicBool = AtomicBool::new(false);
 pub fn enable_final_pass() {
     FINAL_PASS.store(true, Ordering::Relaxed);
 }
+/// D300: the scene's alpha as the final pass sees it in the Pod's frames: 0 on every pixel
+/// (the anti-aliasing job's copy back, FOUND frames 5247 / 14790). Set for the Pod picture
+/// (`--pod-camera`); otherwise the pass mixes back by the scene's own alpha.
+static SCENE_ALPHA_CLEARED: AtomicBool = AtomicBool::new(false);
+pub fn clear_scene_alpha() {
+    SCENE_ALPHA_CLEARED.store(true, Ordering::Relaxed);
+}
+/// D300: whether the final pass runs, and whether it mixes back by alpha 0 (the Pod): on the
+/// level-lighting route unless `--no-final-pass` (`flag` `Some(false)`; `--final-pass` is
+/// `Some(true)` and changes nothing there), never elsewhere.
+pub fn final_pass_route(level_route: bool, flag: Option<bool>, pod: bool) -> (bool, bool) {
+    let on = level_route && flag != Some(false);
+    (on, on && pod)
+}
 
 /// D292: on the camera the glow chain runs for; `active` while a dissolve is on (the glow),
-/// D294 `final_pass` under `--final-pass` (the scale and vignette, every frame).
+/// D294 `final_pass` under `--final-pass` (the scale and vignette, every frame), D300
+/// `alpha_cleared` when the pass mixes back by alpha 0 (the Pod) instead of the scene's.
 #[derive(Component, Clone, Copy, Default, Debug)]
 pub struct EdgeGlow {
     pub active: bool,
     pub final_pass: bool,
+    pub alpha_cleared: bool,
 }
 impl SyncComponent for EdgeGlow {
     type Target = Self;
@@ -138,10 +165,15 @@ fn update_active(materials: Res<Assets<ViewerMaterial>>, mut cameras: Query<&mut
     let on = !NO_EDGE_GLOW.load(Ordering::Relaxed)
         && materials.iter().any(|(_, m)| dual::dissolve_on(m));
     let final_pass = FINAL_PASS.load(Ordering::Relaxed);
+    let alpha_cleared = SCENE_ALPHA_CLEARED.load(Ordering::Relaxed);
     for mut glow in &mut cameras {
-        if glow.active != on || glow.final_pass != final_pass {
-            glow.active = on;
-            glow.final_pass = final_pass;
+        let next = EdgeGlow {
+            active: on,
+            final_pass,
+            alpha_cleared,
+        };
+        if (glow.active, glow.final_pass, glow.alpha_cleared) != (on, final_pass, alpha_cleared) {
+            *glow = next;
         }
     }
 }
@@ -164,7 +196,7 @@ pub(crate) struct GlowPipelines {
     composite: BindGroupLayoutDescriptor,
     sampler: Sampler,
     source: HashMap<TextureFormat, CachedRenderPipelineId>,
-    composite_ids: HashMap<(TextureFormat, &'static str), CachedRenderPipelineId>,
+    composite_ids: HashMap<(TextureFormat, &'static str, bool), CachedRenderPipelineId>,
     blur_h: CachedRenderPipelineId,
     blur_v: CachedRenderPipelineId,
     vertex: bevy::render::render_resource::VertexState,
@@ -186,18 +218,22 @@ fn descriptor(
     entry: &'static str,
     format: TextureFormat,
     srgb: bool,
+    alpha_cleared: bool,
 ) -> RenderPipelineDescriptor {
+    let mut shader_defs = Vec::new();
+    if srgb {
+        shader_defs.push("SRGB_TARGET".into());
+    }
+    if alpha_cleared {
+        shader_defs.push("SCENE_ALPHA_CLEARED".into());
+    }
     RenderPipelineDescriptor {
         label: Some(format!("d292_{entry}").into()),
         layout: vec![layout.clone()],
         vertex: vertex.clone(),
         fragment: Some(FragmentState {
             shader: SHADER,
-            shader_defs: if srgb {
-                vec!["SRGB_TARGET".into()]
-            } else {
-                Vec::new()
-            },
+            shader_defs,
             entry_point: Some(entry.into()),
             targets: vec![Some(ColorTargetState {
                 format,
@@ -251,12 +287,14 @@ fn init_pipelines(
         "glow_blur_h",
         GLOW_FORMAT,
         false,
+        false,
     ));
     let blur_v = cache.queue_render_pipeline(descriptor(
         &vertex,
         &single,
         "glow_blur_v",
         GLOW_FORMAT,
+        false,
         false,
     ));
     commands.insert_resource(GlowPipelines {
@@ -311,12 +349,24 @@ fn prepare_glow(
                 "glow_source",
                 GLOW_FORMAT,
                 srgb,
+                false,
             ))
         });
         let entry = composite_entry(marker.active, marker.final_pass);
-        let composite = *p.composite_ids.entry((format, entry)).or_insert_with(|| {
-            cache.queue_render_pipeline(descriptor(&p.vertex, &p.composite, entry, format, srgb))
-        });
+        let cleared = marker.alpha_cleared;
+        let composite = *p
+            .composite_ids
+            .entry((format, entry, cleared))
+            .or_insert_with(|| {
+                cache.queue_render_pipeline(descriptor(
+                    &p.vertex,
+                    &p.composite,
+                    entry,
+                    format,
+                    srgb,
+                    cleared,
+                ))
+            });
         let size = target.main_texture().size();
         let mut texture = |label: &'static str, div: u32| {
             textures.get(
@@ -541,20 +591,35 @@ fn vignette(position: vec2<f32>) -> f32 {
     let s = smoothstep(0.0, 1.0, saturate(VIGNETTE_START - r));
     return VIGNETTE_FLOOR + (1.0 - VIGNETTE_FLOOR) * s;
 }
-// (scene x FINAL_SCALE + glow) x vignette, saturated at the end (the 8-bit target), alpha 1.
+// D300: the pass's last step, lerp(c, scene, a) in encoded values, saturated at the end
+// (the 8-bit target), alpha 1. `a` is 0 in the Pod (the anti-aliasing job's copy back), else
+// the scene's own alpha; where that is 1 the scene comes back as it is.
+fn final_mix(scene: vec4<f32>, c: vec3<f32>) -> vec4<f32> {
+#ifdef SCENE_ALPHA_CLEARED
+    let a = 0.0;
+#else
+    let a = clamp(scene.a, 0.0, 1.0);
+#endif
+    if a >= 1.0 {
+        return vec4<f32>(scene.rgb, 1.0);
+    }
+    let e = mix(c, to_encoded(scene.rgb), a);
+    return vec4<f32>(from_encoded(min(e, vec3<f32>(1.0))), 1.0);
+}
+// c = (scene x FINAL_SCALE + glow) x vignette, then the mix back by the scene's alpha.
 @fragment
 fn final_composite(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let scene = textureLoad(source_texture, vec2<i32>(floor(in.position.xy)), 0);
     let glow = textureSampleLevel(glow_texture, source_sampler, in.uv, 0.0).rgb;
     let c = (to_encoded(scene.rgb) * FINAL_SCALE + glow) * vignette(in.position.xy);
-    return vec4<f32>(from_encoded(min(c, vec3<f32>(1.0))), 1.0);
+    return final_mix(scene, c);
 }
 // The same with no dissolve (the glow term 0).
 @fragment
 fn final_only(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let scene = textureLoad(source_texture, vec2<i32>(floor(in.position.xy)), 0);
     let c = to_encoded(scene.rgb) * FINAL_SCALE * vignette(in.position.xy);
-    return vec4<f32>(from_encoded(min(c, vec3<f32>(1.0))), 1.0);
+    return final_mix(scene, c);
 }
 "#;
 
@@ -571,10 +636,20 @@ pub fn vignette_cpu(x: u32, y: u32, w: u32, h: u32) -> f32 {
     let v = (y as f32 + 0.5) / h as f32 - 0.5;
     vignette_at((u * VIGNETTE_AXES[0]).hypot(v * VIGNETTE_AXES[1]))
 }
-/// D294: the final pass on one encoded colour with its glow, saturated at the end.
+/// D294: the final pass on one encoded colour with its glow, saturated at the end (the
+/// scene's alpha 0, as in the Pod's frames).
 #[cfg(test)]
 pub fn final_pass_cpu(scene: [f32; 3], glow: [f32; 3], vignette: f32) -> [f32; 3] {
-    std::array::from_fn(|k| ((scene[k] * FINAL_SCALE + glow[k]) * vignette).min(1.))
+    final_pass_mix_cpu(scene, 0., glow, vignette)
+}
+/// D300: the same with the game's last step, `lerp(c, scene, alpha)` before the saturate.
+#[cfg(test)]
+pub fn final_pass_mix_cpu(scene: [f32; 3], alpha: f32, glow: [f32; 3], vignette: f32) -> [f32; 3] {
+    let a = alpha.clamp(0., 1.);
+    std::array::from_fn(|k| {
+        let c = (scene[k] * FINAL_SCALE + glow[k]) * vignette;
+        (c + (scene[k] - c) * a).min(1.)
+    })
 }
 
 /// D292: a CPU mirror of the chain on a scene of encoded colours and alphas (row-major,
@@ -768,16 +843,24 @@ mod tests {
         let glow = glow_cpu(&rgb, &vec![1.; w * h], w, h);
         assert!(glow.iter().flatten().all(|&v| v == 0.));
     }
-    /// Resolves `#ifdef SRGB_TARGET` / `#else` / `#endif` for the given choice.
+    /// Resolves `#ifdef SRGB_TARGET` / `#else` / `#endif` for the given choice (D300: and
+    /// `SCENE_ALPHA_CLEARED`, off here; [`preprocess_with`] sets it).
     fn preprocess(srgb: bool) -> String {
+        preprocess_with(srgb, false)
+    }
+    fn preprocess_with(srgb: bool, cleared: bool) -> String {
         let mut active = vec![true];
         let mut body = String::new();
         for line in shader_source().lines() {
             let t = line.trim_start();
             if let Some(def) = t.strip_prefix("#ifdef ") {
-                assert_eq!(def.trim(), "SRGB_TARGET");
+                let on = match def.trim() {
+                    "SRGB_TARGET" => srgb,
+                    "SCENE_ALPHA_CLEARED" => cleared,
+                    other => panic!("{other}"),
+                };
                 let parent = *active.last().unwrap();
-                active.push(parent && srgb);
+                active.push(parent && on);
             } else if t.starts_with("#else") {
                 let parent = active[active.len() - 2];
                 let now = active.last_mut().unwrap();
@@ -850,7 +933,11 @@ mod tests {
     /// while the final pass is on).
     #[test]
     fn d292_extracted_only_while_active() {
-        let m = |active, final_pass| EdgeGlow { active, final_pass };
+        let m = |active, final_pass| EdgeGlow {
+            active,
+            final_pass,
+            alpha_cleared: false,
+        };
         assert!(EdgeGlow::extract_component(&m(false, false)).is_none());
         assert!(EdgeGlow::extract_component(&m(true, false)).is_some());
         assert!(EdgeGlow::extract_component(&m(false, true)).is_some());
@@ -936,8 +1023,9 @@ mod tests {
             assert!(
                 source.contains("to_encoded(scene.rgb) * FINAL_SCALE * vignette(in.position.xy)")
             );
-            let end = "vec4<f32>(from_encoded(min(c, vec3<f32>(1.0))), 1.0)";
-            assert_eq!(source.matches(end).count(), 2);
+            // D300: both end in the mix back by the scene's alpha, saturated after it.
+            assert_eq!(source.matches("return final_mix(scene, c);").count(), 2);
+            assert!(source.contains("vec4<f32>(from_encoded(min(e, vec3<f32>(1.0))), 1.0)"));
             let module = naga::front::wgsl::parse_str(&source)
                 .unwrap_or_else(|e| panic!("{}", e.emit_to_string(&source)));
             naga::valid::Validator::new(
@@ -953,5 +1041,118 @@ mod tests {
                 );
             }
         }
+    }
+    /// D300: the game's last step, `lerp(c, scene, a)` before the 8-bit saturate: alpha 1
+    /// gives the scene as it is (a level's opaque surfaces), alpha 0 the D294 pass (the
+    /// Pod), between them the straight mix; the saturate comes after the mix.
+    #[test]
+    fn d300_final_pass_mixes_back_by_alpha() {
+        let scene = [0.5, 0.2, 0.8];
+        let glow = [0.1, 0.0, 0.3];
+        assert_eq!(final_pass_mix_cpu(scene, 1., glow, 0.4), scene);
+        assert_eq!(
+            final_pass_mix_cpu(scene, 0., glow, 0.4),
+            final_pass_cpu(scene, glow, 0.4)
+        );
+        let half = final_pass_mix_cpu(scene, 0.5, [0.; 3], 1.);
+        assert!((half[0] - (0.5 + 0.6499) / 2.).abs() < 1e-6, "{half:?}");
+        // c = 0.8 x 1.2998 = 1.04 is mixed before it is saturated: (1.04 + 0.8) / 2.
+        assert!(
+            (half[2] - (0.8 * 1.2998 + 0.8) / 2.).abs() < 1e-6,
+            "{half:?}"
+        );
+        assert_eq!(final_pass_mix_cpu(scene, 0., [0.; 3], 1.)[2], 1.);
+        let mixed = final_pass_mix_cpu(scene, 0.5, glow, 1.);
+        assert_eq!(mixed[2], 1.);
+        assert_eq!(final_pass_mix_cpu([0.9; 3], 0.25, [0.5; 3], 1.), [1.; 3]);
+        // Out-of-range alphas clamp, as the shader's.
+        assert_eq!(final_pass_mix_cpu(scene, 2., glow, 0.4), scene);
+        assert_eq!(
+            final_pass_mix_cpu(scene, -1., glow, 0.4),
+            final_pass_cpu(scene, glow, 0.4)
+        );
+    }
+    /// D300: the frame a level gives (every pixel alpha 1, as the viewer's opaque surfaces,
+    /// its clear and its blended draws leave it) comes back unchanged from the pass, edge to
+    /// edge; the same frame in the Pod (alpha 0) gets x1.2998 at the centre and the
+    /// vignette's 0.27 in the corner.
+    #[test]
+    fn d300_level_frame_unchanged_pod_frame_scaled() {
+        let (w, h) = (1280, 720);
+        let grey = [0.4; 3];
+        for (x, y) in [(0, 0), (639, 359), (w - 1, h - 1), (100, 600)] {
+            let v = vignette_cpu(x, y, w, h);
+            assert_eq!(final_pass_mix_cpu(grey, 1., [0.; 3], v), grey);
+        }
+        let centre = final_pass_mix_cpu(grey, 0., [0.; 3], vignette_cpu(639, 359, w, h));
+        assert!((centre[0] - 0.4 * 1.2998).abs() < 1e-6, "{centre:?}");
+        let corner = final_pass_mix_cpu(grey, 0., [0.; 3], vignette_cpu(0, 0, w, h));
+        assert!(
+            (corner[0] / (0.4 * 1.2998) - 0.27).abs() < 0.01,
+            "{corner:?}"
+        );
+    }
+    /// D300: the route: on by default on the level-lighting route (and under
+    /// `--final-pass`), off under `--no-final-pass` and on every other route; alpha 0 only
+    /// for the Pod picture and only while the pass is on.
+    #[test]
+    fn d300_final_pass_default_route() {
+        assert_eq!(final_pass_route(true, None, false), (true, false));
+        assert_eq!(final_pass_route(true, Some(true), false), (true, false));
+        assert_eq!(final_pass_route(true, None, true), (true, true));
+        assert_eq!(final_pass_route(true, Some(false), true), (false, false));
+        assert_eq!(final_pass_route(true, Some(false), false), (false, false));
+        assert_eq!(final_pass_route(false, None, true), (false, false));
+        assert_eq!(final_pass_route(false, Some(true), true), (false, false));
+    }
+    /// D300: the shader's mix: the scene's alpha (clamped), returned as it is at 1, and the
+    /// Pod's define puts 0 in its place; the glow's source still reads the scene's own alpha
+    /// (`1 - a`, D292) under either define, and every entry validates with naga in all four
+    /// combinations.
+    #[test]
+    fn d300_final_mix_shader_validates() {
+        for srgb in [true, false] {
+            for cleared in [false, true] {
+                let source = preprocess_with(srgb, cleared);
+                assert!(source.contains("fn final_mix(scene: vec4<f32>, c: vec3<f32>)"));
+                assert!(source.contains("let e = mix(c, to_encoded(scene.rgb), a);"));
+                assert!(source.contains("if a >= 1.0 {"));
+                assert!(source.contains("return vec4<f32>(scene.rgb, 1.0);"));
+                assert_eq!(source.contains("let a = 0.0;"), cleared);
+                assert_eq!(
+                    source.contains("let a = clamp(scene.a, 0.0, 1.0);"),
+                    !cleared
+                );
+                let src = &source[source.find("fn glow_source").unwrap()..];
+                let src = &src[..src.find("fn blur").unwrap()];
+                assert!(src.contains("a += t.a;") && src.contains("(1.0 - a)"));
+                // D292's own add (no final pass) does not mix: alpha 1 as before.
+                let d292 = &source[source.find("fn glow_composite").unwrap()..];
+                let d292 = &d292[..d292.find("fn vignette").unwrap()];
+                assert!(!d292.contains("final_mix"));
+                let module = naga::front::wgsl::parse_str(&source)
+                    .unwrap_or_else(|e| panic!("{}", e.emit_to_string(&source)));
+                naga::valid::Validator::new(
+                    naga::valid::ValidationFlags::all(),
+                    naga::valid::Capabilities::all(),
+                )
+                .validate(&module)
+                .unwrap();
+                for entry in ["glow_source", "final_composite", "final_only"] {
+                    assert!(module.entry_points.iter().any(|e| e.name == entry));
+                }
+            }
+        }
+    }
+    /// D300: the marker carries the Pod's alpha choice into the render world.
+    #[test]
+    fn d300_extracted_with_the_alpha_choice() {
+        let m = EdgeGlow {
+            active: false,
+            final_pass: true,
+            alpha_cleared: true,
+        };
+        let out = EdgeGlow::extract_component(&m).unwrap();
+        assert!(out.final_pass && out.alpha_cleared && !out.active);
     }
 }

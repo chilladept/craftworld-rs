@@ -1,5 +1,15 @@
 # Development log
 
+## 2026-10-14 - D300 the scene's alpha at the final pass
+
+Viewer only. FOUND (RenderDoc frames 5247 and 14790): after the depth of field and the glow's source the Pod's
+frame is copied to main memory for an SPU anti-aliasing job (EBOOT 0x31dfd4, gated by byte 0xdb8208; the "EDGE
+MLAA" task) and comes back with alpha 0 everywhere, so the final pass's mix back by the scene's alpha outputs the
+scaled, vignetted frame; levels' game frames show no pass (alpha 1). The final pass is now on by default on the
+level-lighting route, mixing back by alpha 0 in the Pod picture and by the scene's alpha elsewhere;
+`--no-final-pass` turns it off. MEASURED: the Pod stills equal D294's `--final-pass` ones (closed Pod vs the game
+19.0 -> 5.8); Da Vinci and Bravery equal the stills without the pass. See docs/level-scripts.md part 51.
+
 ## 2026-10-14 - D298 the game's depth of field
 
 Viewer only. The game's depth of field (FOUND, RenderDoc frames 5247 and 14790): a half-size source with a depth

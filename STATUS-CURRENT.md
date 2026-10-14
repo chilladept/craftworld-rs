@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D298
+# Current state (overwrite each milestone) — after D300
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -11,7 +11,39 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D298 the game's depth of field (2026-10-14)
+## Latest: D300 the scene's alpha at the final pass (2026-10-14)
+- Viewer only (`docs/level-scripts.md` part 51). FOUND (RenderDoc frames 5247 and 14790, hidden
+  desktop): after the depth of field and the glow's source the frame goes to main memory
+  (0x33200000) for an SPU anti-aliasing job and comes back with alpha 0 on every pixel; the final
+  pass's `lerp(c, scene, a)` then outputs `c` (x1.2998, glow, vignette) on the whole 3-D picture.
+  Before the round trip the shell, glass, DualShock, room, planets and clear are all alpha 255.
+  The Puter menu (14790) is drawn after it with additive alpha and keeps its brightness. FOUND
+  (EBOOT): 0x31dfd4 runs the round trip only while byte 0xdb8208 is set (the job is the "EDGE
+  MLAA" task); 0x3205a0 and a paint UI page clear it. Levels' game frames show no pass, so the
+  job is off there (what keeps it off INFERRED: the 0x3205a0 / 0x40d184 render path).
+- The final pass is on by default on the level-lighting route and mixes back by alpha: 0 for the
+  Pod picture (`--pod-camera`), the scene's own elsewhere. `--no-final-pass` turns it off;
+  `--final-pass` is still accepted. The glow's source still reads the scene's alpha (D292).
+- MEASURED (`shots/d300-*`): closed Pod at 600 and the change-over at 614 byte-equal to D294's
+  `--final-pass` stills (closed vs the game 19.0 -> 5.8 viewport, grid 15.9 -> 2.5; 614 left glass
+  31.9 -> 0.4, DS body 4.0 -> 0.1). Da Vinci byte-equal to `--no-final-pass`; Bravery equal outside
+  Sackboy's box (his idle, as two runs without the pass).
+- Tests `d300_*` (five); fmt, the viewer's clippy and `cargo check --workspace` pass; viewer tests
+  129 pass, `sackboy_play::tests::input_script_steps` fails as on main.
+- Next: what keeps the job off in a level's play; the job's edge filtering in the viewer; the
+  alpha the viewer writes on glow materials in a level.
+
+## Before: D301 the pod computer's step against the planets view (2026-10-14)
+- Script VM (`docs/level-scripts.md` part 52). FOUND (EBOOT 01.33): the frame function 0x18558
+  makes the one call of the pod computer's slot 0x14 (0x40663c) after the main level's update;
+  it runs `PerFrameUpdate__b`, then (0x4064bc -> 0x43d900 -> 0x4381d8) the planets level's
+  update, the planets' `Update__rb` and `UpdatePlanetsView` (0x43ac68). `tick_level_in_session`
+  follows that order. MEASURED: the menu view blend steps on the tick of its push (0.05 on 601,
+  1.0 on 620, with the change-over; was 0.0 on 601, 1.0 on 621); nothing else changes
+  (`d301-session.json`). One of part 50's two ticks is explained; the other may be where
+  message 0x30's handler (it sets "in use") runs in the frame.
+
+## Before: D298 the game's depth of field (2026-10-14)
 - Viewer only (`docs/level-scripts.md` part 49). FOUND (RenderDoc frames 5247 and 14790, hidden
   desktop): before the glow, a half-size source (scene 2x2 mean, depth gate in alpha), two
   rings of five pentagon taps at radius `saturate(8 g - 7)` x 1.6 half-size texels (a tap
@@ -31,7 +63,7 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Tests `d298_*` (six); fmt, the viewer's clippy and `cargo check --workspace` pass; viewer tests
   124 pass, `sackboy_play::tests::input_script_steps` fails as on main.
 - Next: the flag on by default after a non-Pod game frame with depth of field; the stencil-marked
-  composite; `--final-pass` by default; the change-over's room view against `open-t1`.
+  composite; the change-over's room view against `open-t1` (`--final-pass` by default: D300).
 
 ## Before: D299 where the game's final pass applies (2026-10-14)
 - Docs only (`docs/level-scripts.md` part 50). FOUND (RenderDoc, the blank Moon level): the
