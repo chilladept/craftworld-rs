@@ -1439,7 +1439,25 @@ fn load(
                     ));
                 }
                 v.level.lines.extend(menu_line.clone());
+                // D281: with `--play-sackboy` under the scripts the figure is the viewer's
+                // own Sackboy, who plays in the shell level: the play figure, hung under
+                // the shell's frame root and placed by the shell's display matrix, so he
+                // stands in the shell level's own frame like everything else of it. The
+                // fitted Pod figure is not spawned then.
+                let own_sackboy = frame.is_some() && sackboy_play::in_pod();
                 let line = match done.preview {
+                    Ok(Some(preview)) if own_sackboy => sackboy_play::spawn_figure(
+                        &mut v,
+                        (&mut commands, &mut meshes, &mut materials, &mut images),
+                        &mut bindposes,
+                        normalize.x_axis.truncate().length(),
+                        &preview,
+                        (done.clip, done.play_bank),
+                        Some((root, normalize)),
+                    )
+                    .map(|line| {
+                        format!("{line}; in the Pod: under the shell level's frame root")
+                    })?,
                     Ok(Some(preview)) => spawn_figure(
                         &mut v,
                         (&mut commands, &mut meshes, &mut materials, &mut images),
@@ -1465,6 +1483,7 @@ fn load(
                         planets_normalize.x_axis.truncate().length(),
                         &preview,
                         (done.clip, done.play_bank),
+                        None,
                     )?,
                     Err(e) => format!("Play figure not loaded: {e}"),
                     Ok(None) => String::new(),
@@ -2990,6 +3009,7 @@ fn place_menu_planets(scene: &mut LevelScene, globe: usize) -> Result<String, St
 }
 /// P2b: Space opens or closes the Puter: the view dollies through the Pod window in
 /// `DOLLY_SECONDS` while the shell layer follows its own camera.
+#[allow(clippy::too_many_arguments)]
 fn pod_dolly(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
@@ -2998,6 +3018,7 @@ fn pod_dolly(
     state: Option<ResMut<pod_menu::PuterState>>,
     mut orbit: ResMut<Orbit>,
     mut layers: PodLayers,
+    own_sackboy: Option<Res<sackboy_play::PodSackboy>>,
 ) {
     let (Some(rig), Some(mut state)) = (rig, state) else {
         return;
@@ -3021,7 +3042,13 @@ fn pod_dolly(
         }
     }
     let pad = |b| pads.iter().any(|g| g.just_pressed(b));
-    let toggle = keys.just_pressed(KeyCode::Space) || pad(GamepadButton::West);
+    // D281: with the viewer's own Sackboy in the Pod Space is his jump; the engage button
+    // is the play mode's Square key, Z.
+    let engage_key = match own_sackboy {
+        Some(_) => KeyCode::KeyZ,
+        None => KeyCode::Space,
+    };
+    let toggle = keys.just_pressed(engage_key) || pad(GamepadButton::West);
     let back =
         keys.any_just_pressed([KeyCode::Escape, KeyCode::Backspace]) || pad(GamepadButton::East);
     if scripted {

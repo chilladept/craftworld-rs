@@ -18,6 +18,13 @@
 //! Moods (D233, docs/d233-sackboy-moods-headlook.md): I / K / L / J are the mood d-pad up
 //! (happy) / down (sad) / right (angry) / left (scared); in a script the capitals `U D R L`
 //! hold that direction (one press per step: `U:1,-:40,U:1`).
+//!
+//! In the Pod (D281, docs/level-scripts.md part 32): with `--level-scripts --pod-camera N
+//! --pod-shell HEX` the level he plays in is the shell level (pod.bin), not the planets
+//! level given: the physics scene is pod.bin's ([`pod_scene`]), he starts on its floor at
+//! the data spawn, his figure hangs under the shell's frame root, the camera is the
+//! script's, and `level_play` hands his place and the pad to the script worlds
+//! ([`PodSackboy`]). In a script `e` is the engage button (Square) on the step's first tick.
 use bevy::prelude::*;
 use lbp_catalog::{attachment::AttachedSource, LoadControl};
 use lbp_preview::level_scene;
@@ -45,7 +52,97 @@ struct Play {
     scene: Option<PhysicsScene>,
     spawn: [f32; 3],
     script: Option<Vec<(Input, usize)>>,
+    /// D281: the 0-based ticks on which a script step with `e` starts ([`engage_ticks`]).
+    engage: Vec<usize>,
     tick: usize,
+}
+
+/// D281: the Sackboy in the Pod, between this module and `level_play`. There only with
+/// `--play-sackboy --level-scripts --pod-camera N --pod-shell HEX` ([`pod_shell`]).
+#[derive(Resource, Default)]
+pub(crate) struct PodSackboy {
+    /// His position in the shell level's units after the last physics tick, and whether
+    /// he stood on a floor then; none before he is spawned. Written in `FixedFirst`, so a
+    /// script tick reads where the tick before left him.
+    pub at: Option<([f32; 3], bool)>,
+    /// The engage button of the input script is down on this tick; taken by
+    /// `level_play::tick`.
+    pub engage: bool,
+    /// `--level-scripts-hold-at`: the script ticks are held (written by
+    /// `level_play::tick`). His input and his pose are held with them.
+    pub held: bool,
+    /// His movement state after each tick that ran before his figure was loaded, for
+    /// the animation picker to catch up on ([`tick_anim`]): his pose on a tick then does
+    /// not depend on how long the load took.
+    backlog: Vec<(lbp_sim::sackboy::Sackboy, bool)>,
+}
+
+/// D281: the shell level's GUID when the Sackboy plays in the Pod: `--play-sackboy` with
+/// `--level-scripts`, `--pod-camera N` and `--pod-shell HEX` (the condition under which
+/// `level_play` has the shell level in its session, plus the play mode).
+pub(crate) fn pod_shell(all: &[String]) -> Result<Option<u32>, String> {
+    let has = |flag: &str| all.iter().any(|a| a == flag);
+    if !(has("--play-sackboy") && has("--level-scripts") && has("--pod-camera")) {
+        return Ok(None);
+    }
+    value(all, "--pod-shell")
+        .map(|g| u32::from_str_radix(&g, 16).map_err(|_| "--pod-shell requires hex digits".into()))
+        .transpose()
+}
+
+/// True when the Sackboy plays in the Pod ([`pod_shell`]).
+pub(crate) fn in_pod() -> bool {
+    let all: Vec<String> = std::env::args().collect();
+    matches!(pod_shell(&all), Ok(Some(_)))
+}
+
+/// Where the game has Sackboy standing in the Pod on arrival: (x, y) of his position, in
+/// lane 0. MEASURED (RPCS3 memory read, 2026-10-09, one arrival; after a walk right he
+/// stood at (338.10, -475.53)). Only printed beside the viewer's own start, never used.
+pub(crate) const POD_ARRIVAL_MEASURED: [f32; 2] = [-5.37, -477.97];
+
+/// D281: the physics scene of the Pod's shell level.
+///
+/// - Shapes whose outline has depth under a tilting matrix are projected through the
+///   whole matrix (`build_spawn_scene_with`). pod.bin's pod Thing is such a shape: its
+///   matrix lays the outline's z along the level's y, so its in-plane outline is a thin
+///   slab at y -167 to -152, and projected it is the pod's cross-section from y -1525 to
+///   1282 with the floor inside. MEASURED: that floor is at y -546.8 under x -4.2 and
+///   -544.3 under x 338; with his rest height 69.9 he stands at -476.9 and -474.4, where
+///   the game has him at -477.97 and -475.53 ([`POD_ARRIVAL_MEASURED`]). So the game's
+///   floor is pod.bin's own collision, 1.1 off; no height is fitted.
+/// - Every body is held where the file has it. PLACEHOLDER: the pod hangs on two strings
+///   and is a moving body in the game (MEASURED 3.6 units from its stored x); the viewer
+///   does not draw the shell from the physics, so a pod that swung would leave him
+///   standing beside the picture. The two string joints are left out with that.
+pub(crate) fn pod_scene(
+    things: &[lbp_level::thing::ThingRecord],
+    rule: &dyn Fn(&lbp_level::serial::Descriptor) -> MaterialRule,
+) -> PhysicsScene {
+    let mut scene = build_spawn_scene_with(things, rule);
+    for body in &mut scene.bodies {
+        body.fixed = true;
+    }
+    // Between held bodies a joint has nothing to do (and the solver refuses one).
+    scene.joints.clear();
+    scene
+}
+
+/// The 0-based ticks on which a step of an input script that holds `e` (the engage
+/// button) starts: the button is down on that tick alone, a click.
+fn engage_ticks(text: &str) -> Vec<usize> {
+    let mut at = 0;
+    let mut out = Vec::new();
+    for step in text.split(',') {
+        let Some((keys, ticks)) = step.split_once(':') else {
+            continue;
+        };
+        if keys.contains('e') {
+            out.push(at);
+        }
+        at += ticks.trim().parse::<usize>().unwrap_or(0);
+    }
+    out
 }
 
 #[derive(Component)]
@@ -70,6 +167,10 @@ pub(crate) struct Figure {
     yaw: [f32; 2],
     picked: u64,
     posed: u64,
+    /// D281: level units to the space of the entity the figure hangs under (the Pod's
+    /// shell root and the shell level's display matrix); none for a figure without a
+    /// parent, which is placed by [`LevelDisplay`].
+    display: Option<Mat4>,
 }
 
 /// Sackboy's body mesh, the play figure when `--select-guid` is not given: `0000043f`
@@ -184,7 +285,10 @@ fn blend_frame(
 
 /// Spawns the Sackboy mesh (`--select-guid`) as the play figure and, with a clip, its rig
 /// and playback (frames chosen by [`show_sackboy`]). Model units are level units (as for
-/// the Pod figure), so `k` is the level display scale.
+/// the Pod figure), so `k` is the level display scale. D281: with `under` the figure is a
+/// child of that entity and is placed by that matrix (level units to the parent's space;
+/// `k` is then its scale).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_figure(
     v: &mut crate::Viewer,
     (commands, meshes, materials, images): (
@@ -200,6 +304,7 @@ pub(crate) fn spawn_figure(
         Option<crate::ClipResult>,
         Option<Vec<Result<BoundAnimation, String>>>,
     ),
+    under: Option<(Entity, Mat4)>,
 ) -> Result<String, String> {
     let [lo, hi] =
         crate::adapter_bounds(&preview.geometry.positions).ok_or("Unsupported: empty figure")?;
@@ -257,9 +362,13 @@ pub(crate) fn spawn_figure(
                 yaw: [0.; 2],
                 picked: 0,
                 posed: 0,
+                display: under.map(|u| u.1),
             },
         ))
         .id();
+    if let Some((parent, _)) = under {
+        commands.entity(parent).add_child(figure);
+    }
     let mut evidence = crate::browser::PreviewEvidence::default();
     let mut details = Vec::new();
     let first = v.scene.len();
@@ -405,6 +514,8 @@ fn parse_script(text: &str) -> Result<Vec<(Input, usize)>, String> {
                     'j' => input.jump = true,
                     'b' => input.back = true,
                     'f' => input.front = true,
+                    // D281: the engage button; not a movement key ([`engage_ticks`]).
+                    'e' => {}
                     'U' => input.mood = Some(Mood::Happy),
                     'D' => input.mood = Some(Mood::Sad),
                     'R' => input.mood = Some(Mood::Angry),
@@ -456,6 +567,15 @@ pub(crate) fn level_spawn_feet(
             .and_then(|g| rules.get(&g).copied())
             .unwrap_or_default()
     });
+    data_spawn(&scene, thing, &m)
+}
+
+/// [`level_spawn_feet`] for a scene and a checkpoint (Thing, world matrix).
+fn data_spawn(
+    scene: &PhysicsScene,
+    thing: impl std::fmt::Display,
+    m: &[f32; 16],
+) -> Result<([f32; 3], String), String> {
     let [x, y, z] = [m[12] + DATA_SPAWN_X, m[13], spawn_lane(m[14])];
     let floor = scene
         .floor_below([x, y], z)
@@ -497,6 +617,18 @@ pub fn install(app: &mut App) -> Result<(), String> {
     let script = value(&all, "--play-sackboy-input")
         .map(|s| parse_script(&s))
         .transpose()?;
+    let engage = value(&all, "--play-sackboy-input").map_or(Vec::new(), |s| engage_ticks(&s));
+    // D281: in the Pod he plays in the shell level, not in the planets level given.
+    let pod = pod_shell(&all)?;
+    let (guid, path) = match pod {
+        Some(shell) => (Some(shell), None),
+        None => (guid, path),
+    };
+    if pod.is_none() && !engage.is_empty() {
+        println!(
+            "--play-sackboy-input: `e` (the engage button) is only read in the Pod (--level-scripts --pod-camera N --pod-shell HEX)"
+        );
+    }
     // The level reader recurses deeply: same worker stack as the level scene.
     let (scene, checkpoints, header, popit) = std::thread::Builder::new()
         .stack_size(level_scene::LEVEL_STACK_BYTES)
@@ -509,11 +641,15 @@ pub fn install(app: &mut App) -> Result<(), String> {
             let bytes = level_scene::read_level_bytes(&source, &key, &control)?;
             let report = lbp_level::read(&bytes, lbp_level::Limits::default(), &|| false)
                 .map_err(|e| e.to_string())?;
-            let scene = build_scene_with(&report.things, &|d| {
+            let rule = |d: &lbp_level::serial::Descriptor| {
                 d.guid
                     .and_then(|g| rules.get(&g).copied())
                     .unwrap_or_default()
-            });
+            };
+            let scene = match pod {
+                Some(_) => pod_scene(&report.things, &rule),
+                None => build_scene_with(&report.things, &rule),
+            };
             let r = &scene.report;
             let header = format!(
                 "Play Sackboy: {identity}; shapes {}: dynamic {}, static {}, not collidable {}, rejected {}; joints {}",
@@ -524,7 +660,11 @@ pub fn install(app: &mut App) -> Result<(), String> {
                 r.rejected.values().sum::<usize>(),
                 r.joints
             );
-            let popit = crate::popit_play::load_assets(&source, &catalog, &control)?;
+            // D281: no Popit in the Pod (its Square is the pod computer's engage button).
+            let popit = match pod {
+                Some(_) => None,
+                None => Some(crate::popit_play::load_assets(&source, &catalog, &control)?),
+            };
             Ok((
                 scene,
                 level_scene::checkpoints(&report.things),
@@ -535,8 +675,22 @@ pub fn install(app: &mut App) -> Result<(), String> {
         .map_err(|e| format!("play sackboy thread: {e}"))?
         .join()
         .map_err(|_| "play sackboy thread panicked".to_string())??;
+    let mut pod_line = None;
     let spawn = match (at, checkpoints.first()) {
         (Some(p), _) => p,
+        // D281: in the Pod he starts standing at the data spawn: the checkpoint's x moved
+        // by the Moon's spawn offset, the lane nearest the checkpoint, on the floor below.
+        // INFERRED rule (`level_spawn_feet`); whether the game drops him from the
+        // checkpoint or sets him down was not measured.
+        (None, Some((thing, m))) if pod.is_some() => {
+            let (feet, line) = data_spawn(&scene, thing, m)?;
+            let p = [feet[0], feet[1] + FLOOR_REST, feet[2]];
+            pod_line = Some(format!(
+                "Pod Sackboy start: {line}; the floor is the pod Thing's own shape, projected through its matrix (pod.bin's collision, nothing fitted); he stands {FLOOR_REST} above it at ({:.2}, {:.2}), lane {:.0}; MEASURED in the game on arrival: ({}, {}), lane 0",
+                p[0], p[1], p[2], POD_ARRIVAL_MEASURED[0], POD_ARRIVAL_MEASURED[1]
+            ));
+            p
+        }
         (None, Some((_, m))) => {
             let mut p = [
                 m[12] + SPAWN_OFFSET[0],
@@ -565,12 +719,25 @@ pub fn install(app: &mut App) -> Result<(), String> {
         spawn[1],
         spawn[2]
     );
-    crate::popit_play::install(app, popit);
+    if let Some(line) = pod_line {
+        println!("{line}");
+    }
+    if pod.is_some() {
+        println!(
+            "Pod Sackboy: plays in the shell level (pod.bin), every body held where the file has it (placeholder); keys: arrows walk and change lanes, Space jumps, Z or gamepad Square is the engage button; no Popit"
+        );
+        app.init_resource::<PodSackboy>()
+            .add_systems(FixedFirst, pod_report);
+    }
+    if let Some(popit) = popit {
+        crate::popit_play::install(app, popit);
+    }
     app.add_plugins((SimPlugin::default(), SackboyPlugin))
         .insert_resource(Play {
             scene: Some(scene),
             spawn,
             script,
+            engage,
             tick: 0,
         })
         .add_systems(Update, (spawn_world, read_pad, show_sackboy).chain())
@@ -696,30 +863,79 @@ fn read_pad(
     }
 }
 
-/// Scripted input for this tick (none once the script ends).
-fn script_input(play: Res<Play>, mut sackboy: Query<&mut SackboyBody>) {
+/// Scripted input for this tick (none once the script ends). D281, in the Pod: none
+/// while the script ticks are held, and the engage button on the first tick of a step
+/// with `e`.
+fn script_input(
+    play: Res<Play>,
+    mut sackboy: Query<&mut SackboyBody>,
+    mut pod: Option<ResMut<PodSackboy>>,
+) {
     let Some(script) = &play.script else {
         return;
     };
+    let held = pod.as_ref().is_some_and(|p| p.held);
     let mut left = play.tick;
-    let input = script.iter().find_map(|(input, ticks)| {
-        if left < *ticks {
-            Some(*input)
-        } else {
-            left -= ticks;
-            None
+    let input = script
+        .iter()
+        .find_map(|(input, ticks)| {
+            if left < *ticks {
+                Some(*input)
+            } else {
+                left -= ticks;
+                None
+            }
+        })
+        .filter(|_| !held);
+    if let Some(pod) = pod.as_mut() {
+        if !held && !sackboy.is_empty() && play.engage.contains(&play.tick) {
+            pod.engage = true;
         }
-    });
+    }
     for mut body in &mut sackboy {
         body.input = input.unwrap_or_default();
     }
 }
 
+/// D281: where the last physics tick left the Sackboy, for the script tick about to run
+/// (`level_play::tick`).
+fn pod_report(
+    mut pod: ResMut<PodSackboy>,
+    sackboy: Query<(&SackboyBody, &Position, &lbp_sim::ZSlab)>,
+) {
+    if let Ok((body, pos, slab)) = sackboy.single() {
+        let [x, y] = to_level(pos.0);
+        pod.at = Some(([x, y, slab.z], body.grounded));
+    }
+}
+
 /// The picker's layers and facing for this tick, after the controller step.
-fn tick_anim(sackboy: Query<&SackboyBody>, mut figure: Query<&mut Figure>) {
-    let (Ok(body), Ok(mut f)) = (sackboy.single(), figure.single_mut()) else {
+fn tick_anim(
+    sackboy: Query<&SackboyBody>,
+    mut figure: Query<&mut Figure>,
+    mut pod: Option<ResMut<PodSackboy>>,
+) {
+    // D281: his pose stands still while the script ticks are held for a capture.
+    if pod.as_ref().is_some_and(|p| p.held) {
+        return;
+    }
+    let Ok(body) = sackboy.single() else {
         return;
     };
+    let Ok(mut f) = figure.single_mut() else {
+        // D281, in the Pod: the ticks before the figure is there are kept for the picker.
+        if let Some(pod) = pod.as_mut() {
+            pod.backlog.push((body.controller, body.grounded));
+        }
+        return;
+    };
+    if let Some(pod) = pod.as_mut().filter(|p| !p.backlog.is_empty()) {
+        for (controller, grounded) in std::mem::take(&mut pod.backlog) {
+            let a = f.picker.tick(&controller, grounded);
+            f.yaw = [f.yaw[1], a.yaw];
+            f.picked += 1;
+        }
+    }
     let a = f.picker.tick(&body.controller, body.grounded);
     f.yaw = [f.yaw[1], a.yaw];
     f.anim = Some(a);
@@ -796,8 +1012,9 @@ fn log_scripted(
     mut play: ResMut<Play>,
     sackboy: Query<(&SackboyBody, &Position, &lbp_sim::ZSlab)>,
     figure: Query<&Figure>,
+    pod: Option<Res<PodSackboy>>,
 ) {
-    if play.script.is_none() {
+    if play.script.is_none() || pod.is_some_and(|p| p.held) {
         return;
     }
     let Ok((body, pos, slab)) = sackboy.single() else {
@@ -839,6 +1056,7 @@ pub(crate) fn show_sackboy(
     mut orbit: ResMut<crate::Orbit>,
     mut cameras: Query<&mut Projection, With<Camera3d>>,
     mut framed: Local<bool>,
+    pod: Option<Res<PodSackboy>>,
 ) {
     let (Some(display), Ok((body, pos, slab))) = (display, sackboy.single()) else {
         return;
@@ -848,12 +1066,14 @@ pub(crate) fn show_sackboy(
     let s = display.0.x_axis.length();
     if let Ok((mut t, mut f)) = figure.single_mut() {
         let f = &mut *f;
+        // D281: a figure under a parent is placed in the parent's space.
+        let display = f.display.unwrap_or(display.0);
         let vx = body.controller.vx;
         // The picker eases facing per tick (FOUND 0.4); between ticks the shown angle
         // moves from the previous tick's to the latest by the fixed-step overstep.
         let alpha = fixed.overstep_fraction().clamp(0., 1.);
         f.facing = f.yaw[0] + (f.yaw[1] - f.yaw[0]) * alpha;
-        let feet = display.0.transform_point3(Vec3::new(
+        let feet = display.transform_point3(Vec3::new(
             p[0],
             p[1] - FLOOR_REST + body.controller.landing_dip(),
             slab.z,
@@ -900,6 +1120,11 @@ pub(crate) fn show_sackboy(
             Transform::from_translation(at + Vec3::Y * CENTRE_ABOVE * s),
         ));
     }
+    // D281: in the Pod the camera is the one the planets level's script writes
+    // (`level_play::script_camera`); the follow camera is not his there.
+    if pod.is_some() {
+        return;
+    }
     let [ex, ey, ez] = FOLLOW_EYE;
     if !*framed {
         *framed = true;
@@ -937,6 +1162,122 @@ mod tests {
         assert!(s[3].0.back && s[3].0.x == -1.);
         assert!(parse_script("x:3").is_err());
         assert!(parse_script("r").is_err());
+    }
+
+    /// D281. The Sackboy plays in the Pod only with the play mode and the three options
+    /// that put the shell level in the scripts' session.
+    #[test]
+    fn d281_the_pod_wants_the_play_mode_and_the_scripted_shell() {
+        let args = |list: &[&str]| -> Vec<String> { list.iter().map(|a| a.to_string()).collect() };
+        let all = [
+            "--play-sackboy",
+            "--level-scripts",
+            "--pod-camera",
+            "1",
+            "--pod-shell",
+            "000027b9",
+        ];
+        assert_eq!(pod_shell(&args(&all)), Ok(Some(0x27b9)));
+        // Without any one of them he plays in the level given, as before.
+        for (skip, len) in [(0, 1), (1, 1), (2, 2), (4, 2)] {
+            let mut less = all.to_vec();
+            less.drain(skip..skip + len);
+            assert_eq!(pod_shell(&args(&less)), Ok(None), "{less:?}");
+        }
+        let bad = args(&[
+            "--play-sackboy",
+            "--level-scripts",
+            "--pod-camera",
+            "1",
+            "--pod-shell",
+            "pod",
+        ]);
+        assert!(pod_shell(&bad).is_err());
+    }
+
+    /// D281. `e` in an input script is the engage button on the first tick of its step,
+    /// and no movement key.
+    #[test]
+    fn d281_the_engage_key_of_a_script_is_a_click_on_its_steps_first_tick() {
+        let text = "-:460,r:12,e:1,-:30,l:12,-:20,le:3,-:60";
+        assert_eq!(engage_ticks(text), [472, 535]);
+        assert_eq!(engage_ticks("r:40,j:2"), Vec::<usize>::new());
+        assert_eq!(engage_ticks("e:1"), [0]);
+        let s = parse_script(text).unwrap();
+        assert_eq!(s[2], (Input::default(), 1));
+        assert!(s[6].0.x == -1. && s[6].1 == 3);
+    }
+
+    /// D281. The Pod's physics scene: the pod Thing's shape is laid out as pod.bin's
+    /// (the outline in local x and z, local z along the level's y), so its floor is
+    /// found through the whole matrix, not in the plane; every body is held and no joint
+    /// is left. He starts on that floor at the data spawn, his rest height above it.
+    #[test]
+    fn d281_the_pod_scene_has_the_projected_floor_and_holds_every_body() {
+        use lbp_level::parts::{Body, Pos, Shape, ShapeColor};
+        use lbp_level::thing::ThingRecord;
+        // A floor block 2000 wide whose top is 100 above its place (y -647): top -547.
+        let shape = Shape {
+            vertex_count: 4,
+            requires_z: true,
+            vertices: vec![
+                [-1000., 0., -100.],
+                [1000., 0., -100.],
+                [1000., 0., 100.],
+                [-1000., 0., 100.],
+            ],
+            loops: vec![4],
+            material: None,
+            old_material: None,
+            thickness: 900.,
+            mass_depth: 1.,
+            color: ShapeColor::Packed(0xffff_ffff),
+            brightness: 0.,
+            bevel_size: 10.,
+            com: None,
+            behavior: 0,
+            flags: 7,
+            contacts: 0,
+        };
+        let mut world = [0.; 16];
+        (world[0], world[6], world[9], world[15]) = (1., -1., 1., 1.);
+        (world[12], world[13], world[14]) = (0., -647., 169.);
+        let mut pod = ThingRecord::default();
+        pod.data.pos = Some(Pos {
+            bone_of: None,
+            anim_hash: 0,
+            world,
+        });
+        pod.data.shape = Some(shape);
+        pod.data.body = Some(Body {
+            velocity: [0.; 3],
+            angular_velocity: 0.,
+            frozen: 0,
+        });
+        let things = [pod];
+        let rule = |_: &lbp_level::serial::Descriptor| MaterialRule::Normal;
+        let scene = pod_scene(&things, &rule);
+        assert_eq!(scene.bodies.len(), 1);
+        assert!(scene.bodies.iter().all(|b| b.fixed) && scene.joints.is_empty());
+        // The floor in the front lane and the two behind it (the slab is 900 deep).
+        for lane in LANES {
+            let top = scene.floor_below([-4.16, 541.], lane).unwrap();
+            assert!((top + 547.).abs() < 1e-3, "lane {lane}: {top}");
+        }
+        // In the plane the same shape has no floor there: the in-plane scene would not do.
+        let plain = build_scene_with(&things, &rule);
+        assert!(!plain
+            .floor_below([-4.16, 541.], 0.)
+            .is_some_and(|top| (top + 547.).abs() < 1.));
+        // The start: the checkpoint's x by the spawn offset, the nearest lane, the floor.
+        let mut checkpoint = [0.; 16];
+        (checkpoint[12], checkpoint[13], checkpoint[14]) = (-3.05, 540.76, -50.);
+        let (feet, line) = data_spawn(&scene, 4, &checkpoint).unwrap();
+        assert!((feet[0] + 4.16).abs() < 1e-3 && (feet[1] + 547.).abs() < 1e-3 && feet[2] == 0.);
+        assert!(line.contains("checkpoint Thing 4"), "{line}");
+        // He stands his rest height above it: within 1.1 of the game's measured y.
+        let y = feet[1] + FLOOR_REST;
+        assert!((y - POD_ARRIVAL_MEASURED[1]).abs() < 1.2, "{y}");
     }
 
     #[test]

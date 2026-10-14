@@ -5493,3 +5493,58 @@ Next: the viewer's own Sackboy in the Pod; `pod_mask.tex` and the plain UV.
 **+0 newly viewable / +0 newly Complete (viewer feature).**
 Next: a frame of the change-over from the game; the viewer's own Sackboy in the Pod.
 `docs/level-scripts.md` part 31.
+
+## D281 the viewer's own Sackboy in the Pod (2026-10-13)
+- "Pod picture" PR 8 (input option C), viewer only. Full detail: `docs/level-scripts.md` part 32.
+  No runtime change, no new native. Only with `--play-sackboy --level-scripts --pod-camera N
+  --pod-shell HEX`; without `--play-sackboy` part 30's undrawn record on the trigger stays
+  (PLACEHOLDER).
+- FOUND (pod.bin): the pod Thing's shape has depth under a matrix that lays its z along the
+  level's y. In the plane it is a slab at y -167 to -152 (the old "floor at -160"); projected
+  through the whole matrix (`build_spawn_scene_with`) it is the pod's cross-section with a floor
+  at y -546.8 under x -4.2 and -544.3 under x 338. With the rest height 69.9: -476.9 and -474.4.
+  MEASURED in the game (2026-10-09): -477.97 and -475.53. So the game's floor is pod.bin's own
+  collision, 1.1 off; nothing is fitted.
+- FOUND (pod.bin): the pod computer's trigger is a box, x -151.5 to 183.1 and y -796.9 to -267.4
+  around (15.8, -532.2), z -193.7, one layer. FOUND (01.33, 0x135fe0): the z span the layer rule
+  tests is two floats of an object the creature part points to; values not read. MEASURED: the
+  game engages from the front lane (z 0), so the span reaches 193.7 back.
+- Viewer: `sackboy_play::pod_shell` / `in_pod`, `pod_scene` (the projected scene, every body held,
+  no joints; PLACEHOLDER for the moving pod), the start at the data spawn on the floor
+  (`data_spawn`, INFERRED: (-4.16, -476.91, 0); the game's arrival (-5.37, -477.97), lane 0),
+  `PodSackboy` (his place after each physics tick, the script's engage button, the hold), the
+  play figure under the shell's frame root (`spawn_figure(.., under)`, `Figure::display`), no
+  follow camera and no Popit in the Pod, the picker catching up on the ticks before the figure
+  was loaded. `level_play::stand_sackboy` (`add_player`, then `move_player` before every tick, z
+  span `POD_PLAYER_HALF_DEPTH` 200, PLACEHOLDER), a line when the pad zone changes, the place in
+  the "ignored" line. `pod_dolly`: with him the engage key is Z (Space is his jump); gamepad
+  Square as before. `--play-sackboy-input`: `e` is the engage button on a step's first tick.
+- MEASURED (no focus taken, no key sent; `local-analysis/rscript/stage6/shots/d281-*`): standing,
+  in the pad zone on tick 1. Walk right 12 ticks: out on 471 at x 189.5, the press on 472
+  ignored, back in on 514 at x 152.9, the press on 535 taken, in use on 536, change-over to 1.0
+  on 555. Lanes: in the zone at z -200; out on 504 at z -305 (the z rule); the press at z -400
+  ignored; in on 566 at z -295; the press on 594 taken.
+- Stills: standing at 100 and sitting at 600 taken twice, equal bytes. Against D280's frames of
+  the same ticks only his box differs (5,976 pixels closed at 600, 6,310 open at 641, 6,515 at
+  610). By eye against the game's closed frame: he is 0.47 to 0.525 by 0.706 to 0.885 of the
+  picture there, 0.470 to 0.523 by 0.700 to 0.881 in the viewer.
+- Unchanged: ten captures without `--play-sackboy` equal byte for byte to D280's (four without
+  scripts, four with the shell under scripts, the planets level alone, pod.bin alone); the play
+  mode on one level gives the same positions on 300 ticks.
+- Not done: the default picture without `--play-sackboy`; the move to z -200 on engaging
+  (INFERRED from one read); the arrival; the pod's swing; his z span; the floor's rise while
+  walking (he stays at -476.9 at x 348); a body in the lane on a lane change (he stands in the
+  DualShock's shape in the back lane); the Popit, the prompt, his colour. Not seen: the keys, the
+  motion. Not compared: the open frame.
+- Tests: viewer `d281_the_pad_zone_is_decided_by_where_the_sackboy_stands`,
+  `d281_a_press_outside_the_pad_zone_is_ignored_with_his_place`,
+  `d281_the_pod_wants_the_play_mode_and_the_scripted_shell`,
+  `d281_the_engage_key_of_a_script_is_a_click_on_its_steps_first_tick`,
+  `d281_the_pod_scene_has_the_projected_floor_and_holds_every_body`. `cargo fmt --all --check`, CI
+  clippy, CI tests (612), `cargo check` of both viewers, the viewer's clippy and the Python tests
+  (36) pass; `cargo test -q -p lbp-bevy-viewer` 78 pass, 1 fails
+  (`sackboy_play::tests::input_script_steps`, fails on main). The 378-level runs were not repeated
+  (the runtime is untouched).
+**+0 newly viewable / +0 newly Complete (viewer feature).**
+Next: the Sackboy by default in the scripted Pod picture; the lane on engaging; his z span.
+`docs/level-scripts.md` part 32.

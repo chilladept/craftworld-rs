@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D280
+# Current state (overwrite each milestone) — after D281
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -11,7 +11,49 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D280 the Pod shell level in its own frame, under the script camera (2026-10-13)
+## Latest: D281 the viewer's own Sackboy in the Pod (2026-10-13)
+- "Pod picture" PR 8 (input option C), viewer only (`docs/level-scripts.md` part 32). With
+  `--play-sackboy --level-scripts --pod-camera N --pod-shell HEX` the Sackboy of the scripted Pod
+  picture is the viewer's playable one, in the shell level (pod.bin). Without `--play-sackboy`
+  nothing changes: part 30's undrawn record on the trigger stays (PLACEHOLDER).
+- The floor. FOUND: the pod Thing's shape has depth under a matrix that lays its z along the
+  level's y; in the plane it is the slab at y -160, projected through the whole matrix it is the
+  pod's cross-section with a floor inside. MEASURED: that floor puts him at y -476.9 under x -4.2
+  and -474.4 under x 338; the game has -477.97 and -475.53. The game's floor is pod.bin's own
+  collision, 1.1 off; nothing fitted.
+- Viewer: `sackboy_play::pod_scene` (the projected scene; every body held, no joints:
+  PLACEHOLDER for the moving pod), the start standing at the data spawn (INFERRED rule: (-4.16,
+  -476.91), lane 0; the game's measured arrival (-5.37, -477.97), lane 0), the play figure under
+  the shell's frame root, the script's camera (no follow camera), no Popit.
+  `level_play::stand_sackboy` hands his place to the shell world before every tick (`add_player`,
+  then `move_player`), so the trigger's list and `GetIsInPadZone` follow where he stands; z span
+  200 either way (PLACEHOLDER; MEASURED the game engages from lane 0 with the trigger at z
+  -193.7; FOUND the span is two floats of the game, not read).
+- Input, no key ever sent to a window: `--play-sackboy-input` walks him (`l r j b f`), `e` there
+  is the engage button on a step's first tick; `--level-scripts-press-at N` as before; live, Z or
+  gamepad Square (Space is his jump). `--level-scripts-hold-at` holds his input and pose too.
+- MEASURED (`local-analysis/rscript/stage6/shots/d281-*`): in the pad zone on tick 1. Walking
+  right: out on 471 at x 189.5 (the box ends at 183.1), the press on 472 ignored, back in on 514,
+  the press on 535 taken, in use on 536, change-over 1.0 on 555. Lanes: in at z -200, out on 504
+  at z -305 (the z rule), the press at z -400 ignored, in on 566, the press on 594 taken.
+- Stills: standing (100) and sitting (600) twice with equal bytes; against D280's frames only his
+  box differs (5,976 pixels closed, 6,310 open). By eye against the game's closed frame he is the
+  same size at the same place within about 0.01 of the picture (0.470 to 0.523 by 0.700 to 0.881;
+  game 0.47 to 0.525 by 0.706 to 0.885).
+- Unchanged: ten captures without `--play-sackboy` equal byte for byte to D280's (without
+  scripts, with the shell under scripts, one level with scripts); the play mode on one level
+  gives the same positions.
+- Left of option C: the default picture without `--play-sackboy`; the game's move to z -200 on
+  engaging (he can still walk while the computer is in use); the arrival (a drop or not); the
+  pod as a moving body; his z span; the floor's rise while walking (he stays at -476.9); a body
+  in the lane on a lane change (he stands in the DualShock's shape in the back lane); the Popit,
+  the prompt, his colour. Not seen: the keys, the motion. Not compared: the open frame.
+- Tests: five viewer tests (`d281_*`). fmt, CI clippy, CI tests (612), Python tests (36),
+  `cargo check` of both viewers and the viewer's clippy pass; the viewer's tests pass (78) but
+  `sackboy_play::tests::input_script_steps` (fails on main). The runtime is untouched.
+- Next: the Sackboy by default in the scripted Pod picture; the lane on engaging; `pod_mask.tex`.
+
+## Before: D280 the Pod shell level in its own frame, under the script camera (2026-10-13)
 - "Pod picture" PR 7, viewer only (`docs/level-scripts.md` part 31). Under `--level-scripts
   --pod-camera N --pod-shell HEX` the shell level (pod.bin) was placed by the viewer's rig: a shell
   eye fitted to the DualShock that followed the change-over value, a tent eye with a fitted tilt

@@ -1,5 +1,17 @@
 # Development log
 
+## 2026-10-13 - D281 the viewer's own Sackboy in the Pod
+
+Pod picture PR 8 (input option C), viewer only. With `--play-sackboy` under `--level-scripts --pod-camera N
+--pod-shell HEX` the Sackboy plays in the shell level: a physics scene of pod.bin whose floor is the pod
+Thing's own shape projected through its matrix (he stands at y -476.9; the game's measured -477.97; nothing
+fitted), the play figure under the shell's frame root, the script's camera, his place handed to the shell
+world before every tick so the pad zone follows where he stands, the engage button from Z / gamepad Square,
+`e` in `--play-sackboy-input` or `--level-scripts-press-at`. Walk and lane runs: out of the zone past the
+trigger's side and behind z -300, presses there ignored, taken back inside. His z span (200) and the held pod
+are placeholders. Without `--play-sackboy` every capture is equal byte for byte; part 30's undrawn record
+stays there. `docs/level-scripts.md` part 32.
+
 ## 2026-10-13 - D280 the Pod shell level in its own frame, under the script camera
 
 Pod picture PR 7, viewer only. Under `--level-scripts` with the shell layer pod.bin is no longer placed by the

@@ -15,8 +15,10 @@
 //! the two tick in one session (part 28), and the tent of the shell's pod Thing is drawn
 //! with the game's top-down dissolve while pod.bin's change-over runs (part 29), and the
 //! pod computer is entered by the pod's own script: a Sackboy stands on its trigger and
-//! the Puter key is the engage button on the pad the scripts read (part 30). The rest is
-//! the clock and the counts.
+//! the Puter key is the engage button on the pad the scripts read (part 30); with
+//! `--play-sackboy` that Sackboy is the viewer's own, who stands and walks in the shell
+//! level, and the pad zone is decided by where he is (part 32). The rest is the clock and
+//! the counts.
 use crate::pod_menu::PuterKey;
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts, EguiPrimaryContextPass};
@@ -125,6 +127,12 @@ struct ShellLevel {
     press: bool,
     /// Part 30: the host's answers that changed "in use" in this world, as last printed.
     answers: usize,
+    /// Part 32: the Sackboy is the viewer's own (`--play-sackboy`), who plays in this
+    /// level; else the undrawn one on the trigger (part 30).
+    own_sackboy: bool,
+    /// Part 32: whether the viewer's own Sackboy was in the pad zone after the last tick,
+    /// as last printed.
+    zone: Option<bool>,
 }
 
 /// What the camera a script writes itself did since the tick before.
@@ -223,12 +231,46 @@ fn feed_pad(shell: &mut LevelWorld, level: &mut LevelWorld, press: &mut bool) ->
 /// (`LevelWorld::pod_trigger_spot`), one unit of depth either way, as
 /// `level_scripts --enter-pad-zone`. None in a level without such a trigger.
 ///
-/// PLACEHOLDER: he stands there from the first tick and is not drawn. The viewer's own
-/// Sackboy walking in the Pod needs a physics scene of pod.bin, the Pod's floor and a
-/// camera (a later PR).
+/// PLACEHOLDER: he stands there from the first tick and is not drawn. Part 32: only
+/// without `--play-sackboy`; with it the viewer's own Sackboy plays in the Pod
+/// ([`stand_sackboy`]).
 fn place_sackboy(shell: &mut LevelWorld) -> Option<(u32, [f32; 3])> {
     let spot = shell.pod_trigger_spot()?;
     Some((shell.add_player(spot, (spot[2] - 1., spot[2] + 1.)), spot))
+}
+
+/// Half the z span of the viewer's own Sackboy in the Pod for the triggers' layer rule
+/// (part 32). PLACEHOLDER: the game takes the span from his body (FOUND: two floats of an
+/// object his creature part points to; their values were not read). MEASURED in the game
+/// (RPCS3, 2026-10-09): the pod computer was engaged by a Sackboy in the front lane, z 0,
+/// and pod.bin's trigger is at z -193.7; so his span reaches at least that far back from
+/// the lane's middle. A lane step is taken. With [`PLAYER_HALF_DEPTH`] he would have to
+/// change lanes first.
+const POD_PLAYER_HALF_DEPTH: f32 = 200.;
+
+/// Part 32. Hands the place of the viewer's own Sackboy to the shell world for the tick
+/// about to run: a new Sackboy Thing the first time (`LevelWorld::add_player`), then
+/// `LevelWorld::move_player`. `at` is his position in the shell level's units (69.9 above
+/// his feet; the lane is z). The tick's trigger pass then keeps the pod computer
+/// trigger's list by where he stands, and `Native.GetIsInPadZone` answers from that list
+/// and his z. Returns his Thing and whether it was made now.
+fn stand_sackboy(
+    shell: &mut LevelWorld,
+    sackboy: &mut Option<Option<u32>>,
+    at: [f32; 3],
+) -> (u32, bool) {
+    let layers = (at[2] - POD_PLAYER_HALF_DEPTH, at[2] + POD_PLAYER_HALF_DEPTH);
+    match sackboy.flatten() {
+        Some(thing) => {
+            shell.move_player(thing, at, layers);
+            (thing, false)
+        }
+        None => {
+            let thing = shell.add_player(at, layers);
+            *sackboy = Some(Some(thing));
+            (thing, true)
+        }
+    }
 }
 
 /// Asks the host to stop using the pod computer, from the shell world, and makes the
@@ -258,7 +300,13 @@ fn press_ignored(shell: &LevelWorld, sackboy: Option<u32>) -> String {
         Some(_) if flags & ENGAGE_FLAGS == 0 => format!(
             "the progression flags are {flags:#x}, without mask {ENGAGE_FLAGS:#x}, which the planets level's intro sets (MEASURED on tick 452 of a fresh profile): the script's own rule"
         ),
-        Some(thing) if !shell.in_pad_zone(thing) => "the Sackboy is not in the pad zone".into(),
+        Some(thing) if !shell.in_pad_zone(thing) => {
+            let at = shell.things.get(thing as usize).and_then(|t| t.world_matrix);
+            format!(
+                "the Sackboy is not in the pad zone{}",
+                at.map_or(String::new(), |m| format!(" (he stands at {:.1?})", &m[12..15]))
+            )
+        }
         Some(_) => {
             "another condition of the script (a video, a photo, the start menu, a button still held)"
                 .into()
@@ -449,6 +497,8 @@ pub fn install(app: &mut App) -> Result<(), String> {
             sackboy: None,
             press: false,
             answers: 0,
+            own_sackboy: crate::sackboy_play::in_pod(),
+            zone: None,
         }
     });
     app.insert_non_send(Play {
@@ -518,6 +568,7 @@ fn tick(
     mut capture: ResMut<crate::CaptureHold>,
     sackboy: Query<(&Position, &lbp_sim::ZSlab), With<SackboyBody>>,
     mut puter: Option<ResMut<crate::pod_menu::PuterState>>,
+    mut pod: Option<ResMut<crate::sackboy_play::PodSackboy>>,
 ) {
     let p = &mut *play;
     // Part 26: the Puter key of the viewer's Pod rig is the player at the pod computer.
@@ -547,7 +598,7 @@ fn tick(
         }
         puter_key(p, key);
     }
-    step(p, &mut capture, &sackboy);
+    step(p, &mut capture, &sackboy, pod.as_deref_mut());
     // Part 28: the opening progress of the viewer's Pod rig is the change-over value of
     // pod.bin's script after the last tick (see [`opening`]). Also while
     // the ticks are held, for a rig that came up after them. Part 30: and the Puter
@@ -594,9 +645,16 @@ fn step(
     p: &mut Play,
     capture: &mut ResMut<crate::CaptureHold>,
     sackboy: &Query<(&Position, &lbp_sim::ZSlab), With<SackboyBody>>,
+    mut pod: Option<&mut crate::sackboy_play::PodSackboy>,
 ) {
     // `--level-scripts-hold-at N`: a capture waits for tick N, and no tick follows it.
     let held = p.hold_at.is_some_and(|n| p.scripts.ticks >= n);
+    // Part 32: the viewer's own Sackboy in the Pod holds his input and pose with them.
+    if let Some(pod) = pod.as_deref_mut() {
+        if pod.held != held {
+            pod.held = held;
+        }
+    }
     if capture.0 != (p.hold_at.is_some() && !held) {
         capture.0 = p.hold_at.is_some() && !held;
     }
@@ -640,7 +698,25 @@ fn step(
     let mut pressed = false;
     if let Some(shell) = p.shell.as_mut() {
         let next = shell.scripts.ticks + 1;
-        if shell.sackboy.is_none() {
+        if let Some(pod) = pod.as_deref_mut() {
+            // Part 32: the viewer's own Sackboy plays in the shell level. His place after
+            // the physics tick before goes to the shell world, so this tick's trigger
+            // pass and the pad zone test are decided by where he stands. Until he is
+            // spawned there is no Sackboy in the session.
+            if let Some((at, grounded)) = pod.at {
+                let (thing, new) = stand_sackboy(&mut shell.host.world, &mut shell.sackboy, at);
+                if new {
+                    println!(
+                        "Pod Sackboy before tick {next}: Thing {thing} of the shell level, the viewer's own Sackboy at {at:.1?} ({}); his place is handed to the shell level before every tick, z span {POD_PLAYER_HALF_DEPTH} either way for the triggers' layer rule (placeholder); the pad zone wants him in the pod computer trigger's list and z at least {PAD_ZONE_MIN_Z}",
+                        if grounded { "on the floor" } else { "in the air" }
+                    );
+                }
+            }
+            if std::mem::take(&mut pod.engage) {
+                shell.press = true;
+                println!("Engage press on tick {next}, from --play-sackboy-input (e)");
+            }
+        } else if shell.sackboy.is_none() {
             let placed = place_sackboy(&mut shell.host.world);
             shell.sackboy = Some(placed.map(|(thing, _)| thing));
             match placed {
@@ -661,8 +737,8 @@ fn step(
         pressed = word != 0;
     }
     // The play-mode Sackboy (`--play-sackboy`), when there is one, is the player the
-    // level's triggers test.
-    if let Ok((pos, slab)) = sackboy.single() {
+    // level's triggers test. Part 32: not in the Pod, where he plays in the shell level.
+    if let (None, Ok((pos, slab))) = (&pod, sackboy.single()) {
         let [x, y] = lbp_sim::to_level(pos.0);
         let at = [x, y, slab.z];
         let layers = (slab.z - PLAYER_HALF_DEPTH, slab.z + PLAYER_HALF_DEPTH);
@@ -717,6 +793,22 @@ fn step(
                     count(lbp_runtime::POD_COMPUTER_STARTUP_SOUND),
                     count(lbp_runtime::POD_COMPUTER_SHUTDOWN_SOUND)
                 );
+            }
+            // Part 32: the pad zone by where the viewer's own Sackboy stands, when it
+            // changes.
+            if let (true, Some(thing)) = (shell.own_sackboy, shell.sackboy.flatten()) {
+                let now = world.in_pad_zone(thing);
+                if shell.zone.replace(now) != Some(now) {
+                    let at = world
+                        .things
+                        .get(thing as usize)
+                        .and_then(|t| t.world_matrix);
+                    println!(
+                        "Pod Sackboy at tick {ticks}: {} the pad zone, standing at {:.1?} (Native.GetIsInPadZone is {now} for him)",
+                        if now { "in" } else { "out of" },
+                        at.map_or([f32::NAN; 3], |m| [m[12], m[13], m[14]])
+                    );
+                }
             }
             let was = std::mem::replace(
                 &mut shell.opening,
@@ -1682,7 +1774,12 @@ fn window(mut contexts: EguiContexts, play: NonSend<Play>) -> Result {
                 let pod = &shell.host.world.pod;
                 let sackboy = shell.sackboy.flatten();
                 ui.small(format!(
-                    "  Sackboy on the pod computer's trigger: {} (not drawn); in the pad zone {}; engage prompts asked for {}, clicks {}, requests {}",
+                    "  Sackboy, {}: {}; in the pad zone {}; engage prompts asked for {}, clicks {}, requests {}",
+                    if shell.own_sackboy {
+                        "the viewer's own, where he stands"
+                    } else {
+                        "on the pod computer's trigger (not drawn)"
+                    },
                     sackboy.map_or("none".into(), |t| format!("Thing {t}")),
                     sackboy.is_some_and(|t| shell.host.world.in_pad_zone(t)),
                     pod.action_prompts.values().sum::<u64>(),
@@ -2245,6 +2342,117 @@ mod tests {
             shell.1.world.pod.host_use_pod_pending,
             level.1.world.pod.host_use_pod_pending,
         )
+    }
+
+    /// A shell world with the pod computer trigger as pod.bin stores it (MEASURED from
+    /// the level file: a box of half sizes 167.3 by 264.7 around (15.8, -532.2), z
+    /// -193.7, no z offset, one layer).
+    fn pod_bin_world() -> LevelWorld {
+        let mut world = LevelWorld::from_things(&[]);
+        let mut at = Mat4::from_scale(Vec3::new(167.3, 264.7, 1.)).to_cols_array();
+        at[12..15].copy_from_slice(&[15.8, -532.2, -193.7]);
+        world.things.push(lbp_runtime::ThingState {
+            trigger: Some(lbp_runtime::TriggerState {
+                trigger_type: 1,
+                radius: 1.,
+                hysteresis: 1.,
+                enabled: true,
+                ..Default::default()
+            }),
+            world_matrix: Some(at),
+            script_classes: vec![lbp_runtime::POD_TRIGGER_CLASS.into()],
+            ..Default::default()
+        });
+        world.our_pod = true;
+        world
+    }
+
+    /// D281. The pad zone is decided by where the viewer's own Sackboy stands: his place
+    /// goes to the shell world before each tick, the tick's trigger pass keeps the pod
+    /// computer trigger's list, and the zone is that list and his z. Where the game has
+    /// him on arrival (MEASURED) he is in it; walked off to the side he is not; in the
+    /// lane behind he is; in the back lane the trigger holds him and the z rule says no.
+    #[test]
+    fn d281_the_pad_zone_is_decided_by_where_the_sackboy_stands() {
+        let mut shell = Side::of(pod_bin_world());
+        let mut level = Side::of(LevelWorld::from_things(&[]));
+        shell.1.world.hand_session_to(&mut level.1.world);
+        let mut sackboy = None;
+        let arrival = [-5.37, -477.97, 0.];
+        let (thing, new) = stand_sackboy(&mut shell.1.world, &mut sackboy, arrival);
+        assert!(new && sackboy == Some(Some(thing)));
+        // Not before a tick has run the trigger pass.
+        assert!(!shell.1.world.in_pad_zone(thing));
+        round(&mut shell, &mut level);
+        assert!(shell.1.world.in_pad_zone(thing));
+        let mut at = |place: [f32; 3]| {
+            assert_eq!(
+                stand_sackboy(&mut shell.1.world, &mut sackboy, place),
+                (thing, false)
+            );
+            round(&mut shell, &mut level);
+            let listed = shell.1.world.things[0]
+                .trigger
+                .as_ref()
+                .is_some_and(|g| g.inside.contains(&thing));
+            (listed, shell.1.world.in_pad_zone(thing))
+        };
+        // The measured spot after a walk to the right: outside the box.
+        assert_eq!(at([338.1, -475.53, 0.]), (false, false));
+        // Back, at the measured spot beside the controller.
+        assert_eq!(at([-16.23, -477.81, 0.]), (true, true));
+        // The box's sides in x: 15.8 +- 167.3.
+        assert_eq!(at([182., -477., 0.]), (true, true));
+        assert_eq!(at([184., -477., 0.]), (false, false));
+        assert_eq!(at([-152., -477., 0.]), (false, false));
+        // A jump does not leave it (the box reaches up to y -267.5).
+        assert_eq!(at([0., -300., 0.]), (true, true));
+        assert_eq!(at([0., -260., 0.]), (false, false));
+        // The lane behind: in. The back lane: out of the trigger's list by the layer rule
+        // with this span. The pad zone's own z rule: in the list, but z under -300.
+        assert_eq!(at([0., -477., -200.]), (true, true));
+        assert_eq!(at([0., -477., -400.]), (false, false));
+        assert_eq!(at([0., -477., -310.]), (true, false));
+        assert_eq!(at([0., -477., -300.]), (true, true));
+        // One Sackboy all along, player 0, with the pad.
+        assert_eq!(shell.1.world.players.len(), 1);
+        // With the play mode's half depth the front lane does not reach the trigger's z:
+        // the reason for the Pod's own span.
+        let mut narrow = Side::of(pod_bin_world());
+        let layers = (-PLAYER_HALF_DEPTH, PLAYER_HALF_DEPTH);
+        let other = narrow.1.world.add_player(arrival, layers);
+        round(&mut narrow, &mut level);
+        assert!(!narrow.1.world.in_pad_zone(other));
+    }
+
+    /// D281. With the viewer's own Sackboy the press is taken where he stands in the
+    /// zone and ignored where he does not, and the reason says where he is.
+    #[test]
+    fn d281_a_press_outside_the_pad_zone_is_ignored_with_his_place() {
+        let mut shell = Side::of(pod_bin_world());
+        let mut level = Side::of(LevelWorld::from_things(&[]));
+        shell.1.world.progression_flags = 3;
+        shell.1.world.hand_session_to(&mut level.1.world);
+        let mut sackboy = None;
+        let (thing, _) = stand_sackboy(&mut shell.1.world, &mut sackboy, [338.1, -475.53, 0.]);
+        round(&mut shell, &mut level);
+        let mut press = true;
+        assert_eq!(
+            feed_pad(&mut shell.1.world, &mut level.1.world, &mut press),
+            0x80
+        );
+        assert!(clicked(&mut shell.1.world) && !shell.1.world.in_pad_zone(thing));
+        let why = press_ignored(&shell.1.world, sackboy.flatten());
+        assert!(
+            why.contains("not in the pad zone") && why.contains("338.1"),
+            "{why}"
+        );
+        // Walked back, the same press finds him in the zone.
+        stand_sackboy(&mut shell.1.world, &mut sackboy, [-5.37, -477.97, 0.]);
+        round(&mut shell, &mut level);
+        assert!(shell.1.world.in_pad_zone(thing));
+        let why = press_ignored(&shell.1.world, sackboy.flatten());
+        assert!(why.contains("another condition"), "{why}");
     }
 
     /// D279. A press is the engage bit on one tick and nothing on the next, on both

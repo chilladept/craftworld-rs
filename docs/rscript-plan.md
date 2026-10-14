@@ -377,6 +377,17 @@ UI (`UpdateUI__`) and photo natives are not planned.
   the change-over; the nearest planets-level surface is 14,400 units from the shell.
   Without scripts equal byte for byte. Left: a frame of the change-over from the game,
   the script camera's near and far planes, the fitted figure under the scripts.
+- After stage 6, "Pod picture" PR 8 (D281, part 32): the viewer's own Sackboy in the
+  Pod (input option C), viewer only, with `--play-sackboy`. His physics scene is
+  pod.bin's, with the pod Thing's shape projected through its matrix: its floor puts
+  him at y -476.9, where the game has -477.97 (MEASURED; nothing fitted). He starts at
+  the data spawn (INFERRED rule, 1.2 from the game's measured arrival), is drawn under
+  the shell's frame root, and his place goes to the shell world before every tick, so
+  the pad zone is decided by where he stands (out on the tick he passes the trigger's
+  side, by the z rule in the back lane). Engage: Z or gamepad Square, `e` in
+  `--play-sackboy-input`, `--level-scripts-press-at N`. PLACEHOLDER: his z span (200),
+  the pod held still. Without `--play-sackboy` equal byte for byte. Left: the default
+  picture (part 30's record), the lane he is moved to on engaging, the arrival.
 
 ## Rules
 
