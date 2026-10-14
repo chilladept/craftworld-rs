@@ -77,7 +77,7 @@ use lbp_catalog::{attachment::AttachedSource, LoadControl};
 use lbp_runtime::{
     instances, tick_session, BubbleStyle, GlobalSettingsReport, LevelScripts, LevelWorld,
     MessageKind, Outcome, ReactionReport, Runner, SessionLevel, StepReport, GLOBAL_SETTINGS,
-    GLOBAL_SETTING_NAMES, POD_TRIGGER_CLASS,
+    GLOBAL_SETTING_NAMES,
 };
 use lbp_script_vm::natives::Bindings;
 use lbp_script_vm::Vm;
@@ -629,12 +629,7 @@ fn start_world(world: &mut LevelWorld, opts: &PlayOptions) {
 /// a trigger, and player 0's pad gets the button word `--press` gives for the tick.
 fn feed_input(world: &mut LevelWorld, tick: u64, opts: &PlayOptions, avatar: &mut Option<u32>) {
     if opts.pad_zone_from == Some(tick) && avatar.is_none() {
-        let spot = world.things.iter().find_map(|t| {
-            let (g, m) = (t.trigger.as_ref()?, t.world_matrix?);
-            let pod = t.script_classes.iter().any(|c| c == POD_TRIGGER_CLASS);
-            pod.then_some([m[12], m[13], m[14] + g.z_offset])
-        });
-        if let Some(s) = spot {
+        if let Some(s) = world.pod_trigger_spot() {
             *avatar = Some(world.add_player(s, (s[2] - 1., s[2] + 1.)));
         }
     }

@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D278
+# Current state (overwrite each milestone) — after D279
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -11,7 +11,53 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D278 the Pod tent's top-down dissolve (2026-10-13)
+## Latest: D279 the pod computer entered through the pad zone and the press, in the viewer (2026-10-13)
+- "Pod picture" PR 4b: viewer, one function moved into the runtime (`docs/level-scripts.md` part
+  30). The Puter key set "in use" on both worlds itself; now pod.bin's own script does it (the path
+  of D273: pad zone, click, `RequestHostUsePod(true)`, the host's answer a tick later).
+- Runtime: `LevelWorld::pod_trigger_spot()` (the `Trigger_Pod` trigger's world position plus its z
+  offset; the tool's spot finder, moved; the tool calls it).
+- Viewer, only with the shell level in the session (`--level-scripts --pod-camera N --pod-shell
+  HEX`): a Sackboy is put on that spot before the shell's first tick (`place_sackboy`); the pad's
+  button word is written on both worlds before every tick, bit 0x80 on the tick of a press
+  (`feed_pad`, `pad_word`); `pod_dolly` latches the key in `PuterState::key` and `tick` takes it:
+  the opening key (Space, gamepad Square) is a press while the computer is free, any Puter key
+  while it is in use asks the host to close (`ask_to_close`: `request_host_use_pod(false)`, handed
+  to the other world); `PuterState::open` follows the session's "in use". QA option
+  `--level-scripts-press-at N` (the press on tick N). `--pod-open` and `--level-scripts-in-use-at
+  N` stay direct.
+- PLACEHOLDER: he stands on the trigger from the start and is not drawn; closing (no script path
+  was found, the pod computer's menus are not modelled); the player colour (opaque white). No
+  gamepad mapping was made up: nothing in the viewer maps a button to the game's button word, the
+  Puter's own buttons are kept (which button bit 0x80 is, is not established).
+- A press before the intro has set the flags does nothing, as in the game; one line says why.
+- Side effects: the dissolve's flat band colour is white (was black without an avatar); closed,
+  the pod's shape colour is the file's white, so the shell's `(new scene)` line is gone; the two
+  pod computer sounds are counted; `BP_ENGAGE_POD` prompts are counted and not drawn (the overlay
+  shows the planets level's messages only: none seen).
+- MEASURED, session run, `--enter-pad-zone=1 --press=600:0x80`, 700 rounds
+  (`local-analysis/d279-pod-session-700-zone1-press600.json`): pad zone on 1, flags on 452, 148
+  click tests from 453, request on 600, in use and the start-up sound on 601, change-over 0.05 on
+  601 and 1.0 with mesh 145753 on 620, camera at rest on 626; no fault, no unbound call. Press on
+  100: no request, nothing opens.
+- MEASURED (no focus taken; `local-analysis/rscript/stage6/shots/d279-*`): closed at 600, press at
+  100 held at 600, open (press at 600 held at 641, in use from 600 at 640, `--pod-open`) and
+  without scripts equal D278's captures byte for byte; one level with scripts and no shell equals
+  main's build. Press at 600: `Engage press on tick 600: pod.bin's script took the click ...`,
+  `Pod computer at tick 601: in use true, by the host's answer`, change-over 601 to 620. Held at
+  610 press and in-use-at give the same bytes; against D278's 610 still 60,321 pixels differ, all
+  but 4 brighter (the band).
+- Eye check (611): the tent cut at about a third of the frame, white circuit traces in the band
+  on the outer card. 641: the platform, as D278. Nothing compared against the game.
+- Left out: the viewer's own Sackboy in the Pod (a physics scene of pod.bin, the floor at the
+  game's measured y -478, a camera); the pod computer's menus.
+- Tests: one runtime test, four viewer tests (`d279_*`). fmt, CI clippy, CI tests (612), Python
+  tests (36), `cargo check` of both viewers and the viewer's clippy pass; the viewer's tests pass
+  (71) but `sackboy_play::tests::input_script_steps` (fails on main). The 378-level runs were not
+  repeated (`tick_level` unchanged).
+- Next: the viewer's own Sackboy in the Pod; `pod_mask.tex` and the plain UV; the platform's edge.
+
+## Before: D278 the Pod tent's top-down dissolve (2026-10-13)
 - "Pod picture" PR 5, viewer only (`docs/level-scripts.md` part 29). Under `--level-scripts
   --pod-camera N --pod-shell HEX` the tent no longer slides out of the frame: it stays where the
   closed picture has it and is cut from the top down while pod.bin's change-over value v is between

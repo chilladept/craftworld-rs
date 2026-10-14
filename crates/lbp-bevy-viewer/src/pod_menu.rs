@@ -666,6 +666,29 @@ pub struct PuterState {
     pub open: bool,
     /// P2h `--pod-t`: stay at `t` until the next open/close key (mid-dolly captures).
     pub hold: bool,
+    /// D279: under `--level-scripts` the keys do not set `open`. The key that went down
+    /// last waits here until the scripts' next 30 Hz step takes it
+    /// (`level_play::tick`), and `open` follows the script world's "pod computer in use".
+    pub key: Option<PuterKey>,
+}
+
+/// D279: the two key groups of the Pod shell layer, as `pod_dolly` reads them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PuterKey {
+    /// Space or gamepad Square: opens a closed Puter, closes an open one.
+    Toggle,
+    /// Esc, Backspace or gamepad Circle: closes.
+    Back,
+}
+
+/// The key of a frame in which `toggle` and `back` went down: closing wins, as the
+/// keys' order without scripts has it.
+pub fn puter_key(toggle: bool, back: bool) -> Option<PuterKey> {
+    match (toggle, back) {
+        (_, true) => Some(PuterKey::Back),
+        (true, false) => Some(PuterKey::Toggle),
+        (false, false) => None,
+    }
 }
 
 /// Maps a 16:9 reference frame fraction into a window of `aspect`, keeping offsets from

@@ -5397,3 +5397,50 @@ Next: the tent's dissolve; PR 4b, the Puter key through the pad zone. `docs/leve
 **+0 newly viewable / +0 newly Complete (viewer feature).**
 Next: `pod_mask.tex` and the plain UV; PR 4b, the Puter key through the pad zone.
 `docs/level-scripts.md` part 29.
+
+## D279 the pod computer entered through the pad zone and the press, in the viewer (2026-10-13)
+- "Pod picture" PR 4b. Full detail: `docs/level-scripts.md` part 30. No new native.
+- Before: the Puter key of the Pod picture set "pod computer in use" on both worlds itself.
+- Runtime: `LevelWorld::pod_trigger_spot()`, the `level_scripts` example's spot finder moved (the
+  example calls it).
+- Viewer, with the shell level in the session: a Sackboy on the pod computer's trigger before the
+  first tick (PLACEHOLDER: there from the start, not drawn); the pad's button word on both worlds
+  each tick, bit 0x80 for the one tick of a press; the Puter key latched by `pod_dolly` and taken
+  by `level_play::tick` (a press while free; a request to the host to close while in use,
+  PLACEHOLDER: no script path found); `PuterState::open` follows "in use"; QA option
+  `--level-scripts-press-at N`. `--pod-open` and `--level-scripts-in-use-at N` stay direct. No
+  gamepad mapping made up (none in the viewer maps to the game's button word; the Puter's own
+  Square and Circle are kept).
+- `level_scripts` session, pod.bin + pod_planets, 700 rounds, `--enter-pad-zone=1
+  --press=600:0x80` (`local-analysis/d279-pod-session-700-zone1-press600.json`): pad zone on 1,
+  flags 3 on 452, request on 600, in use on 601, change-over 0.05 on 601 and 1.0 with mesh 145753
+  on 620, camera at rest on 626; no fault, no unbound call. `--press=100:0x80`: no request.
+- Viewer captures, no focus taken (`--qa-capture`, hidden window, `--level-guid 00018fdb
+  --pod-camera 1 --pod-shell 000027b9 --level-scripts --window-16-9 --preview-lighting
+  --qa-hide-ui`; `local-analysis/rscript/stage6/shots/d279-*`): closed at 600, press at 100 held
+  at 600, press at 600 held at 641, in use from 600 at 640, `--pod-open` at 600 and the shell
+  picture without scripts: equal byte for byte to D278's. Press at 600: request on 600, in use
+  on 601, open on 620. Held at 610 the press and `--level-scripts-in-use-at 600` give the same
+  bytes; against D278's still 60,321 of 921,600 pixels differ, all but 4 brighter: the dissolve's
+  band is white (the placeholder player colour) where it was black (no avatar).
+- One level with scripts and no shell layer (planets at 600; pod.bin alone in use from 600 at
+  640): equal byte for byte to main's build on the same command.
+- Eye check: 611 the tent cut at about a third of the frame with white circuit traces in the
+  band; 641 the platform under the DualShock, Earth and Moon above.
+- Also changed, by the Sackboy being there: the shell's `(new scene)` line is gone (the pod's
+  shape colour is the file's white when closed); the pod computer's two sounds and the
+  `BP_ENGAGE_POD` prompts are counted (not played, not drawn: no prompt seen).
+- Not done: the viewer's own Sackboy in the Pod (physics scene of pod.bin, the floor at the game's
+  measured y -478, a camera), the pod computer's menus, the player's stored colour. Not seen: a
+  key sent to the window, the way back, the motion. Not compared: anything against the game.
+- Tests: runtime `d279_the_pod_trigger_spot_puts_a_sackboy_in_the_pad_zone`; viewer
+  `d279_a_press_is_one_tick_long`, `d279_the_key_while_in_use_asks_the_host_to_close`,
+  `d279_the_press_option_is_a_tick_number_and_fires_once`,
+  `d279_a_press_leads_to_in_use_on_both_worlds_a_tick_later`. `cargo fmt --all --check`, CI
+  clippy, CI tests (612), `cargo check` of both viewers, the viewer's clippy and the Python tests
+  (36) pass; `cargo test -q -p lbp-bevy-viewer` 71 pass, 1 fails
+  (`sackboy_play::tests::input_script_steps`, fails on main). The 378-level runs were not repeated
+  (`tick_level` unchanged).
+**+0 newly viewable / +0 newly Complete (viewer feature).**
+Next: the viewer's own Sackboy in the Pod; `pod_mask.tex` and the plain UV.
+`docs/level-scripts.md` part 30.

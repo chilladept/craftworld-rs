@@ -208,6 +208,25 @@ impl LevelWorld {
         matrix.is_some_and(|m| m[14] >= PAD_ZONE_MIN_Z)
     }
 
+    /// Where a host puts a Sackboy to have him in the pod computer's pad zone: the world
+    /// position of the first Thing, in Thing order, that has a PTrigger, a position and
+    /// the script class [`POD_TRIGGER_CLASS`], with the trigger's z offset added. None
+    /// in a level without such a trigger, and before
+    /// [`LevelWorld::add_class_defaults`] (the classes are not known yet).
+    ///
+    /// PLACEHOLDER for a player who walks there: the middle of the trigger is a spot
+    /// that is inside it, not a spot the game puts anyone on. [`LevelWorld::in_pad_zone`]
+    /// is true for a Sackboy [`LevelWorld::add_player`] made there once a tick has put
+    /// him in the trigger's list, when the level is our Pod and the spot's z is at
+    /// least [`PAD_ZONE_MIN_Z`].
+    pub fn pod_trigger_spot(&self) -> Option<[f32; 3]> {
+        self.things.iter().find_map(|t| {
+            let (g, m) = (t.trigger.as_ref()?, t.world_matrix?);
+            let pod = t.script_classes.iter().any(|c| c == POD_TRIGGER_CLASS);
+            pod.then_some([m[12], m[13], m[14] + g.z_offset])
+        })
+    }
+
     /// `PodComputer.RequestHostUsePod__b`.
     ///
     /// FOUND (01.33, 0x3fa974, 0x3fa9cc): only when the level is our Pod and the Pod

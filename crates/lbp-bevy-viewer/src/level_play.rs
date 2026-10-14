@@ -13,8 +13,11 @@
 //! itself, with the Pod's planets level hung under its script-moved world Thing (part
 //! 23). With the Pod's shell layer the shell level has a script world of its own, and
 //! the two tick in one session (part 28), and the tent of the shell's pod Thing is drawn
-//! with the game's top-down dissolve while pod.bin's change-over runs (part 29). The rest
-//! is the clock and the counts.
+//! with the game's top-down dissolve while pod.bin's change-over runs (part 29), and the
+//! pod computer is entered by the pod's own script: a Sackboy stands on its trigger and
+//! the Puter key is the engage button on the pad the scripts read (part 30). The rest is
+//! the clock and the counts.
+use crate::pod_menu::PuterKey;
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts, EguiPrimaryContextPass};
 use lbp_catalog::{attachment::AttachedSource, LoadControl};
@@ -23,7 +26,7 @@ use lbp_runtime::{
     tick_session, CameraPose, CameraSource, CameraView, DisplayCamera, LevelScripts, LevelWorld,
     LightFollower, SessionLevel, StepReport, TICK_HZ,
 };
-use lbp_script_vm::natives::Bindings;
+use lbp_script_vm::natives::{Bindings, ACTION_ENGAGE_POD_BUTTON, PAD_ZONE_MIN_Z};
 use lbp_script_vm::Vm;
 use lbp_sim::avian2d::prelude::Position;
 use lbp_sim::character::SackboyBody;
@@ -68,6 +71,9 @@ struct Play {
     /// `--level-scripts-in-use-at N` (QA, part 27): the pod computer is set in use when
     /// N ticks have run, before the next one; none once that is done.
     in_use_at: Option<u64>,
+    /// `--level-scripts-press-at N` (QA, part 30): the engage button is down on tick N
+    /// alone; none once that is done.
+    press_at: Option<u64>,
     /// Frames drawn with a camera a script wrote itself (part 23), that camera's state
     /// at the last printed line, and its pose after the last tick it was looked at.
     script_frames: u64,
@@ -113,6 +119,13 @@ struct ShellLevel {
     followed: crate::thing_view::Followed,
     /// The opening progress after the last tick ([`opening`]).
     opening: f32,
+    /// Part 30: the Sackboy that stands on the pod computer's trigger, once the first
+    /// tick is about to run (`Some(None)`: the level has no such trigger).
+    sackboy: Option<Option<u32>>,
+    /// Part 30: an engage press waits for the next tick ([`pad_word`]).
+    press: bool,
+    /// Part 30: the host's answers that changed "in use" in this world, as last printed.
+    answers: usize,
 }
 
 /// What the camera a script writes itself did since the tick before.
@@ -151,6 +164,107 @@ fn tick_option(all: &[String], flag: &str) -> Result<Option<u64>, String> {
 /// `at` is cleared when it fires.
 fn in_use_now(at: &mut Option<u64>, ticks: u64) -> bool {
     at.take_if(|n| ticks >= *n).is_some()
+}
+
+/// `--level-scripts-press-at N` (QA, part 30): whether the engage button goes down on
+/// the tick about to run, the tick numbered `next` (the first is 1): once, when that is
+/// tick N or a later one. `at` is cleared when it fires. The count is a tick's number,
+/// as `level_scripts --press=TICK:MASK`, where `--level-scripts-in-use-at` counts the
+/// ticks that have run.
+fn press_now(at: &mut Option<u64>, next: u64) -> bool {
+    at.take_if(|n| next >= *n).is_some()
+}
+
+/// What a Puter key of the shell layer does under the scripts (part 30).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KeyAct {
+    /// The engage button on the pad, for one tick.
+    Press,
+    /// A request to the host to stop using the pod computer.
+    Close,
+}
+
+/// The act of a key by "pod computer in use": the opening key presses the engage button
+/// while the computer is free and asks to close while it is in use; the closing key
+/// asks to close while it is in use and does nothing else.
+fn key_act(key: PuterKey, in_use: bool) -> Option<KeyAct> {
+    match (key, in_use) {
+        (_, true) => Some(KeyAct::Close),
+        (PuterKey::Toggle, false) => Some(KeyAct::Press),
+        (PuterKey::Back, false) => None,
+    }
+}
+
+/// The button word of player 0's pad for the tick about to run: the engage bit when a
+/// press waits, which is taken; else 0. So a press is down for one tick and up on the
+/// next, which is what the game's "just clicked" wants: down now, up the frame before.
+///
+/// FOUND (part 24): action 8, the one the Pod's script asks about, is bit 0x80 of the
+/// pad's button word. Which button of the pad that is, is not established: the keys
+/// here are the viewer's own Puter keys (Space, gamepad Square), not a finding.
+fn pad_word(press: &mut bool) -> u32 {
+    if std::mem::take(press) {
+        ACTION_ENGAGE_POD_BUTTON
+    } else {
+        0
+    }
+}
+
+/// Hands the session's pad to both worlds for the tick about to run and returns its
+/// button word ([`pad_word`]). Both, as `level_scripts --press`: the pad is the
+/// player's, not a level's, and a script of either level may ask about it.
+fn feed_pad(shell: &mut LevelWorld, level: &mut LevelWorld, press: &mut bool) -> u32 {
+    let word = pad_word(press);
+    shell.set_pad_buttons(0, word);
+    level.set_pad_buttons(0, word);
+    word
+}
+
+/// Puts the session's Sackboy on the pod computer's trigger of the shell world
+/// (`LevelWorld::pod_trigger_spot`), one unit of depth either way, as
+/// `level_scripts --enter-pad-zone`. None in a level without such a trigger.
+///
+/// PLACEHOLDER: he stands there from the first tick and is not drawn. The viewer's own
+/// Sackboy walking in the Pod needs a physics scene of pod.bin, the Pod's floor and a
+/// camera (a later PR).
+fn place_sackboy(shell: &mut LevelWorld) -> Option<(u32, [f32; 3])> {
+    let spot = shell.pod_trigger_spot()?;
+    Some((shell.add_player(spot, (spot[2] - 1., spot[2] + 1.)), spot))
+}
+
+/// Asks the host to stop using the pod computer, from the shell world, and makes the
+/// other world agree (`lbp_runtime::tick_session` wants that of a caller that changes
+/// one world's session state between two ticks). "In use" goes with the host's answer
+/// at the start of the next tick, with the shut-down sound counted.
+///
+/// PLACEHOLDER: no script path for closing was found. The pod computer's own menus,
+/// which the player leaves it through, are not modelled.
+fn ask_to_close(shell: &mut LevelWorld, level: &mut LevelWorld) {
+    shell.request_host_use_pod(false);
+    shell.hand_session_to(level);
+}
+
+/// The progression mask the Pod's script wants before the pod computer can be engaged
+/// (FOUND in the script listing, part 24).
+const ENGAGE_FLAGS: u32 = 2;
+
+/// Why pod.bin's script did not ask for the pod computer on a tick with the engage
+/// button down: the first of the conditions FOUND for its engage test (part 24) that
+/// does not hold now, as far as the host can tell.
+fn press_ignored(shell: &LevelWorld, sackboy: Option<u32>) -> String {
+    let flags = shell.progression_flags;
+    match sackboy {
+        None => "no Sackboy stands on a pod computer trigger".into(),
+        Some(_) if shell.pod_computer_in_use => "the pod computer is in use".into(),
+        Some(_) if flags & ENGAGE_FLAGS == 0 => format!(
+            "the progression flags are {flags:#x}, without mask {ENGAGE_FLAGS:#x}, which the planets level's intro sets (MEASURED on tick 452 of a fresh profile): the script's own rule"
+        ),
+        Some(thing) if !shell.in_pad_zone(thing) => "the Sackboy is not in the pad zone".into(),
+        Some(_) => {
+            "another condition of the script (a video, a photo, the start menu, a button still held)"
+                .into()
+        }
+    }
 }
 
 /// Sets "pod computer in use" for the session: on the played level's world and, with
@@ -218,6 +332,12 @@ pub fn install(app: &mut App) -> Result<(), String> {
         .transpose()?;
     let hold_at = tick_option(&all, "--level-scripts-hold-at")?;
     let in_use_at = tick_option(&all, "--level-scripts-in-use-at")?;
+    let press_at = tick_option(&all, "--level-scripts-press-at")?;
+    if press_at.is_some() && shell_guid.is_none() {
+        println!(
+            "--level-scripts-press-at is not used without the Pod's shell layer (--pod-camera N --pod-shell HEX): the engage press is read by the shell level's script"
+        );
+    }
     // Bit masks ORed into the profile's word of LBP2 game progression flags (as
     // `level_scripts --flags`).
     let flags = value(&all, "--level-scripts-flags")
@@ -326,6 +446,9 @@ pub fn install(app: &mut App) -> Result<(), String> {
             things_scene: None,
             followed: Default::default(),
             opening: 0.,
+            sackboy: None,
+            press: false,
+            answers: 0,
         }
     });
     app.insert_non_send(Play {
@@ -348,6 +471,7 @@ pub fn install(app: &mut App) -> Result<(), String> {
         override_printed: (false, false, false),
         hold_at,
         in_use_at,
+        press_at,
         script_frames: 0,
         script_state: ScriptCameraState::Out,
         script_last: None,
@@ -400,21 +524,69 @@ fn tick(
     // Part 26: the Puter key of the viewer's Pod rig is the player at the pod computer.
     // Handed over when it changes, also while the ticks are held.
     if let Some(open) = puter_change(&mut p.puter_open, puter.as_deref().map(|s| s.open)) {
+        // Part 30: with the shell level in the session the keys no longer come this
+        // way (`puter_key`); what is left is the state the rig starts with, `--pod-open`.
+        let from = match p.shell {
+            Some(_) => {
+                "--pod-open (set directly, a QA option; the keys go through pod.bin's script)"
+            }
+            None => "the viewer's Puter state (stand-in for the pod's own script)",
+        };
         let shell = p.shell.as_mut().map(|s| &mut s.host.world);
         set_in_use(&mut p.host.world, shell, open);
         println!(
-            "Pod computer at tick {}: in use {open}, from the viewer's Puter state (stand-in for the pod's own script)",
+            "Pod computer at tick {}: in use {open}, from {from}",
             p.scripts.ticks
         );
+    }
+    // Part 30: with the shell level in the session a Puter key is not "in use" itself.
+    // The opening key is the engage button on the pad, for pod.bin's own script to
+    // answer; a key while the computer is in use asks the host to close it.
+    if let Some(key) = puter.as_deref().and_then(|s| s.key) {
+        if let Some(puter) = puter.as_mut() {
+            puter.key = None;
+        }
+        puter_key(p, key);
     }
     step(p, &mut capture, &sackboy);
     // Part 28: the opening progress of the viewer's Pod rig is the change-over value of
     // pod.bin's script after the last tick (PLACEHOLDER, see [`opening`]). Also while
-    // the ticks are held, for a rig that came up after them.
+    // the ticks are held, for a rig that came up after them. Part 30: and the Puter
+    // state "open" is the session's "pod computer in use", however it came about.
     if let (Some(shell), Some(puter)) = (&p.shell, puter.as_mut()) {
         if puter.t != shell.opening {
             puter.t = shell.opening;
         }
+        let in_use = shell.host.world.pod_computer_in_use;
+        if puter.open != in_use {
+            puter.open = in_use;
+        }
+        p.puter_open = Some(in_use);
+    }
+}
+
+/// A Puter key of the shell layer under the scripts (part 30; [`key_act`]). Without a
+/// shell level in the session there is no such key: `pod_dolly` then sets the Puter
+/// state itself.
+fn puter_key(p: &mut Play, key: PuterKey) {
+    let Some(shell) = p.shell.as_mut() else {
+        return;
+    };
+    let ticks = shell.scripts.ticks;
+    match key_act(key, shell.host.world.pod_computer_in_use) {
+        Some(KeyAct::Press) => {
+            shell.press = true;
+            println!(
+                "Engage key after tick {ticks}: the engage button (bit {ACTION_ENGAGE_POD_BUTTON:#x} of the pad's button word) is down on the next tick, for pod.bin's script to answer"
+            );
+        }
+        Some(KeyAct::Close) => {
+            ask_to_close(&mut shell.host.world, &mut p.host.world);
+            println!(
+                "Pod computer after tick {ticks}: the key asks the host to stop using it (placeholder: no script path for closing was found; the pod computer's menus are not modelled)"
+            );
+        }
+        None => {}
     }
 }
 
@@ -452,9 +624,9 @@ fn step(
         return;
     }
     // Part 27, `--level-scripts-in-use-at N`: a player is at the pod computer from the
-    // tick after tick N on (as `level_scripts --puter-in-use=N`). A stand-in for the
-    // path of part 24 (pad zone, press, the host's answer), which needs a Sackboy and a
-    // pad the viewer does not feed in yet.
+    // tick after tick N on (as `level_scripts --puter-in-use=N`). The direct way, kept
+    // for QA: the path of part 24 (pad zone, press, the host's answer) is the Puter
+    // key's and `--level-scripts-press-at`'s (part 30).
     if in_use_now(&mut p.in_use_at, p.scripts.ticks) {
         let shell = p.shell.as_mut().map(|s| &mut s.host.world);
         set_in_use(&mut p.host.world, shell, true);
@@ -462,6 +634,32 @@ fn step(
             "Pod computer at tick {}: in use true, from --level-scripts-in-use-at (stand-in for the player engaging it)",
             p.scripts.ticks
         );
+    }
+    // Part 30: the session's Sackboy and pad. He is put on the pod computer's trigger
+    // of the shell level before its first tick; the pad's button word is written for
+    // every tick, with the engage bit on the tick of a press.
+    let mut pressed = false;
+    if let Some(shell) = p.shell.as_mut() {
+        let next = shell.scripts.ticks + 1;
+        if shell.sackboy.is_none() {
+            let placed = place_sackboy(&mut shell.host.world);
+            shell.sackboy = Some(placed.map(|(thing, _)| thing));
+            match placed {
+                Some((thing, spot)) => println!(
+                    "Pod Sackboy before tick {next}: Thing {thing} of the shell level, on the pod computer's trigger at {spot:.1?} (z at least {PAD_ZONE_MIN_Z} for the pad zone: {}); not drawn, a placeholder for the player walking there",
+                    spot[2] >= PAD_ZONE_MIN_Z
+                ),
+                None => println!(
+                    "Pod Sackboy: the shell level has no pod computer trigger; nobody can engage the pod computer"
+                ),
+            }
+        }
+        if press_now(&mut p.press_at, next) {
+            shell.press = true;
+            println!("Engage press on tick {next}, from --level-scripts-press-at");
+        }
+        let word = feed_pad(&mut shell.host.world, &mut p.host.world, &mut shell.press);
+        pressed = word != 0;
     }
     // The play-mode Sackboy (`--play-sackboy`), when there is one, is the player the
     // level's triggers test.
@@ -497,6 +695,30 @@ fn step(
             shell.ticks_with_faults += usize::from(!of_shell.faults.is_empty());
             note_shell(&mut p.faults, &of_shell);
             shell.totals.absorb(of_shell);
+            // Part 30: what the script made of an engage press, and the host's answer.
+            let world = &shell.host.world;
+            let ticks = shell.scripts.ticks;
+            if pressed {
+                match world.pod.host_use_pod_pending {
+                    Some(true) => println!(
+                        "Engage press on tick {ticks}: pod.bin's script took the click and asked the host for the pod computer (RequestHostUsePod(true)); the answer comes with the next tick"
+                    ),
+                    _ => println!(
+                        "Engage press on tick {ticks}: ignored, pod.bin's script made no request: {}",
+                        press_ignored(world, shell.sackboy.flatten())
+                    ),
+                }
+            }
+            if world.pod.in_use_changes.len() != shell.answers {
+                shell.answers = world.pod.in_use_changes.len();
+                let count = |sound: &str| world.sounds_played.get(sound).copied().unwrap_or(0);
+                println!(
+                    "Pod computer at tick {ticks}: in use {}, by the host's answer to a request; sounds counted in the shell level: start-up {}, shut-down {} (none is played)",
+                    world.pod_computer_in_use,
+                    count(lbp_runtime::POD_COMPUTER_STARTUP_SOUND),
+                    count(lbp_runtime::POD_COMPUTER_SHUTDOWN_SOUND)
+                );
+            }
             let was = std::mem::replace(
                 &mut shell.opening,
                 opening(shell.host.world.pod_transition()),
@@ -1267,6 +1489,16 @@ fn window(mut contexts: EguiContexts, play: NonSend<Play>) -> Result {
                     shell.host.world.pod_computer_in_use,
                     shell.opening
                 ));
+                let pod = &shell.host.world.pod;
+                let sackboy = shell.sackboy.flatten();
+                ui.small(format!(
+                    "  Sackboy on the pod computer's trigger: {} (not drawn); in the pad zone {}; engage prompts asked for {}, clicks {}, requests {}",
+                    sackboy.map_or("none".into(), |t| format!("Thing {t}")),
+                    sackboy.is_some_and(|t| shell.host.world.in_pad_zone(t)),
+                    pod.action_prompts.values().sum::<u64>(),
+                    pod.action_clicks,
+                    pod.host_use_pod_requests.len()
+                ));
                 if let Some(c) = &shell.created {
                     ui.small(format!("  create: {}", line(c)));
                 }
@@ -1623,6 +1855,308 @@ mod tests {
         let mut alone = LevelWorld::default();
         set_in_use(&mut alone, None, true);
         assert!(alone.pod_computer_in_use);
+    }
+
+    /// One level of a session without scripts: a VM, a world and its schedule.
+    struct Side(Vm, Bindings<LevelWorld>, LevelScripts);
+
+    impl Side {
+        fn of(world: LevelWorld) -> Self {
+            let (vm, host) = (Vm::default(), Bindings::defaulting(world));
+            let scripts = LevelScripts::new(&vm, &host.world);
+            Side(vm, host, scripts)
+        }
+    }
+
+    /// A session of a shell with a pod computer trigger and a level without Things.
+    fn session() -> (Side, Side) {
+        (
+            Side::of(pod_world()),
+            Side::of(LevelWorld::from_things(&[])),
+        )
+    }
+
+    /// One session tick in the viewer's order: the shell, then the level.
+    fn round(shell: &mut Side, level: &mut Side) {
+        let mut levels = [
+            SessionLevel {
+                scripts: &mut shell.2,
+                vm: &mut shell.0,
+                host: &mut shell.1,
+            },
+            SessionLevel {
+                scripts: &mut level.2,
+                vm: &mut level.0,
+                host: &mut level.1,
+            },
+        ];
+        assert_eq!(tick_session(&mut levels, BUDGET_PER_CALL).len(), 2);
+    }
+
+    /// A shell world for the tests: no Thing of a level file, one pod computer trigger
+    /// at a made-up place (a circle of radius 50), started as our Pod.
+    fn pod_world() -> LevelWorld {
+        let mut world = LevelWorld::from_things(&[]);
+        let mut at = Mat4::IDENTITY.to_cols_array();
+        at[12..15].copy_from_slice(&[40., -470., -20.]);
+        world.things.push(lbp_runtime::ThingState {
+            trigger: Some(lbp_runtime::TriggerState {
+                radius: 50.,
+                hysteresis: 1.5,
+                enabled: true,
+                z_offset: 5.,
+                ..Default::default()
+            }),
+            world_matrix: Some(at),
+            script_classes: vec![lbp_runtime::POD_TRIGGER_CLASS.into()],
+            ..Default::default()
+        });
+        world.our_pod = true;
+        world
+    }
+
+    /// The game's "just clicked" for the engage action of player 0, as a script asks.
+    fn clicked(world: &mut LevelWorld) -> bool {
+        use lbp_script_vm::natives::{dispatch, ACTION_ENGAGE_POD};
+        use lbp_script_vm::Value;
+        let args = [
+            Value::Int(0),
+            Value::Int(ACTION_ENGAGE_POD),
+            Value::Str("MADE_UP_KEY".into()),
+        ];
+        let answer = dispatch(world, "Input", "IsJustClickedByID__iiQ6String", &args);
+        matches!(answer, Some(Ok(Value::Bool(true))))
+    }
+
+    fn in_use(shell: &Side, level: &Side) -> (bool, bool) {
+        (
+            shell.1.world.pod_computer_in_use,
+            level.1.world.pod_computer_in_use,
+        )
+    }
+
+    fn pending(shell: &Side, level: &Side) -> (Option<bool>, Option<bool>) {
+        (
+            shell.1.world.pod.host_use_pod_pending,
+            level.1.world.pod.host_use_pod_pending,
+        )
+    }
+
+    /// D279. A press is the engage bit on one tick and nothing on the next, on both
+    /// worlds' pads: the game's "just clicked" is true on that tick alone.
+    #[test]
+    fn d279_a_press_is_one_tick_long() {
+        let mut press = true;
+        assert_eq!(pad_word(&mut press), 0x80);
+        assert!(!press);
+        assert_eq!(pad_word(&mut press), 0);
+        assert_eq!(ACTION_ENGAGE_POD_BUTTON, 0x80);
+
+        let (mut shell, mut level) = session();
+        let words = |shell: &Side, level: &Side| {
+            let word = |side: &Side| side.1.world.player_records[0].pad.map(|p| p.now);
+            (word(shell), word(level))
+        };
+        // Before the first tick nobody has a pad: no click, whatever is asked.
+        assert_eq!(words(&shell, &level), (None, None));
+        assert!(!clicked(&mut shell.1.world));
+        let mut press = false;
+        // Tick 1: no press. The pads are there, with nothing down.
+        let word = feed_pad(&mut shell.1.world, &mut level.1.world, &mut press);
+        assert_eq!(word, 0);
+        assert_eq!(words(&shell, &level), (Some(0), Some(0)));
+        assert!(!clicked(&mut shell.1.world));
+        round(&mut shell, &mut level);
+        // Tick 2: the press. Down on both pads, a click in both worlds.
+        press = true;
+        let word = feed_pad(&mut shell.1.world, &mut level.1.world, &mut press);
+        assert_eq!(word, 0x80);
+        assert!(!press);
+        assert_eq!(words(&shell, &level), (Some(0x80), Some(0x80)));
+        assert!(clicked(&mut shell.1.world) && clicked(&mut level.1.world));
+        round(&mut shell, &mut level);
+        // Tick 3: up again, and no click. Nor on tick 4.
+        for _ in 0..2 {
+            let word = feed_pad(&mut shell.1.world, &mut level.1.world, &mut press);
+            assert_eq!(word, 0);
+            assert_eq!(words(&shell, &level), (Some(0), Some(0)));
+            assert!(!clicked(&mut shell.1.world) && !clicked(&mut level.1.world));
+            round(&mut shell, &mut level);
+        }
+        // A second press is a second click.
+        press = true;
+        feed_pad(&mut shell.1.world, &mut level.1.world, &mut press);
+        assert!(clicked(&mut shell.1.world));
+        // The prompt of the action was asked for on every asking with a pad.
+        let prompts = &shell.1.world.pod.action_prompts;
+        assert_eq!(prompts.get("MADE_UP_KEY"), Some(&5));
+    }
+
+    /// D279. The keys under the scripts: the opening key presses while the computer is
+    /// free and asks to close while it is in use; the closing key only asks to close.
+    /// Asking to close goes through the host: "in use" ends on both worlds with the next
+    /// tick, and the shut-down sound is counted where the Sackboy is.
+    #[test]
+    fn d279_the_key_while_in_use_asks_the_host_to_close() {
+        use crate::pod_menu::puter_key as key_of;
+        use lbp_runtime::{POD_COMPUTER_SHUTDOWN_SOUND, POD_COMPUTER_STARTUP_SOUND};
+        assert_eq!(key_act(PuterKey::Toggle, false), Some(KeyAct::Press));
+        assert_eq!(key_act(PuterKey::Toggle, true), Some(KeyAct::Close));
+        assert_eq!(key_act(PuterKey::Back, true), Some(KeyAct::Close));
+        assert_eq!(key_act(PuterKey::Back, false), None);
+        // The key of a frame: closing wins over opening.
+        assert_eq!(key_of(false, false), None);
+        assert_eq!(key_of(true, false), Some(PuterKey::Toggle));
+        assert_eq!(key_of(false, true), Some(PuterKey::Back));
+        assert_eq!(key_of(true, true), Some(PuterKey::Back));
+
+        let (mut shell, mut level) = session();
+        let (sackboy, spot) = place_sackboy(&mut shell.1.world).unwrap();
+        assert_eq!(spot, [40., -470., -15.]);
+        shell.1.world.hand_session_to(&mut level.1.world);
+        set_in_use(&mut level.1.world, Some(&mut shell.1.world), true);
+        round(&mut shell, &mut level);
+        assert_eq!(in_use(&shell, &level), (true, true));
+        assert!(shell.1.world.in_pad_zone(sackboy));
+        // The request waits in both worlds and changes nothing yet.
+        ask_to_close(&mut shell.1.world, &mut level.1.world);
+        assert_eq!(pending(&shell, &level), (Some(false), Some(false)));
+        assert_eq!(in_use(&shell, &level), (true, true));
+        // The host's answer comes with the next tick, in both worlds.
+        round(&mut shell, &mut level);
+        assert_eq!(in_use(&shell, &level), (false, false));
+        assert_eq!(pending(&shell, &level), (None, None));
+        let sounds = &shell.1.world.sounds_played;
+        assert_eq!(sounds.get(POD_COMPUTER_SHUTDOWN_SOUND), Some(&1));
+        assert_eq!(sounds.get(POD_COMPUTER_STARTUP_SOUND), None);
+        assert!(level.1.world.sounds_played.is_empty());
+        assert_eq!(shell.1.world.pod.in_use_changes.len(), 1);
+        // Outside our Pod the request is dropped, as the game drops it.
+        shell.1.world.our_pod = false;
+        ask_to_close(&mut shell.1.world, &mut level.1.world);
+        assert_eq!(pending(&shell, &level).0, None);
+        assert_eq!(shell.1.world.pod.host_use_pod_refused, 1);
+        // A level without a pod computer trigger gets no Sackboy.
+        assert_eq!(place_sackboy(&mut LevelWorld::from_things(&[])), None);
+    }
+
+    /// D279. `--level-scripts-press-at N` is the number of a tick and fires once, on
+    /// the first tick about to run that is tick N or a later one.
+    #[test]
+    fn d279_the_press_option_is_a_tick_number_and_fires_once() {
+        let args = |list: &[&str]| -> Vec<String> { list.iter().map(|a| a.to_string()).collect() };
+        let flag = "--level-scripts-press-at";
+        assert_eq!(tick_option(&args(&["--level-scripts"]), flag), Ok(None));
+        assert_eq!(tick_option(&args(&[flag, "600"]), flag), Ok(Some(600)));
+        // The other tick options are not this one.
+        let other = args(&["--level-scripts-in-use-at", "600"]);
+        assert_eq!(tick_option(&other, flag), Ok(None));
+        for bad in ["-1", "soon", "0x80"] {
+            let e = tick_option(&args(&[flag, bad]), flag).unwrap_err();
+            assert_eq!(e, "--level-scripts-press-at takes a tick count");
+        }
+        // 599 ticks have run: tick 600 is about to. Not before, and not again.
+        let mut at = Some(600);
+        assert!(!press_now(&mut at, 1) && !press_now(&mut at, 599));
+        assert_eq!(at, Some(600));
+        assert!(press_now(&mut at, 600));
+        assert_eq!(at, None);
+        assert!(!press_now(&mut at, 601));
+        // A tick already passed, and the first tick for 0 and 1.
+        assert!(press_now(&mut Some(3), 7));
+        assert!(press_now(&mut Some(0), 1) && press_now(&mut Some(1), 1));
+        assert!(!press_now(&mut None, 7));
+        // With the pad: the option's press is on that tick's word alone.
+        let mut at = Some(3);
+        let words: Vec<u32> = (1..=5)
+            .map(|next| {
+                let mut press = press_now(&mut at, next);
+                pad_word(&mut press)
+            })
+            .collect();
+        assert_eq!(words, [0, 0, 0x80, 0, 0]);
+    }
+
+    /// D279. The path from the press to "in use" over a session of two worlds, with the
+    /// one step of pod.bin's script stood in for (there is no script in a test): when
+    /// the Sackboy is in the pad zone, the flags are there and the engage action was
+    /// just clicked, the script asks the host for the pod computer during its tick.
+    /// Press on tick N: the request on N, "in use" on both worlds on N + 1, with the
+    /// start-up sound counted where the Sackboy is. Without the flags the press is
+    /// ignored and the reason names them.
+    #[test]
+    fn d279_a_press_leads_to_in_use_on_both_worlds_a_tick_later() {
+        let (mut shell, mut level) = session();
+        shell.1.world.hand_session_to(&mut level.1.world);
+        assert!(level.1.world.our_pod);
+        let sackboy = place_sackboy(&mut shell.1.world).map(|(thing, _)| thing);
+        assert!(sackboy.is_some());
+        // One tick of the session: the pad, the script's stand-in, the round. Gives
+        // (the pad's word, a request was made, in use in the shell and in the level).
+        let tick = |shell: &mut Side, level: &mut Side, press: &mut bool| {
+            let word = feed_pad(&mut shell.1.world, &mut level.1.world, press);
+            let w = &mut shell.1.world;
+            let wanted = clicked(w)
+                && sackboy.is_some_and(|thing| w.in_pad_zone(thing))
+                && w.progression_flags & ENGAGE_FLAGS != 0
+                && !w.pod_computer_in_use;
+            round(shell, level);
+            if wanted {
+                // During the shell's tick, so after the host's answer of this round was
+                // taken; the session hands the request on after the shell's tick.
+                shell.1.world.request_host_use_pod(true);
+                shell.1.world.hand_session_to(&mut level.1.world);
+            }
+            (word, wanted, in_use(shell, level))
+        };
+        let (free, used) = ((false, false), (true, true));
+        let mut press = false;
+        // Tick 1: he is put in the trigger's list.
+        assert_eq!(tick(&mut shell, &mut level, &mut press), (0, false, free));
+        assert!(shell.1.world.in_pad_zone(sackboy.unwrap()));
+        // Tick 2: a press before the flags. Ignored, and the reason is the flags.
+        press = true;
+        assert_eq!(
+            tick(&mut shell, &mut level, &mut press),
+            (0x80, false, free)
+        );
+        let why = press_ignored(&shell.1.world, sackboy);
+        assert!(why.contains("progression flags are 0x0"), "{why}");
+        assert_eq!(tick(&mut shell, &mut level, &mut press), (0, false, free));
+        // The flags arrive from the other level (the intro), and reach the shell.
+        level.1.world.progression_flags = 3;
+        level.1.world.hand_session_to(&mut shell.1.world);
+        assert_eq!(tick(&mut shell, &mut level, &mut press), (0, false, free));
+        // Tick 5: the press. The request on this tick, "in use" not yet.
+        press = true;
+        assert_eq!(tick(&mut shell, &mut level, &mut press), (0x80, true, free));
+        assert_eq!(pending(&shell, &level), (Some(true), Some(true)));
+        // Tick 6: the host's answer, on both worlds; the pad is up and nothing is asked.
+        assert_eq!(tick(&mut shell, &mut level, &mut press), (0, false, used));
+        assert_eq!((shell.2.ticks, level.2.ticks), (6, 6));
+        let sounds = &shell.1.world.sounds_played;
+        assert_eq!(
+            sounds.get(lbp_runtime::POD_COMPUTER_STARTUP_SOUND),
+            Some(&1)
+        );
+        assert!(level.1.world.sounds_played.is_empty());
+        assert_eq!(shell.1.world.pod.host_use_pod_requests.len(), 1);
+        // It stays in use; a press now is no request, and the reason says so.
+        press = true;
+        assert_eq!(
+            tick(&mut shell, &mut level, &mut press),
+            (0x80, false, used)
+        );
+        assert_eq!(
+            press_ignored(&shell.1.world, sackboy),
+            "the pod computer is in use"
+        );
+        // The other reasons: nobody on a trigger; out of the pad zone.
+        assert!(press_ignored(&shell.1.world, None).contains("no Sackboy"));
+        let w = &mut shell.1.world;
+        w.pod_computer_in_use = false;
+        w.move_player(sackboy.unwrap(), [40., -470., -400.], (-401., -399.));
+        assert!(press_ignored(w, sackboy).contains("not in the pad zone"));
     }
 
     /// Part 26. The Puter state of the Pod rig goes to the script world when it changes;

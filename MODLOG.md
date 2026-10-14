@@ -1,5 +1,13 @@
 # Development log
 
+## 2026-10-13 - D279 the pod computer entered through the pad zone and the press
+
+Pod picture PR 4b. With the shell level in the viewer's session a Sackboy (not drawn, placeholder) stands on
+the pod computer's trigger (`LevelWorld::pod_trigger_spot`) and the Puter key is bit 0x80 of the pad for one
+tick: pod.bin's script asks the host and "in use" comes a tick later (press 600, in use 601, open 620).
+Closing asks the host (placeholder). QA option `--level-scripts-press-at N`. Closed and open stills equal
+D278's byte for byte; the dissolve's band is white (placeholder player colour). `docs/level-scripts.md` part 30.
+
 ## 2026-10-13 - D278 the Pod tent's top-down dissolve
 
 Pod picture PR 5, viewer only. The tent of the shell's pod Thing is cut from the top down while pod.bin's

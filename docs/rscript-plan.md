@@ -356,6 +356,18 @@ UI (`UpdateUI__`) and photo natives are not planned.
   equal part 28's byte for byte; stills at five values show the tent cut from the top
   down. Not compared against the game. Left: the second mask, the platform's edge at
   1, the per-backdrop masks, the Sackboy and pad as input (PR 4b).
+- After stage 6, "Pod picture" PR 4b (D279, part 30): the pod computer is entered by
+  pod.bin's own script in the viewer. With the shell level in the session a Sackboy
+  (not drawn, PLACEHOLDER) stands on the pod computer's trigger
+  (`LevelWorld::pod_trigger_spot`, moved from the tool), and the Puter key is bit 0x80
+  of the pad's button word for one tick; the script asks the host and "in use" comes a
+  tick later. Closing asks the host through `request_host_use_pod(false)`
+  (PLACEHOLDER: no script path found). QA option `--level-scripts-press-at N`;
+  `--pod-open` and `--level-scripts-in-use-at N` stay direct. Session run and viewer:
+  press on 600, in use on 601, 1.0 on 620. Stills: closed and open equal part 29's
+  byte for byte; between, the band is white (the placeholder player colour) where it
+  was black. Not compared against the game. Left: the viewer's own Sackboy in the
+  Pod, the pod computer's menus.
 
 ## Rules
 

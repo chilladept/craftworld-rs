@@ -4798,6 +4798,53 @@ fn d273_the_pad_zone_the_engage_press_and_the_players_colour() {
     assert!(host.unbound.is_empty());
 }
 
+/// D279: the spot a host puts a Sackboy on to have him in the pad zone is the pod
+/// computer's trigger: its world position with its z offset. A Sackboy made there is in
+/// the pad zone after one tick.
+#[test]
+fn d279_the_pod_trigger_spot_puts_a_sackboy_in_the_pad_zone() {
+    use lbp_runtime::POD_TRIGGER_CLASS;
+    // Thing 2: a circle trigger at (100, 0, 0). Two more made-up places for it below.
+    let mut things = trigger_level(0);
+    let trigger = things[2].data.trigger.as_mut().unwrap();
+    trigger.z_offset = 25.;
+    let mut vm = Vm::default();
+    let mut host = Bindings::new(LevelWorld::from_things(&things));
+    let mut level = LevelScripts::new(&vm, &host.world);
+    // A trigger of another script class is not the pod computer's.
+    assert_eq!(host.world.pod_trigger_spot(), None);
+    host.world.things[2].script_classes = vec!["Trigger_Other".into(), "Thing".into()];
+    assert_eq!(host.world.pod_trigger_spot(), None);
+    host.world.things[2].script_classes = vec![POD_TRIGGER_CLASS.into(), "Thing".into()];
+    assert_eq!(host.world.pod_trigger_spot(), Some([100., 0., 25.]));
+    // The spot follows the trigger's world matrix.
+    let stored = host.world.things[2].world_matrix.unwrap();
+    let mut moved = stored;
+    moved[12..15].copy_from_slice(&[-40., 7., -50.]);
+    host.world.things[2].world_matrix = Some(moved);
+    assert_eq!(host.world.pod_trigger_spot(), Some([-40., 7., -25.]));
+    // Without a position there is no spot.
+    host.world.things[2].world_matrix = None;
+    assert_eq!(host.world.pod_trigger_spot(), None);
+    host.world.things[2].world_matrix = Some(stored);
+
+    // A Sackboy on the spot, one unit of depth either way (the `level_scripts` stand-in).
+    let spot = host.world.pod_trigger_spot().unwrap();
+    let sackboy = host.world.add_player(spot, (spot[2] - 1., spot[2] + 1.));
+    host.world.our_pod = true;
+    assert!(!host.world.in_pad_zone(sackboy), "not in the list yet");
+    level.tick_level(&mut vm, &mut host, 1000);
+    assert_eq!(
+        host.world.things[2].trigger.as_ref().unwrap().inside,
+        [sackboy]
+    );
+    assert!(host.world.in_pad_zone(sackboy));
+    // The Sackboy is no trigger: the spot is still the trigger's.
+    assert_eq!(host.world.pod_trigger_spot(), Some(spot));
+    // An empty world has no spot.
+    assert_eq!(LevelWorld::default().pod_trigger_spot(), None);
+}
+
 /// D273: a request to use the pod computer is answered at the start of the next tick,
 /// only in our Pod, with the start-up and shut-down sounds counted.
 #[test]
