@@ -1,5 +1,16 @@
 # Development log
 
+## 2026-10-14 - D293 the 2-D and scalar smoothing steps as the game's
+
+Pod picture PR 20, script VM only. `Math.Smooth2D__pppff` and the scalar `Math.Smooth__fffff` now run the game's
+rules, read from the EBOOT (FOUND): `Smooth2D` (0x60195c, core 0x38f2fc) is the 2-D twin of `Smooth3D`'s core, the
+distance and the velocity's part along the target taken on x and y, one fixed step of the 1-D move, only the
+velocity back; `Smooth` (0x6019f8, wrapper 0x5ee844) calls the 1-D step 0x38ef7c with (position, velocity, target,
+acceleration, top speed) and returns the new position and velocity, landing exactly on the target when the move
+fits in the step. Both share part 40's code; `Smooth3D` is unchanged. The Pod session's report is the same byte for
+byte (MEASURED): its one `Smooth` call a tick has the zoom, its velocity and its target all 0, and `Smooth2D` is not
+reached. `docs/level-scripts.md` part 44.
+
 ## 2026-10-14 - D292 the glow on the dissolve's line
 
 Pod picture PR 19, viewer only. The game's halo around the tent's green line is a post pass (FOUND, frame 5247):

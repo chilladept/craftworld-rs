@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D292
+# Current state (overwrite each milestone) — after D293
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -11,7 +11,25 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D292 the glow on the dissolve's line (2026-10-14)
+## Latest: D293 the 2-D and scalar smoothing steps as the game's (2026-10-14)
+- "Pod picture" PR 20, script VM only (`docs/level-scripts.md` part 44). FOUND (EBOOT 01.33):
+  `native_Smooth2D` 0x60195c -> 0x5ee7e4 -> core 0x38f2fc, the 2-D twin of 0x3905b8 (distance and
+  projection on x, y; 1-D step; offset over distance x new speed; zero under 1e-4 or the new
+  speed; velocity only, w cleared). `native_Smooth__fffff` 0x6019f8 -> 0x5ee844 -> 0x38ef7c with
+  (pos, vel, target, acc, top speed), returning (new pos, new vel, 0, 0); the step lands on the
+  target where its plan fits. It divides by the acceleration (zero gives non-finite values).
+- VM: `smooth_nd` serves `Smooth3D` (unchanged) and `Smooth2D`; `smooth_1d` serves `Smooth`. The
+  older INFERRED rule is gone.
+- MEASURED (`level_scripts`, both Pod levels, in use at 600,
+  `local-analysis/rscript/stage6/d293-smooth-session.json`): the same report byte for byte as
+  D289's. `Smooth` is called 699 times, all (0, 0, 0, 10, 100) (the zoom stays 0); `Smooth2D`
+  (`PlanetThing.Update__rb`) is not reached.
+- Tests: `d293_*` (two); the part 6 scalar case now lands at rest. fmt, the VM's clippy and tests
+  and `cargo check --workspace` pass.
+- Next: `PlanetThing.Update__rb` in the Pod session; the pod computer state's extra zoom; the
+  viewer's change-over stills against `open-t1`.
+
+## Before: D292 the glow on the dissolve's line (2026-10-14)
 - "Pod picture" PR 19, viewer only (`docs/level-scripts.md` part 43). FOUND (frame 5247): the
   tent writes alpha = t; post pass 3256 (half size) `0.7 x (1 - a) x rgb`, 3281/3298 a 9-tap
   blur at a quarter size (0.3, 0.225, 0.15, 0.105, 0.06 at 0, +-2, +-6, +-10, +-14 px; 1.38 per
