@@ -104,6 +104,10 @@ pub const DOF_SAME_LAYER: f32 = 0.01;
 /// D298 FOUND (frames 5247 and 14790): two ring passes between the source and the
 /// composite.
 pub const DOF_RING_PASSES: usize = 2;
+/// D312 FOUND (part 63, frames 8348 and 8980: fc1 of DoF 1's rings (0.0025005, 0.0044441),
+/// then twice that): DoF 1's second ring takes taps at twice [`DOF_TAP_STEP`]; DoF 2's rings
+/// both at the step.
+pub const DOF_1_SECOND_RING_SCALE: f32 = 2.0;
 
 /// D298 `--depth-of-field` (level-lighting route only, `main.rs`); D304 on by default in the Pod.
 static ENABLED: AtomicBool = AtomicBool::new(false);
@@ -297,18 +301,21 @@ fn init_pipelines(
     });
 }
 
-/// The entry points: the source, the ring twice ([`DOF_RING_PASSES`]), then DoF 1's composite
-/// (the plane test only) or DoF 2's (D312: the marked pixels without it).
-const ENTRIES: [&str; 5] = [
+/// The entry points: the source, the rings ([`DOF_RING_PASSES`]), the composites.
+const ENTRIES: [&str; 6] = [
     "dof_source",
     "dof_ring_gate",
     "dof_ring_radius",
+    "dof_ring_gate_wide",
     "dof_composite",
     "dof_composite_marked",
 ];
-/// D312: DoF 1's composite and DoF 2's in [`ENTRIES`].
-const COMPOSITE_1: usize = 3;
-const COMPOSITE_2: usize = 4;
+/// D312: DoF 1's passes in [`ENTRIES`]: its second ring at twice the step, keeping the gate,
+/// and its composite (beyond the plane, alpha `8 a - 7`).
+const DOF_1: [usize; 4] = [0, 1, 3, 4];
+/// D312: DoF 2's: both rings at the step, the second writing the radius, and the marked
+/// composite (marked pixels without the plane test, the others nearer than the plane).
+const DOF_2: [usize; 4] = [0, 1, 2, 5];
 
 #[derive(Component)]
 struct DofView {
@@ -318,7 +325,7 @@ struct DofView {
     opaque_depth: CachedTexture,
     range: Buffer,
     multisampled: bool,
-    pipelines: [CachedRenderPipelineId; 5],
+    pipelines: [CachedRenderPipelineId; 6],
 }
 
 fn prepare_dof(
@@ -462,7 +469,8 @@ fn copy_opaque_depth(view: ViewQuery<(&ViewDepthTexture, &DofView)>, mut ctx: Re
 }
 
 /// D312: DoF 1, between the opaque and the transparent pass: the four steps over the opaque
-/// scene, composited where it lies beyond the plane (no stencil, FOUND part 62).
+/// scene (the second ring at twice the step), composited where it lies beyond the plane (no
+/// stencil, FOUND parts 62 and 63).
 fn depth_of_field_opaque(
     view: ViewQuery<(&ViewTarget, &ViewDepthTexture, &DofView)>,
     pipelines: Res<DofPipelines>,
@@ -470,11 +478,12 @@ fn depth_of_field_opaque(
     ctx: RenderContext,
 ) {
     let (target, depth, dof) = view.into_inner();
-    run_passes((target, depth, dof), &pipelines, &cache, ctx, COMPOSITE_1);
+    run_passes((target, depth, dof), &pipelines, &cache, ctx, DOF_1);
 }
 
 /// D298 / D312: DoF 2, in the post chain: the four steps over the whole scene, composited on
-/// the translucent (marked) pixels without the plane test and on the others beyond it.
+/// the translucent (marked) pixels without the plane test and on the others nearer than the
+/// plane (FOUND part 63: GL_GREATER against the plane).
 fn depth_of_field(
     view: ViewQuery<(&ViewTarget, &ViewDepthTexture, &DofView)>,
     pipelines: Res<DofPipelines>,
@@ -482,22 +491,22 @@ fn depth_of_field(
     ctx: RenderContext,
 ) {
     let (target, depth, dof) = view.into_inner();
-    run_passes((target, depth, dof), &pipelines, &cache, ctx, COMPOSITE_2);
+    run_passes((target, depth, dof), &pipelines, &cache, ctx, DOF_2);
 }
 
-/// D298: source (scene -> a), ring with the gate kept (a -> b), ring writing the radius
-/// (b -> a), composite (scene and a -> the main texture) with the entry `composite` of
-/// [`ENTRIES`]. D312: DoF 1's composite ([`COMPOSITE_1`]) goes through the main pass's
-/// multisampled texture when there is one.
+/// D298: source (scene -> a), ring with the gate kept (a -> b), second ring (b -> a),
+/// composite (scene and a -> the main texture), with the entries `steps` of [`ENTRIES`].
+/// D312: DoF 1's composite goes through the main pass's multisampled texture when there is
+/// one.
 fn run_passes(
     (target, depth, dof): (&ViewTarget, &ViewDepthTexture, &DofView),
     pipelines: &DofPipelines,
     cache: &PipelineCache,
     mut ctx: RenderContext,
-    composite: usize,
+    steps: [usize; 4],
 ) {
     let mut ready = Vec::with_capacity(4);
-    for id in [0, 1, 2, composite].map(|k| dof.pipelines[k]) {
+    for id in steps.map(|k| dof.pipelines[k]) {
         let Some(pipeline) = cache.get_render_pipeline(id) else {
             return;
         };
@@ -505,7 +514,7 @@ fn run_passes(
     }
     let device = ctx.render_device().clone();
     let layout = cache.get_bind_group_layout(&pipelines.layouts[usize::from(dof.multisampled)]);
-    let main_pass = composite == COMPOSITE_1;
+    let main_pass = steps == DOF_1;
     let sampled = target.sampled_main_texture_view().filter(|_| main_pass);
     let post = target.post_process_write();
     let (a, b) = (&dof.a.default_view, &dof.b.default_view);
@@ -568,8 +577,8 @@ fn shader_source() -> String {
         .collect::<Vec<_>>()
         .join(", ");
     format!(
-        "const DOF_RAMP: f32 = {:?};\nconst DOF_TAP_STEP = vec2<f32>({:?}, {:?});\nconst DOF_TAP_DIRS = array<vec2<f32>, 5>({dirs});\nconst DOF_SAME_LAYER: f32 = {:?};\n{BODY}",
-        DOF_RAMP, DOF_TAP_STEP[0], DOF_TAP_STEP[1], DOF_SAME_LAYER
+        "const DOF_RAMP: f32 = {:?};\nconst DOF_TAP_STEP = vec2<f32>({:?}, {:?});\nconst DOF_TAP_DIRS = array<vec2<f32>, 5>({dirs});\nconst DOF_SAME_LAYER: f32 = {:?};\nconst DOF_1_SECOND_RING_SCALE: f32 = {:?};\n{BODY}",
+        DOF_RAMP, DOF_TAP_STEP[0], DOF_TAP_STEP[1], DOF_SAME_LAYER, DOF_1_SECOND_RING_SCALE
     )
 }
 
@@ -641,14 +650,14 @@ fn dof_source(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
 // Passes 2 and 3: the centre and five taps on the pentagon at radius r (from the centre's
 // gate) x DOF_TAP_STEP, +y up the image; a tap counts when its gate is above the centre's
 // minus DOF_SAME_LAYER. Returns the mean colour and the centre's gate.
-fn ring(uv: vec2<f32>) -> vec4<f32> {
+fn ring(uv: vec2<f32>, scale: f32) -> vec4<f32> {
     let centre = textureSampleLevel(half_texture, linear_sampler, uv, 0.0);
     let r = saturate(DOF_RAMP * centre.a - (DOF_RAMP - 1.0));
     var dirs = DOF_TAP_DIRS;
     var sum = centre.rgb;
     var count = 1.0;
     for (var k = 0; k < 5; k++) {
-        let d = dirs[k] * vec2<f32>(1.0, -1.0) * DOF_TAP_STEP * r;
+        let d = dirs[k] * vec2<f32>(1.0, -1.0) * DOF_TAP_STEP * (r * scale);
         let tap = textureSampleLevel(half_texture, linear_sampler, uv + d, 0.0);
         let keep = select(0.0, 1.0, tap.a > centre.a - DOF_SAME_LAYER);
         sum += tap.rgb * keep;
@@ -658,16 +667,21 @@ fn ring(uv: vec2<f32>) -> vec4<f32> {
 }
 @fragment
 fn dof_ring_gate(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
-    return ring(in.uv);
+    return ring(in.uv, 1.0);
+}
+// D312: DoF 1's second ring: twice the step, the gate kept (its composite takes 8 a - 7).
+@fragment
+fn dof_ring_gate_wide(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
+    return ring(in.uv, DOF_1_SECOND_RING_SCALE);
 }
 @fragment
 fn dof_ring_radius(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
-    let c = ring(in.uv);
+    let c = ring(in.uv, 1.0);
     return vec4<f32>(c.rgb, saturate(DOF_RAMP * c.a - (DOF_RAMP - 1.0)));
 }
 // Pass 4, full size: beyond the range's start the blurred image (bilinear from half size)
 // over the scene by its radius; the scene's alpha is kept. D312: DoF 1's composite (between
-// the opaque and the transparent pass).
+// the opaque and the transparent pass), its alpha 8 a - 7 from the gate read back.
 @fragment
 fn dof_composite(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let p = vec2<i32>(floor(in.position.xy));
@@ -676,7 +690,8 @@ fn dof_composite(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
         return scene;
     }
     let blurred = textureSampleLevel(half_texture, linear_sampler, in.uv, 0.0);
-    let e = mix(to_encoded(scene.rgb), blurred.rgb, blurred.a);
+    let alpha = saturate(DOF_RAMP * blurred.a - (DOF_RAMP - 1.0));
+    let e = mix(to_encoded(scene.rgb), blurred.rgb, alpha);
     return vec4<f32>(from_encoded(e), scene.a);
 }
 // D312: a pixel a translucent draw (the glass) wrote: the game's stencil bit 0x80.
@@ -685,13 +700,13 @@ fn translucent_at(p: vec2<i32>) -> bool {
 }
 // D312: DoF 2's composite (part 57's post-chain form): on the translucent pixels without the
 // plane test (the game's EQUAL 0x80 composite; no change where the radius is 0), on the others
-// beyond the range's start (its NOTEQUAL one).
+// nearer than the range's start (its NOTEQUAL one, GL_GREATER against the plane, part 63).
 @fragment
 fn dof_composite_marked(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let p = vec2<i32>(floor(in.position.xy));
     let scene = textureLoad(scene_texture, p, 0);
     let marked = translucent_at(p);
-    if (!marked && ramp_at(p) <= 0.0) {
+    if (!marked && ramp_at(p) >= 0.0) {
         return scene;
     }
     let blurred = textureSampleLevel(half_texture, linear_sampler, in.uv, 0.0);
@@ -706,10 +721,12 @@ fn dof_composite_marked(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
 /// D298: a CPU mirror of the four passes on a scene of encoded colours and ramps
 /// (row-major, `w` x `h`, both even): the half-size source with its 8-bit gate, the two
 /// rings (bilinear taps, clamped), and the composite (bilinear from half size where the
-/// ramp is above 0). Returns the encoded colours.
+/// ramp is above 0). Returns the encoded colours. D312: in DoF 1's form (part 63): the second
+/// ring at twice the step keeping the gate, the composite's alpha `8 a - 7` of the gate read
+/// back.
 #[cfg(test)]
 pub fn dof_cpu(rgb: &[[f32; 3]], ramp: &[f32], w: usize, h: usize) -> Vec<[f32; 3]> {
-    dof_cpu_marked(rgb, ramp, &vec![false; w * h], w, h)
+    dof_cpu_form(rgb, ramp, None, DOF_1_SECOND_RING_SCALE, w, h)
 }
 
 /// D312: one translucent surface's pixel over the opaque scene: its colour, its coverage
@@ -747,13 +764,31 @@ pub fn dof_two_pass_cpu(
     dof_cpu_marked(&scene, &depth, &marked, w, h)
 }
 
-/// D312: [`dof_cpu`] with the translucent pixels (the game's stencil bit 0x80) composited
-/// without the plane test, and left as they are where the radius read back is 0 (DoF 2).
+/// D312: DoF 2's form: both rings at the step, the second writing the radius; the translucent
+/// pixels (the game's stencil bit 0x80) composited without the plane test and left as they are
+/// where the radius read back is 0; the others only where they are nearer than the plane
+/// (GL_GREATER, part 63), so beyond it nothing changes.
 #[cfg(test)]
 pub fn dof_cpu_marked(
     rgb: &[[f32; 3]],
     ramp: &[f32],
     marked: &[bool],
+    w: usize,
+    h: usize,
+) -> Vec<[f32; 3]> {
+    dof_cpu_form(rgb, ramp, Some(marked), 1.0, w, h)
+}
+
+/// D298 / D312: the passes in either form: `marked` `None` is DoF 1's (the second ring keeps
+/// the gate, the composite takes `8 a - 7` beyond the plane), `Some` DoF 2's (the second ring
+/// writes the radius; see [`dof_cpu_marked`]); `second_scale` multiplies the second ring's
+/// step.
+#[cfg(test)]
+fn dof_cpu_form(
+    rgb: &[[f32; 3]],
+    ramp: &[f32],
+    marked: Option<&[bool]>,
+    second_scale: f32,
     w: usize,
     h: usize,
 ) -> Vec<[f32; 3]> {
@@ -794,12 +829,14 @@ pub fn dof_cpu_marked(
     }
     let mut img: Img = (half, hw, hh);
     for pass in 0..DOF_RING_PASSES {
+        let last = pass + 1 == DOF_RING_PASSES;
+        let scale = if last { second_scale } else { 1. };
         let mut out = vec![[0.; 4]; hw * hh];
         for j in 0..hh {
             for i in 0..hw {
                 let (u, v) = ((i as f32 + 0.5) / hw as f32, (j as f32 + 0.5) / hh as f32);
                 let centre = img.0[j * hw + i];
-                let r = radius(centre[3]);
+                let r = radius(centre[3]) * scale;
                 let mut sum = [centre[0], centre[1], centre[2]];
                 let mut count = 1.;
                 for [dx, dy] in DOF_TAP_DIRS {
@@ -813,7 +850,7 @@ pub fn dof_cpu_marked(
                         count += 1.;
                     }
                 }
-                let a = if pass + 1 == DOF_RING_PASSES {
+                let a = if last && marked.is_some() {
                     radius(centre[3])
                 } else {
                     centre[3]
@@ -825,17 +862,29 @@ pub fn dof_cpu_marked(
     }
     (0..w * h)
         .map(|p| {
-            if !marked[p] && ramp[p] <= 0. {
-                return rgb[p];
-            }
             let (u, v) = (
                 ((p % w) as f32 + 0.5) / w as f32,
                 ((p / w) as f32 + 0.5) / h as f32,
             );
-            let b = bilinear(&img, u, v);
-            if marked[p] && b[3] <= 0. {
-                return rgb[p];
-            }
+            let b = match marked {
+                None => {
+                    if ramp[p] <= 0. {
+                        return rgb[p];
+                    }
+                    let b = bilinear(&img, u, v);
+                    [b[0], b[1], b[2], radius(b[3])]
+                }
+                Some(marked) => {
+                    if !marked[p] && ramp[p] >= 0. {
+                        return rgb[p];
+                    }
+                    let b = bilinear(&img, u, v);
+                    if b[3] <= 0. {
+                        return rgb[p];
+                    }
+                    b
+                }
+            };
             std::array::from_fn(|k| rgb[p][k] * (1. - b[3]) + b[k] * b[3])
         })
         .collect()
@@ -984,7 +1033,13 @@ mod tests {
                 if ramp[p] > 0. && !near_edge {
                     assert!((out[p][0] - 0.3).abs() < 1.5 / 255., "{x} {y} {:?}", out[p]);
                 } else if ramp[p] > 0. {
-                    assert!(out[p][0] > 0.3 && out[p][0] < 0.65, "{x} {y} {:?}", out[p]);
+                    // D312: DoF 1's alpha is 8 a - 7 of the gate read back, so next to the
+                    // square (a lower gate) the bleed is smaller and may be none.
+                    assert!(
+                        out[p][0] > 0.3 - 1.5 / 255. && out[p][0] < 0.65,
+                        "{x} {y} {:?}",
+                        out[p]
+                    );
                 } else {
                     assert_eq!(out[p], [1.; 3]);
                 }
@@ -1057,7 +1112,9 @@ mod tests {
                 assert!(source.contains("const DOF_SAME_LAYER: f32 = 0.01;"));
                 assert!(source.contains("vec2<f32>(-0.95106, 0.30901)"));
                 assert!(source.contains("tap.a > centre.a - DOF_SAME_LAYER"));
-                assert!(source.contains("dirs[k] * vec2<f32>(1.0, -1.0) * DOF_TAP_STEP * r"));
+                assert!(
+                    source.contains("dirs[k] * vec2<f32>(1.0, -1.0) * DOF_TAP_STEP * (r * scale)")
+                );
                 assert!(source.contains("if (ramp_at(p) <= 0.0)"));
                 assert!(source.contains("vec4<f32>(from_encoded(e), scene.a)"));
                 assert_eq!(source.contains("texture_depth_multisampled_2d"), msaa);
@@ -1204,14 +1261,13 @@ mod tests {
             };
             assert_eq!(out[p], want, "{p}");
         }
-        // Without translucent surfaces DoF 2 repeats DoF 1 over its own result.
+        // Without translucent surfaces DoF 2 leaves the room beyond the plane as DoF 1 left it
+        // (its unmarked composite passes only nearer than the plane, part 63): no second blur.
         let none = vec![None; w * h];
         let ramp = vec![2.; w * h];
         let once = dof_cpu(&room, &ramp, w, h);
-        assert_eq!(
-            dof_two_pass_cpu(&room, &ramp, &none, w, h),
-            dof_cpu(&once, &ramp, w, h)
-        );
+        assert_ne!(once, room);
+        assert_eq!(dof_two_pass_cpu(&room, &ramp, &none, w, h), once);
     }
 
     /// D312: DoF 2's composite reads the depth after the opaque pass and composites the pixels
@@ -1225,15 +1281,76 @@ mod tests {
             assert!(source.contains("@group(0) @binding(5) var opaque_depth"));
             assert!(source
                 .contains("textureLoad(depth_texture, p, 0) != textureLoad(opaque_depth, p, 0)"));
-            assert!(source.contains("if (!marked && ramp_at(p) <= 0.0)"));
+            assert!(source.contains("if (!marked && ramp_at(p) >= 0.0)"));
+            assert!(
+                source.contains("let alpha = saturate(DOF_RAMP * blurred.a - (DOF_RAMP - 1.0));")
+            );
+            assert!(source.contains("return ring(in.uv, DOF_1_SECOND_RING_SCALE);"));
+            assert!(source.contains("const DOF_1_SECOND_RING_SCALE: f32 = 2.0;"));
             assert!(source.contains("if (marked && blurred.a <= 0.0)"));
             assert_eq!(
                 source.matches("texture_depth_multisampled_2d").count(),
                 if msaa { 2 } else { 0 }
             );
         }
-        assert_eq!(ENTRIES[COMPOSITE_1], "dof_composite");
-        assert_eq!(ENTRIES[COMPOSITE_2], "dof_composite_marked");
+        let names = |steps: [usize; 4]| steps.map(|k| ENTRIES[k]);
+        assert_eq!(
+            names(DOF_1),
+            [
+                "dof_source",
+                "dof_ring_gate",
+                "dof_ring_gate_wide",
+                "dof_composite"
+            ]
+        );
+        assert_eq!(
+            names(DOF_2),
+            [
+                "dof_source",
+                "dof_ring_gate",
+                "dof_ring_radius",
+                "dof_composite_marked"
+            ]
+        );
+    }
+
+    /// D312 FOUND (part 63, 8348 / 8980): DoF 1's second ring at twice the step blurs a far
+    /// pattern more than at the step; DoF 2's unmarked composite (GL_GREATER) changes nothing
+    /// beyond the plane and, nearer than it, only the outline next to a blurred background
+    /// (the pixels' own radius is 0; the read-back is bilinear).
+    #[test]
+    fn d312_dof1_wide_ring_and_dof2_nearer() {
+        assert_eq!(DOF_1_SECOND_RING_SCALE, 2.);
+        let (w, h) = (32, 8);
+        let rgb = checker(w, h);
+        let far = vec![1.; w * h];
+        let wide = dof_cpu(&rgb, &far, w, h);
+        let narrow = dof_cpu_form(&rgb, &far, None, 1., w, h);
+        assert!(gradient(&wide, w, h, 2..6) < gradient(&narrow, w, h, 2..6));
+        // A near square (ramp -3, unmarked) on a far checker (ramp 2).
+        let (w, h) = (32, 32);
+        let mut rgb = checker(w, h);
+        let mut ramp = vec![2.; w * h];
+        for y in 8..24 {
+            for x in 8..24 {
+                rgb[y * w + x] = [1.; 3];
+                ramp[y * w + x] = -3.;
+            }
+        }
+        let out = dof_cpu_marked(&rgb, &ramp, &vec![false; w * h], w, h);
+        let mut outline = 0;
+        for y in 0..h {
+            for x in 0..w {
+                let p = y * w + x;
+                let inner = (10..22).contains(&x) && (10..22).contains(&y);
+                if ramp[p] > 0. || inner {
+                    assert_eq!(out[p], rgb[p], "{x} {y}");
+                } else if out[p] != rgb[p] {
+                    outline += 1;
+                }
+            }
+        }
+        assert!(outline > 0);
     }
 
     /// D312: the glass writes its depth while the depth of field runs, not otherwise.

@@ -13,12 +13,15 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 
 ## Latest: D312 the depth of field in two passes (2026-10-15)
 - Viewer (`docs/level-scripts.md` part 63): DoF 1 runs between the opaque and the transparent
-  pass over the opaque scene; the glass writes its depth while the depth of field runs; DoF 2
-  (the post chain) composites the pixels whose depth changed after the opaque pass without the
-  plane test. Behind `dof_route`; without it byte-equal to main.
-- MEASURED (hidden window): the change-over's left glass gradient 1.21 -> 1.60 (game `open-t1`
-  1.50), the open room 0.64 -> 0.57 (game 0.37), viewport |d| 11.72 -> 11.55; the band at 615
-  1.08 -> 1.78 (game 0.34; the viewer's glass still there). Closed Pod and Da Vinci unchanged.
+  pass over the opaque scene (second ring at twice the step, alpha 8a - 7, beyond the plane);
+  the glass writes its depth while the depth of field runs; DoF 2 (the post chain) composites
+  the pixels whose depth changed after the opaque pass without the plane test and the others
+  only nearer than the plane. Behind `dof_route`; without it byte-equal to main.
+- MEASURED (replays, `local-analysis/d312-planes/`): one range and plane for both passes; DoF 2's
+  GREATER passes nearer pixels (part 57's "beyond" corrected). Open: DoF 2's ring offset (tex 3).
+- MEASURED (hidden window): the change-over's left glass gradient 1.21 -> 1.58 (game `open-t1`
+  1.50), the open room 0.64 -> 0.57 (game 0.37), viewport |d| 11.72 -> 11.52; the band at 615
+  1.08 -> 1.76 (game 0.34; the viewer's glass still there). Closed Pod and Da Vinci unchanged.
 
 ## Before: D311 the post chain's patches and the dissolving glass's depth of field (2026-10-15)
 - Research only (`docs/level-scripts.md` part 62). FOUND: lane A's RPCS3 had LBP2 patches on since
