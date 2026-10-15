@@ -11,7 +11,18 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D314 the open room's light against the game's (2026-10-15)
+## Latest: D315 two clocks in the change-over (2026-10-15)
+- Research (`docs/level-scripts.md` part 66), no code change. FOUND (RenderDoc 8348 / 8980,
+  `local-analysis/d315-dissolve/`): the pod's `vc[4]` alpha is 1 - v: 114/255 and 50/255, so
+  v 0.55 / 0.80, ticks 611 / 616, the focus-range clock exactly. The Earth's radius puts the
+  same captures at 607.1-607.5 / 613.6-613.9: the viewer's planets zoom leads the game's by
+  about 2.5 to 4 ticks at the same script tick.
+- FOUND: the glass program's line is part 29's (1150 + 11.76 - 1550 v over the camera); the
+  viewer computes the same (`pod_dissolve.rs:116`, the `dual.rs` edge test). The viewer's
+  dissolve is not late: the sweep's `d0600` is about tick 617.5 on the dissolve clock
+  (INFERRED), not 615.6. Open: the planets view blend's timing in the VM.
+
+## Before: D314 the open room's light against the game's (2026-10-15)
 - Viewer (`docs/level-scripts.md` part 65): under a root that hangs under the world Thing the
   planets level is lit from the sun as a point (the level's sun x `sun_position_scale`,
   unturned; `planets_light_turn`, `planets_sun_point`); the dolly's root still turns its light.
