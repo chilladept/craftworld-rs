@@ -1071,7 +1071,7 @@ fn main() {
         .insert_resource(ClearColor(Color::srgb(0.025, 0.035, 0.045)))
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
-                title: "LBP2 Asset Explorer".into(),
+                title: "craftworld-rs".into(),
                 resolution: resolution.into(),
                 visible: false,
                 focused: activate_on_show(),

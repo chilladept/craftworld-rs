@@ -177,7 +177,7 @@ pub fn run_gooey(
     app.insert_resource(ClearColor(Color::srgb(0.025, 0.035, 0.045)))
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
-                title: format!("LBP2 Asset Explorer - {title}"),
+                title: format!("craftworld-rs - {title}"),
                 resolution: (1280, 800).into(),
                 visible: false,
                 focused: crate::activate_on_show(),

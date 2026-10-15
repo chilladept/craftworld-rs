@@ -85,7 +85,7 @@ pub fn run_pod_menu() -> Result<(), String> {
         .insert_resource(ClearColor(Color::srgb(0.42, 0.33, 0.24)))
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
-                title: "LBP2 Asset Explorer - Pod menu".into(),
+                title: "craftworld-rs - Pod menu".into(),
                 resolution: (1280, 720).into(),
                 visible: false,
                 focused: crate::activate_on_show(),

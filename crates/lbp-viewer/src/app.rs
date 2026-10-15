@@ -360,7 +360,7 @@ impl Explorer {
     }
     fn toolbar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.heading("LBP2 Asset Explorer");
+            ui.heading("craftworld-rs");
             ui.label(RichText::new("METADATA").color(ACCENT));
         });
         ui.horizontal(|ui| {
