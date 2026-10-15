@@ -411,13 +411,15 @@ fn prepare_glow(
 /// D292: the four passes: source (half res), horizontal and vertical blur (quarter res),
 /// and the add into the main texture (alpha 1). D294: with the glow off only the add pass
 /// runs (the final pass, glow 0; the scene is bound in the glow's slot, unread).
+/// D302: under `--mlaa` the add pass reads the anti-aliased scene (`mlaa_post.rs`), the
+/// source pass the scene before it, as the game's (part 53).
 pub(crate) fn edge_glow(
-    view: ViewQuery<(&ViewTarget, &GlowView), With<EdgeGlow>>,
+    view: ViewQuery<(&ViewTarget, &GlowView, Option<&crate::mlaa_post::MlaaView>), With<EdgeGlow>>,
     pipelines: Res<GlowPipelines>,
     cache: Res<PipelineCache>,
     mut ctx: RenderContext,
 ) {
-    let (target, glow) = view.into_inner();
+    let (target, glow, mlaa) = view.into_inner();
     let (Some(source), Some(blur_h), Some(blur_v), Some(composite)) = (
         cache.get_render_pipeline(glow.source),
         cache.get_render_pipeline(pipelines.blur_h),
@@ -436,6 +438,10 @@ pub(crate) fn edge_glow(
         )
     };
     let post = target.post_process_write();
+    let scene = match mlaa {
+        Some(m) if m.into_glow => m.scene(),
+        _ => post.source,
+    };
     let glow_view = if glow.glow {
         &glow.quarter_v.default_view
     } else {
@@ -458,7 +464,7 @@ pub(crate) fn edge_glow(
             device.create_bind_group(
                 "d292_glow_composite",
                 &cache.get_bind_group_layout(&pipelines.composite),
-                &BindGroupEntries::sequential((post.source, &pipelines.sampler, glow_view)),
+                &BindGroupEntries::sequential((scene, &pipelines.sampler, glow_view)),
             ),
             post.destination,
         ),

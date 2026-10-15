@@ -189,7 +189,8 @@ impl Plugin for DofPostPlugin {
                 depth_of_field
                     .in_set(Core3dSystems::PostProcess)
                     .after(tonemapping)
-                    .before(crate::glow_post::edge_glow),
+                    .before(crate::glow_post::edge_glow)
+                    .before(crate::mlaa_post::mlaa),
             );
     }
 }

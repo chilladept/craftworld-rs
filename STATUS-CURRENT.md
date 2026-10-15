@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D303
+# Current state (overwrite each milestone) — after D303 (D302 merged after it)
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -23,6 +23,18 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
   glowing-point pixels brighter; Bravery unchanged. Tests `d303_*` (three).
 - Open: the fog's mix of the alpha in the thing-colour glow listing; glow maps' alpha
   (INFERRED); blended glowing draws; the spawn door's white ring in Bravery (not drawn).
+
+## Before: D302 the game's anti-aliasing job in the Pod picture (2026-10-15)
+- Viewer only (`docs/level-scripts.md` part 53). FOUND: the EDGE MLAA kick passes 10 and 0x59;
+  each pixel's threshold is max(10, its largest channel x 89 >> 8), kept in its alpha byte, and
+  a channel difference at or above the larger of two neighbours' thresholds is an edge (which
+  value is which is INFERRED). FOUND: the game's scene target has one sample (no MSAA).
+  MEASURED on frame 5247: Reshetov area weights on Z and U runs (fit 0.97), one neighbour per
+  pixel, a run limit of about 40 (INFERRED).
+- Viewer: `--mlaa` (off by default; the Pod picture on the level-lighting route only; MSAA off
+  under it), edge and blend passes after the depth of field, read by the final pass while the
+  glow's source keeps the scene before it (`mlaa_post.rs`). Closed Pod staircase RMS against the
+  game: floor line 0.349 -> 0.252 (game 0.136), post window edge 0.179 -> 0.151 (0.116).
 
 ## Before: D300 the scene's alpha at the final pass (2026-10-14)
 - Viewer only (`docs/level-scripts.md` part 51). FOUND (RenderDoc frames 5247 and 14790, hidden
