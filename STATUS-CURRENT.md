@@ -11,7 +11,15 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D310 steps per frame at the Pod push and a game sweep of the change-over (2026-10-15)
+## Latest: D311 the post chain's patches and the dissolving glass's depth of field (2026-10-15)
+- Research only (`docs/level-scripts.md` part 62). FOUND: lane A's RPCS3 had LBP2 patches on since
+  2026-10-09 ("Disable MLAA" clears 0xdb8208, "Disable Motion Blur" stubs the DoF function 0x32897c),
+  which removed the post chain from part 61's frames; now off for good.
+- FOUND (RenderDoc, change-over frames 8348 / 8980, and 5247): the DoF runs twice: once over the
+  opaque scene before the translucent loop, then part 57's stencil form. The dissolving glass is a
+  marked, depth-writing translucent draw between them, so it stays sharp over a blurred room.
+
+## Before: D310 steps per frame at the Pod push and a game sweep of the change-over (2026-10-15)
 - Research only (`docs/level-scripts.md` part 61). MEASURED (RPCS3 memory, three pushes): every
   frame runs one step; "in use" turns on at the frame-start pump, so the VM's order is the game's.
 - MEASURED: ten game frames through the change-over match the viewer with zoom and dissolve on
