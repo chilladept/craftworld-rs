@@ -11,7 +11,20 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D306 the depth of field's stencil pass and gate constants (2026-10-15)
+## Latest: D307 the glow's alpha under fog, glow maps and blended draws (2026-10-15)
+- Viewer and `lbp-preview` / `lbp-level` (`docs/level-scripts.md` part 58). FOUND (the decoded
+  programs): 524 glowing programs lift their alpha towards 1 by the fog, 23 (the Pod's bulb and
+  stars, `neon_lifebar`) do not (`dual::GLOW_ALPHA_UNFOGGED`, by GUID); the thing colour feeds the
+  glow; the glass blends alpha Zero + One. FOUND: Bravery's spawn door ring (`neon_lifebar`)
+  samples at UV1 minus the colour alpha the checkpoint update (0x5aa9c) sets to 1 - 0.5 x the
+  share of spawns left, and its stored AlphaTestLevel only cuts out where a program names it.
+- MEASURED (hidden window): the ring is now drawn white (2,621 px, game ~254); closed Pod: the
+  stars and window behind the glass closer to the game (changed px |d| 10.90 -> 6.97); the
+  change-over band 20.80 -> 18.13; Da Vinci 482 px change. Tests `d307_*` (five).
+- Open: the checkpoint's colour vector; infinite checkpoints' ring (drawn black, unverified);
+  decoding each program's alpha form instead of the GUID list.
+
+## Before: D306 the depth of field's stencil pass and gate constants (2026-10-15)
 - Research only (`docs/level-scripts.md` part 57). FOUND (EBOOT 01.33): 0x32820c builds the
   gate as A = 0.125 / (d1 - d0), B = 0.875 - A d0 (part 49's fit, exactly; the viewer's ramp
   already matches); the depths are read as stored, no conversion. FOUND: the scene's
