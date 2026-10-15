@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D300
+# Current state (overwrite each milestone) — after D303
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -11,7 +11,20 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D300 the scene's alpha at the final pass (2026-10-14)
+## Latest: D303 the alpha of glowing materials (2026-10-15)
+- Viewer only (`docs/level-scripts.md` part 54). FOUND (RenderDoc frame 5247): the game's lit
+  program with a constant glow g (port 4, added before the x4 and the square root) writes alpha
+  tintcol.w / (4|g|^2 + 1): the lamp bulb's g = (0.66, 0.56, 0) gives 64, the stars' g = 1 gives
+  20 (part 51's 319 pixels). FOUND (the Moon capture): the glow chain runs in a level too.
+- Viewer: opaque glowing surfaces on the level-lighting route write that alpha; the glow passes
+  run with the final pass on every frame (`glow_post::glow_runs`), not only during a dissolve.
+- MEASURED (closed Pod at 600 against the game's frame): bulb rings 0-4 / 8-12 / 12-16 px mean
+  |d| 31.8 / 24.4 / 18.5 -> 13.1 / 3.7 / 8.4; star pixels 14.21 -> 12.95. Da Vinci: 127
+  glowing-point pixels brighter; Bravery unchanged. Tests `d303_*` (three).
+- Open: the fog's mix of the alpha in the thing-colour glow listing; glow maps' alpha
+  (INFERRED); blended glowing draws; the spawn door's white ring in Bravery (not drawn).
+
+## Before: D300 the scene's alpha at the final pass (2026-10-14)
 - Viewer only (`docs/level-scripts.md` part 51). FOUND (RenderDoc frames 5247 and 14790, hidden
   desktop): after the depth of field and the glow's source the frame goes to main memory
   (0x33200000) for an SPU anti-aliasing job and comes back with alpha 0 on every pixel; the final

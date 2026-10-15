@@ -22,9 +22,11 @@
 //! 1. `--no-final-pass` turns it off.
 //!
 //! One full-screen chain on the main 3D camera ([`EdgeGlow`]), after the main passes and
-//! before egui/UI (`Core3dSystems::PostProcess`). The glow runs only while a `ViewerMaterial`
-//! dissolve is on (other draws keep alpha 1 but are not relied on) and not under
-//! `--no-edge-glow`; without the glow or the final pass the frame is untouched.
+//! before egui/UI (`Core3dSystems::PostProcess`). The glow runs while a `ViewerMaterial`
+//! dissolve is on and (D303, part 54) with the final pass on every frame, as the game's chain
+//! runs in the Pod and in a level; its sources are the dissolve's alpha and the glowing
+//! materials' (`dual.rs`). Not under `--no-edge-glow`; without the glow or the final pass the
+//! frame is untouched.
 use crate::dual::{self, ViewerMaterial};
 use bevy::{
     core_pipeline::{tonemapping::tonemapping, Core3d, Core3dSystems, FullscreenShader},
@@ -159,12 +161,19 @@ impl Plugin for GlowPostPlugin {
     }
 }
 
+/// D303: the glow's passes run with the final pass on every frame (FOUND: the game runs the
+/// chain in the Pod's frames and in the Moon's, part 50), and otherwise while a dissolve is on
+/// (D292); never under `--no-edge-glow`.
+pub fn glow_runs(no_edge_glow: bool, final_pass: bool, dissolving: bool) -> bool {
+    !no_edge_glow && (final_pass || dissolving)
+}
+
 /// D292: the glow is on while any viewer material dissolves (and not `--no-edge-glow`);
-/// D294: the final pass while `--final-pass` is on.
+/// D294: the final pass while `--final-pass` is on. D303: the glow with the final pass too.
 fn update_active(materials: Res<Assets<ViewerMaterial>>, mut cameras: Query<&mut EdgeGlow>) {
-    let on = !NO_EDGE_GLOW.load(Ordering::Relaxed)
-        && materials.iter().any(|(_, m)| dual::dissolve_on(m));
     let final_pass = FINAL_PASS.load(Ordering::Relaxed);
+    let dissolving = materials.iter().any(|(_, m)| dual::dissolve_on(m));
+    let on = glow_runs(NO_EDGE_GLOW.load(Ordering::Relaxed), final_pass, dissolving);
     let alpha_cleared = SCENE_ALPHA_CLEARED.load(Ordering::Relaxed);
     for mut glow in &mut cameras {
         let next = EdgeGlow {
@@ -1154,5 +1163,56 @@ mod tests {
         };
         let out = EdgeGlow::extract_component(&m).unwrap();
         assert!(out.final_pass && out.alpha_cleared && !out.active);
+    }
+    /// D303: the glow runs with the final pass (every frame on the level-lighting route) or
+    /// a dissolve, and never under `--no-edge-glow`.
+    #[test]
+    fn d303_glow_runs_with_the_final_pass() {
+        assert!(glow_runs(false, true, false));
+        assert!(glow_runs(false, false, true));
+        assert!(glow_runs(false, true, true));
+        assert!(!glow_runs(false, false, false));
+        assert!(!glow_runs(true, true, true));
+        let m = EdgeGlow {
+            active: glow_runs(false, true, false),
+            final_pass: true,
+            alpha_cleared: false,
+        };
+        assert_eq!(composite_entry(m.active, m.final_pass), "final_composite");
+    }
+    /// D303: a glowing surface (alpha 1/13, the game's stars) in an opaque level frame: the
+    /// glow chain makes a halo from it, the final pass shows it only where the alpha is below
+    /// 1 (the surface itself, mixed by its alpha) and returns the scene elsewhere; in the Pod
+    /// (alpha 0 at the pass) the halo shows around it.
+    #[test]
+    fn d303_glowing_surface_through_the_chain() {
+        let (w, h) = (64, 64);
+        let mut rgb = vec![[0.3f32; 3]; w * h];
+        let mut alpha = vec![1f32; w * h];
+        let star = crate::dual::glow_alpha([1.; 3]);
+        for y in 30..34 {
+            for x in 30..34 {
+                rgb[y * w + x] = [0.6; 3];
+                alpha[y * w + x] = star;
+            }
+        }
+        let glow = glow_cpu(&rgb, &alpha, w, h);
+        let at = |x: usize, y: usize| y * w + x;
+        assert!(glow[at(32, 32)][0] > 0.04, "{:?}", glow[at(32, 32)]);
+        let side = glow[at(36, 32)][0];
+        assert!(side > 0.01 && side < glow[at(32, 32)][0], "{side}");
+        assert!(glow[at(2, 2)][0] < 1e-6);
+        let v = vignette_cpu(32, 32, w as u32, h as u32);
+        // Level frame: the neighbour (alpha 1) is the scene, the surface brighter.
+        let side = final_pass_mix_cpu(rgb[at(36, 32)], 1., glow[at(36, 32)], v);
+        assert_eq!(side, rgb[at(36, 32)]);
+        let on = final_pass_mix_cpu(rgb[at(32, 32)], star, glow[at(32, 32)], v);
+        assert!(on[0] > 0.6 * FINAL_SCALE, "{on:?}");
+        // Pod frame: the halo shows on the neighbour.
+        let pod = final_pass_mix_cpu(rgb[at(36, 32)], 0., glow[at(36, 32)], v);
+        assert!(
+            pod[0] > rgb[at(36, 32)][0] * FINAL_SCALE * v + 0.02,
+            "{pod:?}"
+        );
     }
 }

@@ -17,6 +17,9 @@
 //! transmittance per channel); without it, the D287 blend with one T stays.
 //! D292: while the dissolve is on, opaque surfaces write the kept share as their alpha (the
 //! game's alpha = t), which the edge glow (`glow_post.rs`) reads.
+//! D303: on the level-lighting route an opaque surface with material glow (port 4) writes
+//! the game's alpha `1 / (1 + 4 |g|^2)` (FOUND, frame 5247: the lamp bulb and the stars),
+//! which the glow's source pass and the final pass read.
 use bevy::{
     mesh::MeshVertexBufferLayoutRef,
     pbr::{ExtendedMaterial, MaterialExtension, MaterialExtensionKey, MaterialExtensionPipeline},
@@ -515,6 +518,12 @@ pub fn dissolve_mix(flat: [f32; 3], lit: [f32; 3], keep: f32) -> [f32; 3] {
         srgb_decode(f + (l - f) * keep)
     })
 }
+/// D303 FOUND (frame 5247; mirrors the shader's `lbp_glow_alpha`): the alpha an opaque
+/// surface with glow `g` writes on the level-lighting route, `1 / (1 + 4 |g|^2)`.
+#[cfg(test)]
+pub fn glow_alpha(g: [f32; 3]) -> f32 {
+    1. / (1. + 4. * (g[0] * g[0] + g[1] * g[1] + g[2] * g[2]))
+}
 /// D286: the glass's opacity, none when the material is not glass.
 #[cfg(test)]
 pub fn glass(material: &ViewerMaterial) -> Option<f32> {
@@ -889,6 +898,12 @@ fn lbp_fog_encoded(e: vec3<f32>, depth: f32) -> vec3<f32> {
     }
     return v;
 }
+// D303 FOUND (frame 5247, the lamp bulb's and the stars' program): a glowing material's
+// alpha is tintcol.w / (4 dot(g, g) + 1), g the glow added before the x4 and the square
+// root (tintcol.w = 1); the fog does not reach it.
+fn lbp_glow_alpha(g: vec3<f32>) -> f32 {
+    return 1.0 / (1.0 + 4.0 * dot(g, g));
+}
 fn lbp_output(c: vec3<f32>, depth: f32) -> vec3<f32> {
     return srgb_decode(lbp_fog_encoded(lbp_encode(c), depth));
 }
@@ -1039,6 +1054,8 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool)
     }
     var rgb = color.rgb;
     var glass_spec = vec3<f32>(0.0);
+    // D303: the alpha a glowing surface writes (1 without glow).
+    var glow_alpha = 1.0;
     var dissolve_mixed = false;
     // D268: a level script's render-mesh tint (INFERRED: a multiply before lighting).
     if thing_tint.w > 0.5 {
@@ -1114,6 +1131,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool)
             }
 #endif
             rgb += glow;
+            glow_alpha = lbp_glow_alpha(glow);
         }
         if light_dir.w > 1.5 {
             let depth = -(view.view_from_world * vec4<f32>(in.world_position.xyz, 1.0)).z;
@@ -1136,12 +1154,17 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool)
     // as in encoded space (glass_blend), written premultiplied.
     // D290: with dual sources (the glass's pipeline only) a transmittance per channel.
     var alpha = 1.0;
+    // D303: an opaque glowing surface writes its glow alpha (the game's tintcol.w / (1 +
+    // 4 |g|^2)); the glow post pass and the final pass read it (glow_post.rs).
+    if (pbr.material.flags & ALPHA_MODE_BITS) == ALPHA_MODE_OPAQUE {
+        alpha = glow_alpha;
+    }
     // D292: an opaque surface under the dissolve writes the kept share as its alpha (the
     // game's pod_card_edge: alpha = t x texalpha; 0 on the line). The opaque pipeline
     // has no blend, so the target stores it as is; the edge glow reads it (glow_post.rs).
     // Blended draws (decals) keep alpha 1, the glass its own below.
     if dissolve_on && (pbr.material.flags & ALPHA_MODE_BITS) == ALPHA_MODE_OPAQUE {
-        alpha = dissolve_keep;
+        alpha = dissolve_keep * glow_alpha;
     }
 #ifdef GLASS_DUAL_SOURCE
     var cover = vec3<f32>(1.0);
@@ -1252,6 +1275,22 @@ fn main_pass_post_lighting_processing(p: PbrInputStub, c: vec4<f32>) -> vec4<f32
     /// D278: the dissolve is off on a new material; the setter writes the plane, the
     /// colour, the constants and the mask, says whether the bucket's UV is usable, and
     /// takes all of it off again. Nothing else of the material changes.
+    /// D303: the glow alpha gives the game's bytes in frame 5247: the lamp bulb (glow
+    /// (0.6627, 0.5608, 0)) 64, the stars (glow 1) 20; no glow 255.
+    #[test]
+    fn d303_glow_alpha_matches_the_game_bytes() {
+        let byte = |g| (super::glow_alpha(g) * 255.).round() as u8;
+        assert_eq!(byte([0.6627, 0.5608, 0.]), 64);
+        assert_eq!(byte([1.; 3]), 20);
+        assert_eq!(byte([0.; 3]), 255);
+        // Monotonic in the glow's size, never above 1.
+        let mut last = 1.;
+        for k in 0..=20 {
+            let a = super::glow_alpha([k as f32 * 0.05; 3]);
+            assert!(a <= last && a > 0.);
+            last = a;
+        }
+    }
     #[test]
     fn d278_the_dissolve_setter_writes_and_clears() {
         use bevy::prelude::*;
@@ -1698,9 +1737,20 @@ fn main_pass_post_lighting_processing(p: PbrInputStub, c: vec4<f32>) -> vec4<f32
         let keep = body
             .find(
                 "if dissolve_on && (pbr.material.flags & ALPHA_MODE_BITS) == ALPHA_MODE_OPAQUE {
-        alpha = dissolve_keep;",
+        alpha = dissolve_keep * glow_alpha;",
             )
             .expect("D292 alpha write");
+        // D303: the glow alpha, set where the glow is added and written for opaque draws
+        // before the dissolve's.
+        assert!(body.contains("glow_alpha = lbp_glow_alpha(glow);"));
+        assert!(body.contains("return 1.0 / (1.0 + 4.0 * dot(g, g));"));
+        let glow_write = body
+            .find(
+                "if (pbr.material.flags & ALPHA_MODE_BITS) == ALPHA_MODE_OPAQUE {
+        alpha = glow_alpha;",
+            )
+            .expect("D303 alpha write");
+        assert!(glow_write < keep);
         assert!(keep < body.find("alpha = glass.x * dissolve_keep;").unwrap());
         assert!(body.contains("const ALPHA_MODE_BITS: u32 = 7u << 29u;"));
         assert!(body.contains("vec4<f32>(rgb, alpha)"));
