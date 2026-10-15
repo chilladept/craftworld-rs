@@ -11,7 +11,18 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D305 where the game sets "in use" within the frame (2026-10-15)
+## Latest: D306 the depth of field's stencil pass and gate constants (2026-10-15)
+- Research only (`docs/level-scripts.md` part 57). FOUND (EBOOT 01.33): 0x32820c builds the
+  gate as A = 0.125 / (d1 - d0), B = 0.875 - A d0 (part 49's fit, exactly; the viewer's ramp
+  already matches); the depths are read as stored, no conversion. FOUND: the scene's
+  translucent loop (0x349b64 / 0x3498d0) adds 0x80 to the stencil reference, so every
+  translucent draw (planets, glass in 5247; the menu's planets in 14790) gets the composite
+  without the plane test.
+- MEASURED: copying that rule into the viewer made the change-over's left glass sharper than
+  the game's `open-t1` (gradient 1.21 -> 1.79, game 1.50); not kept. Open: a capture of the
+  change-over itself (INFERRED: the dissolving glass is drawn differently from the closed Pod).
+
+## Before: D305 where the game sets "in use" within the frame (2026-10-15)
 - Research only (`docs/level-scripts.md` part 56). FOUND (EBOOT 01.33): the network dispatcher
   is 0x28b304 (any id through the 0x28a804 table), reached only from the pump 0x28baa4, which
   runs at the start of the frame and of each simulation step, before the world update; message
