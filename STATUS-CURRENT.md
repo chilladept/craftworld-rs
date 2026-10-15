@@ -11,7 +11,14 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D308 the checkpoint's ring colour and the planets zoom's frame (2026-10-15)
+## Latest: D309 the glow alpha's fog form read from the material's program (2026-10-15)
+- Parsing (`lbp-resource` material program decoder) and viewer (`docs/level-scripts.md` part 60).
+  The glow alpha's fog form is classified from each gmat's compiled program (variant 8, the last
+  H0.w write) instead of D307's GUID list, which is removed.
+- MEASURED: census of 8,386 gmats: 23 unfogged (exactly D307's list), 556 fogged (524 + 32 new),
+  7,807 unknown; picture unchanged.
+
+## Before: D308 the checkpoint's ring colour and the planets zoom's frame (2026-10-15)
 - Viewer (`lbp-preview`) and research (`docs/level-scripts.md` part 59). FOUND (0x5aa9c): the
   checkpoint update writes the ring Thing's whole colour word: RGB white in normal play, alpha
   1 - 0.5 x, and x = 1 for an infinite checkpoint (+0x41, INFERRED instanceInfiniteSpawns), so
