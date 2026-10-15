@@ -177,6 +177,10 @@ pub struct SecondTexture {
     /// scale of the specular added after the alpha (the game's fc45).
     #[uniform(145)]
     glass: Vec4,
+    /// D314: the sun as a point (xyz, display world position; w = 1 when on): the light
+    /// comes from it toward each fragment in place of `light_dir.xyz`.
+    #[uniform(146)]
+    sun_point: Vec4,
     /// D121: generated normals passed `adapter::normal_trust`; otherwise stays unlit.
     pub normals_trusted: bool,
     /// D284: the input of this bucket that holds the mesh's raw UV0
@@ -458,6 +462,7 @@ pub fn set_lighting(
                 (true, false) => 3.,
             };
             ext.light_dir = l.toward_light.extend(mode);
+            ext.sun_point = l.sun_point.map_or(Vec4::ZERO, |p| p.extend(1.));
             // P2q: .w carries the game's scalar per light (brdf.cg `light.w`).
             ext.light_key = l.key.extend(l.scales.x);
             ext.light_ambient = l.ambient.extend(l.scales.y);
@@ -476,6 +481,7 @@ pub fn set_lighting(
         }
         None => {
             ext.light_dir = Vec4::ZERO;
+            ext.sun_point = Vec4::ZERO;
             ext.light_key = Vec4::ZERO;
             ext.light_ambient = Vec4::ZERO;
             ext.rim_low = Vec4::ZERO;
@@ -771,6 +777,17 @@ struct BumpInput {
 @group(#{MATERIAL_BIND_GROUP}) @binding(143) var dissolve_island: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(144) var dissolve_island_sampler: sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(145) var<uniform> glass: vec4<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(146) var<uniform> sun_point: vec4<f32>;
+// D314: the direction toward the light at this fragment: from the fragment to the sun's
+// point when it is on (the game's N.L, FOUND in 8980 / 5247), else `light_dir.xyz`.
+var<private> frag_toward: vec3<f32>;
+fn toward_light_at(p: vec3<f32>) -> vec3<f32> {
+    let d = sun_point.xyz - p;
+    if sun_point.w > 0.5 && dot(d, d) > 0.0 {
+        return normalize(d);
+    }
+    return light_dir.xyz;
+}
 // D292: Bevy's alpha-mode bits of StandardMaterial flags (pbr_types.wgsl, pinned 0.19.1).
 const ALPHA_MODE_BITS: u32 = 7u << 29u;
 const ALPHA_MODE_OPAQUE: u32 = 0u;
@@ -852,11 +869,11 @@ fn preview_light(n: vec3<f32>, to_view: vec3<f32>, shadow: f32, ao: f32, baked: 
         // P3k (fpdec v0/v3, CONFIRMED arithmetic): ambient x ao, sun x shadowmap.x x ao,
         // rim x shadowmap.x. `baked` is the lightmap texel as shadowmap.x (INFERRED binding).
         let f = light_ambient.rgb * (n.y * 0.15 + 0.5) * ao
-            + light_key.rgb * (max(dot(n, light_dir.xyz), 0.0) * shadow * baked * ao)
+            + light_key.rgb * (max(dot(n, frag_toward), 0.0) * shadow * baked * ao)
             + mix(rim_low.rgb, rim_high.rgb, (n.y + 1.0) * 0.5) * rim * baked;
         return f * f;
     }
-    return light_ambient.rgb + light_key.rgb * max(dot(n, light_dir.xyz), 0.0);
+    return light_ambient.rgb + light_key.rgb * max(dot(n, frag_toward), 0.0);
 }
 // P2q gloss (LBP mode only), brdf.cg combine `2 * light.w * light^2 * spec`: light.w
 // sums the game's per-light scalars with the same weights as the colours, light^2 is
@@ -868,10 +885,10 @@ fn gloss_term(n: vec3<f32>, to_view: vec3<f32>, factor: vec3<f32>, tint: vec3<f3
     }
     let rim = pow(clamp(dot(n, -to_view) + 0.9, 0.0, 1.0), 2.0);
     let w = light_ambient.w * (n.y * 0.15 + 0.5)
-        + light_key.w * (max(dot(n, light_dir.xyz), 0.0) * shadow)
+        + light_key.w * (max(dot(n, frag_toward), 0.0) * shadow)
         + mix(rim_low.w, rim_high.w, (n.y + 1.0) * 0.5) * rim;
     let r = reflect(-to_view, n);
-    let spec = gloss.rgb * tint * (pow(clamp(dot(r, light_dir.xyz), 0.0, 1.0), gloss.w) * shadow);
+    let spec = gloss.rgb * tint * (pow(clamp(dot(r, frag_toward), 0.0, 1.0), gloss.w) * shadow);
     return 2.0 * w * factor * spec;
 }
 // D287 (part 38): the glass's specular (the captured program, LBP mode only): light^2 x
@@ -883,7 +900,7 @@ fn glass_specular(n: vec3<f32>, to_view: vec3<f32>, factor: vec3<f32>) -> vec3<f
     }
     let rim = pow(clamp(dot(n, -to_view) + 0.9, 0.0, 1.0), 2.0);
     let r = reflect(-to_view, n);
-    let spec = pow(clamp(dot(r, light_dir.xyz), 0.0, 1.0), gloss.w) + clamp(rim * 0.5, 0.0, 1.0);
+    let spec = pow(clamp(dot(r, frag_toward), 0.0, 1.0), gloss.w) + clamp(rim * 0.5, 0.0, 1.0);
     return glass.z * gloss.rgb * factor * spec;
 }
 // D287: sRGB transfer of the viewer's target, clamped to 0..1.
@@ -1146,6 +1163,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool)
         rgb *= thing_tint.rgb;
     }
     if light_dir.w > 0.5 {
+        frag_toward = toward_light_at(in.world_position.xyz);
         // P2s: mode 3 (untrusted smooth normals) shades with the face normal.
         let shading = select(in.world_normal, face, light_dir.w > 2.5);
         let n = lit_normal(shading, face, pbr.V, bump);

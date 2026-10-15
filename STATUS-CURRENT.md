@@ -12,16 +12,18 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
 ## Latest: D314 the open room's light against the game's (2026-10-15)
-- Viewer (`docs/level-scripts.md` part 65): the planets level's sun no longer turns with a
-  root that hangs under the world Thing (`planets_light_turn`); the dolly's root still turns it.
+- Viewer (`docs/level-scripts.md` part 65): under a root that hangs under the world Thing the
+  planets level is lit from the sun as a point (the level's sun x `sun_position_scale`,
+  unturned; `planets_light_turn`, `planets_sun_point`); the dolly's root still turns its light.
 - FOUND (8980, draws 2400 / 2416, `local-analysis/d314-mip/`): the game's sun is the level's
   sun x 300,000, unturned, while its normals turn with the world Thing; the viewer's normals
   matched, its sun (turned 19 degrees) gave N.L 0.93 against 0.79, so x 1.07 to 1.09 light.
   Samplers are trilinear, anisotropy 1, bias 0; the mural is mip 0; the disc's mips are
   softer than the viewer's box filter but decide only 6 % of the box.
-- MEASURED (all post off): the room box's luma percentiles 1.04-1.05 -> 0.99-1.00 of the game's,
-  contrast x 1.10 -> x 1.02, gradient 1.136 -> 1.056 (game 1.008). Closed Pod at 600 a little
-  darker (the root is turned there too); Da Vinci byte-equal.
+- MEASURED (all post off, open room box, main -> point): |mean d| 5.7 -> 1.8, contrast x 1.10
+  -> x 1.04, gradient 1.136 -> 1.068 (game 1.008). Closed Pod against 5247 (|mean d|, main /
+  point): room 3.6 / 4.7, globe 1.7 / 3.3, left glass 1.4 / 2.5, right 0.4 / 0.4, so the closed
+  Pod is further from the game than main. Da Vinci: 126 pixels differ by at most 5.
 
 ## Before: D313 the depth of field's ring against the game's own frame (2026-10-15)
 - Viewer (`docs/level-scripts.md` part 64): the ring taps' +y now points down the picture,

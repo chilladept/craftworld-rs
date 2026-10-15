@@ -88,6 +88,12 @@ pub struct PreviewLight {
     pub display_scale: f32,
     /// P2t: Puter opening progress (0 closed, 1 open) the game fog start follows.
     pub pod_t: f32,
+    /// D314: the level's sun (`sun_position` x `sun_position_scale`) in the light frame's
+    /// display units, `(sun - centre) x scale`; None without level settings.
+    pub sun_display: Option<Vec3>,
+    /// D314: the sun as a point in display world space, set where the game lights from
+    /// it unturned (`main::apply_lighting`); None keeps the direction `toward_light`.
+    pub sun_point: Option<Vec3>,
     /// Values used and every preview choice, for the panel and QA log.
     pub notes: Vec<String>,
 }
@@ -134,6 +140,8 @@ impl PreviewLight {
             multiplier: 1.,
             display_scale: 1.,
             pod_t: 0.,
+            sun_display: None,
+            sun_point: None,
             notes: vec!["generic key (upper left, front) 0.65 + ambient 0.35".into()],
         }
     }
@@ -266,6 +274,8 @@ impl PreviewLight {
                 1.
             },
             pod_t: 0.,
+            sun_display: (scale.is_finite() && scale > 0.).then(|| (sun - centre) * scale),
+            sun_point: None,
             notes,
         })
     }
@@ -557,6 +567,19 @@ mod tests {
         // Sun direction is taken from the scene centre.
         let l = PreviewLight::from_settings(&settings(), Vec3::new(1000., 0., 0.), 0.01);
         assert!((l.toward_light - Vec3::new(-1., 1., 0.).normalize()).length() < 1e-6);
+    }
+
+    /// D314: the sun's point in the light frame's display units, `(sun - centre) x scale`;
+    /// the shaped LBP light keeps it (no point set until `apply_lighting` asks for one).
+    #[test]
+    fn d314_sun_display_is_the_level_sun_in_display_units() {
+        let l = PreviewLight::from_settings(&settings(), Vec3::new(1000., 0., 0.), 0.01);
+        let p = l.sun_display.unwrap();
+        assert!((p - Vec3::new(-10., 10., 0.)).length() < 1e-5, "{p}");
+        let shaped = l.lbp_shaped(Quat::from_rotation_x(0.3));
+        assert_eq!(shaped.sun_display, Some(p));
+        assert_eq!(shaped.sun_point, None);
+        assert_eq!(PreviewLight::generic().sun_display, None);
     }
 
     #[test]

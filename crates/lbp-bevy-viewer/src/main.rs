@@ -3869,6 +3869,17 @@ fn planets_light_turn(root: Option<(&Transform, bool)>) -> Quat {
         _ => Quat::IDENTITY,
     }
 }
+/// D314: the planets level's sun as the game has it under the world Thing: a point at the
+/// level's sun position x `sun_position_scale` (300,000 in pod_planets.bin's settings),
+/// unturned, in display units (FOUND, captures 8980 and 5247: the programs take
+/// normalize(sun - position) with no falloff). Elsewhere the direction stays.
+fn planets_sun_point(light: &lighting::PreviewLight, world_thing: bool) -> Option<Vec3> {
+    if world_thing && light.lbp {
+        light.sun_display
+    } else {
+        None
+    }
+}
 fn sun_transform(toward_light: Vec3) -> Transform {
     let up = if toward_light.y.abs() > 0.99 {
         Vec3::Z
@@ -3894,6 +3905,7 @@ fn apply_lighting(
         first_turn(roots.1.iter().next()),
     );
     let pod_t = puter.map_or(v.lighting.pod_t, |p| p.t);
+    let world_thing = roots.0.iter().next().is_some_and(|(_, w)| w);
     let turned = !v.lighting.dirty
         && v.lighting.lbp
         && v.lighting.applied
@@ -3920,6 +3932,7 @@ fn apply_lighting(
         if v.lighting.lbp {
             let mut l = v.lighting.light.lbp_shaped(turn);
             l.pod_t = pod_t;
+            l.sun_point = planets_sun_point(&l, world_thing);
             l.shadows &= !no_shadows;
             l.pod_fog = pod_fog;
             l
@@ -4494,6 +4507,34 @@ mod tests {
         );
         let old = planets_light_turn(Some((&world, false))) * toward;
         assert!(normal.dot(old) > 0.9, "{}", normal.dot(old));
+    }
+
+    /// D314: the sun as a point only on the LBP route under the world Thing; elsewhere the
+    /// direction stays (no point).
+    #[test]
+    fn d314_point_sun_only_under_the_world_thing() {
+        let mut l = lighting::PreviewLight::generic();
+        l.sun_display = Some(Vec3::new(2.6, 1.9, 3.5));
+        assert_eq!(planets_sun_point(&l, true), None, "preview route");
+        l.lbp = true;
+        assert_eq!(planets_sun_point(&l, true), l.sun_display);
+        assert_eq!(planets_sun_point(&l, false), None);
+        l.sun_display = None;
+        assert_eq!(planets_sun_point(&l, true), None);
+    }
+
+    /// D314 (8980, the mural): the game's N.L comes from normalize(sun - position) with no
+    /// falloff; with the box's median normal and position (camera-relative, as the
+    /// capture's TC4 and fc0) the point gives 0.83 where the level-wide direction gives 0.81.
+    #[test]
+    fn d314_point_sun_direction_from_the_surface() {
+        let normal = Vec3::new(0.52, -0.223, 0.825).normalize();
+        let sun = Vec3::new(222_886.6, 160_217.0, 298_809.0);
+        let at = Vec3::new(-22_112., 3_261., -27_701.);
+        let point = normal.dot((sun - at).normalize());
+        assert!((point - 0.827).abs() < 0.005, "{point}");
+        let direction = normal.dot(Vec3::new(0.5505, 0.3909, 0.7377).normalize());
+        assert!((direction - 0.808).abs() < 0.005, "{direction}");
     }
 
     /// CI never launches the viewer, so a Bevy B0001 query conflict in `apply_lighting`
