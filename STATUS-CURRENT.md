@@ -11,7 +11,16 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D304 the anti-aliasing job and depth of field on by default in the Pod (2026-10-15)
+## Latest: D305 where the game sets "in use" within the frame (2026-10-15)
+- Research only (`docs/level-scripts.md` part 56). FOUND (EBOOT 01.33): the network dispatcher
+  is 0x28b304 (any id through the 0x28a804 table), reached only from the pump 0x28baa4, which
+  runs at the start of the frame and of each simulation step, before the world update; message
+  0x30 (`RequestHostUsePod`, 0x3fa9cc) only queues. So the shell and the pod computer see "in
+  use" in the same frame, as the VM has it: the planets zoom's missing tick is not there.
+- Open (INFERRED, unread): the frame the change-over is drawn from (render 0x31e820), two
+  simulation steps in one frame near the push, the loopback's delay for our own Pod.
+
+## Before: D304 the anti-aliasing job and depth of field on by default in the Pod (2026-10-15)
 - Viewer only (`docs/level-scripts.md` part 55). In the Pod picture (`--pod-camera`) on the
   level-lighting route the EDGE MLAA job (D302) and the depth of field (D298) now run by default;
   `--no-mlaa` / `--no-depth-of-field` turn them off. Other levels unchanged (DoF only under
