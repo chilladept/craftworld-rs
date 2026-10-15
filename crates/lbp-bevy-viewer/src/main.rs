@@ -2358,6 +2358,7 @@ fn upload(
             &mut surface,
             color,
             map.map(|(image, mode)| (images.add(image), mode)),
+            dual::glow_alpha_fogged(p.material),
         );
     }
     if let Some(map) = p

@@ -1502,11 +1502,21 @@ pub(crate) fn load_material(
                     ..Default::default()
                 });
         // P3h: glow (port 4) goes through the same diffuse route with its graph standing in
-        // for port 0; no instance colour (it tints the diffuse, not the emission).
+        // for port 0. D307 FOUND (the decoded programs, e.g. proc_da_vinci_glow `MOV
+        // H1.xyz, COL0`, neon_lifebar's `COL0 x tex` on ports 0 and 4): the thing colour
+        // (COL0) feeds the glow as it feeds the diffuse, so the glow takes the same instance
+        // colour (P3h left it out).
         // The blob lives in the expanded payload, not in the raw file bytes.
         let shader_blob =
             lbp_resource::material::shader_blob(&material_bytes, || control.check().is_err())
                 .unwrap_or_default();
+        // D307: the stored AlphaTestLevel cuts out only where the program names it.
+        if surface.alpha_test > 0. && !crate::surface::alpha_test_in_program(&shader_blob) {
+            surface.alpha_test = 0.;
+            surface
+                .skipped
+                .push("alpha test not drawn (the compiled program names no AlphaTestLevel)".into());
+        }
         let mut glow_wired = crate::surface::rewire_output(&graph.graph, crate::surface::GLOW_PORT);
         if matches!(glow_wired, Ok(Some(_)))
             && !crate::surface::glow_in_program(&graph.graph, &shader_blob)
@@ -1519,10 +1529,7 @@ pub(crate) fn load_material(
         match glow_wired {
             Ok(None) => {}
             Ok(Some(_)) => {
-                let glow_options = crate::PreviewOptions {
-                    instance_color: None,
-                    ..options
-                };
+                let glow_options = options;
                 match load_diffuse_material(
                     source,
                     catalog,

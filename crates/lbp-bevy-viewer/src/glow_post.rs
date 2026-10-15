@@ -1221,4 +1221,29 @@ mod tests {
             "{pod:?}"
         );
     }
+    /// D307: the fog's lift of the glow alpha weakens the glow in step: a fully fogged
+    /// glowing surface of the common program writes alpha 1 and feeds the source nothing;
+    /// the listed programs (the checkpoint ring's) keep their halo under the same fog.
+    #[test]
+    fn d307_fogged_glow_alpha_through_the_chain() {
+        let (w, h) = (64, 64);
+        let ring = [1.; 3];
+        let halo = |a: f32| {
+            let rgb = vec![[0.6f32; 3]; w * h];
+            let mut alpha = vec![1f32; w * h];
+            for y in 30..34 {
+                for x in 30..34 {
+                    alpha[y * w + x] = a;
+                }
+            }
+            glow_cpu(&rgb, &alpha, w, h)[36 * w + 32][0]
+        };
+        let clear = halo(crate::dual::glow_alpha_under_fog(ring, 0., true));
+        let half = halo(crate::dual::glow_alpha_under_fog(ring, 0.5, true));
+        let full = halo(crate::dual::glow_alpha_under_fog(ring, 1., true));
+        let listed = halo(crate::dual::glow_alpha_under_fog(ring, 1., false));
+        assert!(clear > half && half > full, "{clear} {half} {full}");
+        assert!(full.abs() < 1e-6);
+        assert_eq!(listed, clear);
+    }
 }

@@ -114,6 +114,44 @@ pub fn editor_color_tint(argb: u32) -> crate::DiffuseTint {
     }
 }
 
+/// D307 FOUND (01.33, the checkpoint's per-frame update 0x5aa9c): a checkpoint sets its
+/// render colour's alpha to `1 - 0.5 x` (stored as a byte, x 255), where `x` approaches the
+/// share of spawns left (`spawnsLeft / maxSpawnsLeft`, at 0.1 a frame) when the checkpoint
+/// holds spawns and some are left, and 0 otherwise. The ring's lifebar material (gmat
+/// `neon_lifebar`) samples its texture at UV1 minus that alpha (the graph's thing-colour
+/// alpha on sampler port 2), so a full checkpoint (alpha 0.5) shows the white half of the
+/// texture and an empty one (alpha 1) the black half. INFERRED: the level's stored counts
+/// are the start of play, the update has converged, the byte is truncated, and the colour's
+/// RGB stays the stored editorColor (the update's colour vector is not read).
+pub fn checkpoint_light_alpha(c: &lbp_level::parts::Checkpoint) -> f32 {
+    let x = if c.max_spawns_left > 0 && c.spawns_left != 0 {
+        (c.spawns_left as f32 / c.max_spawns_left as f32).clamp(0., 1.)
+    } else {
+        0.
+    };
+    1. - 0.5 * x
+}
+/// D307: the checkpoint each render-mesh Thing lights, by the Thing's index. The update
+/// writes the colour of the checkpoint Thing's parent (its `+0x50`, whose render mesh it
+/// checks first; INFERRED the parent pointer): in the level files the CHECKPOINT part sits
+/// on a child of the mesh Thing (Bravery Test: Thing 4805 under the spawn door's 4801).
+pub fn checkpoint_lights(things: &[ThingRecord]) -> HashMap<usize, &lbp_level::parts::Checkpoint> {
+    things
+        .iter()
+        .filter_map(|t| Some((t.parent?, t.data.checkpoint.as_ref()?)))
+        .collect()
+}
+/// D307: the editorColor a Thing's render mesh is drawn with: a checkpoint's alpha byte is
+/// [`checkpoint_light_alpha`]; every other Thing keeps its stored colour.
+pub fn checkpoint_editor_color(argb: u32, c: Option<&lbp_level::parts::Checkpoint>) -> u32 {
+    match c {
+        Some(c) => {
+            let byte = (checkpoint_light_alpha(c) * 255.) as u32 & 0xff;
+            argb & 0x00ff_ffff | byte << 24
+        }
+        None => argb,
+    }
+}
 /// Parsed bevels by descriptor identity (GUID, SHA-1).
 pub type BevelTable = HashMap<(Option<u32>, Option<[u8; 20]>), Bevel>;
 /// Worker stack for `load_level_scene` (the D107 examples use the same size).
@@ -1242,6 +1280,7 @@ pub fn build_scene_with_colors<T>(
     c.things_total = things.len();
     c.pos_placement = placement;
     let skip = |c: &mut SceneCounts, reason: String| *c.skipped.entry(reason).or_default() += 1;
+    let lights = checkpoint_lights(things);
     for t in things {
         add_decorations(
             &mut scene,
@@ -1294,7 +1333,7 @@ pub fn build_scene_with_colors<T>(
             &neutral_groups,
             &uses_instance,
             &source,
-            rm.editor_color,
+            checkpoint_editor_color(rm.editor_color, lights.get(&t.index).copied()),
         );
         let c = &mut scene.counts;
         let (mesh, colored) = match index {
@@ -4194,5 +4233,59 @@ mod tests {
         assert_eq!(editor_color_tint(0xff00_ff00).values(), [0., 1., 0., 1.]);
         assert_eq!(editor_color_tint(0xff00_00ff).values(), [0., 0., 1., 1.]);
         assert!(editor_color_tint(0x1234_5678).validate().is_ok());
+    }
+
+    /// D307: a checkpoint's ring alpha, `1 - 0.5 x` with `x` the share of spawns left:
+    /// full 0.5 (byte 127, the white half of the lifebar texture), empty or without a
+    /// count 1 (the black half); the colour's RGB stays the stored editorColor.
+    #[test]
+    fn d307_checkpoint_light_alpha() {
+        use lbp_level::parts::Checkpoint;
+        let c = |left, max| Checkpoint {
+            spawns_left: left,
+            max_spawns_left: max,
+            infinite_spawns: false,
+        };
+        assert_eq!(checkpoint_light_alpha(&c(3, 3)), 0.5);
+        assert_eq!(checkpoint_light_alpha(&c(1, 2)), 0.75);
+        assert_eq!(checkpoint_light_alpha(&c(0, 2)), 1.);
+        assert_eq!(checkpoint_light_alpha(&c(4, 0)), 1.);
+        assert_eq!(checkpoint_light_alpha(&c(5, 2)), 0.5);
+        assert_eq!(
+            checkpoint_editor_color(0xffff_ffff, Some(&c(1, 1))),
+            0x7fff_ffff
+        );
+        assert_eq!(
+            checkpoint_editor_color(0xff12_3456, Some(&c(0, 1))),
+            0xff12_3456
+        );
+        assert_eq!(checkpoint_editor_color(0x8012_3456, None), 0x8012_3456);
+        // The ring's UV1 u lies in 0.0017..0.4921 (mesh 00007a06, primitive 4); the
+        // texture's left half is black, its right half white. Minus alpha 127/255 every
+        // u lands in the white half; minus 1 every u stays in the black half.
+        // The light goes to the checkpoint Thing's parent (the mesh Thing).
+        let things = [
+            ThingRecord {
+                index: 0,
+                ..Default::default()
+            },
+            ThingRecord {
+                index: 1,
+                parent: Some(0),
+                data: PartData {
+                    checkpoint: Some(c(3, 3)),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        ];
+        let lights = checkpoint_lights(&things);
+        assert_eq!(lights.len(), 1);
+        assert_eq!(checkpoint_light_alpha(lights[&0]), 0.5);
+        let a = (checkpoint_editor_color(0xffff_ffff, Some(&c(1, 1))) >> 24) as f32 / 255.;
+        for u in [0.0017f32, 0.25, 0.4921] {
+            assert!((u - a).rem_euclid(1.) >= 0.5, "{u}");
+            assert!((u - 1.).rem_euclid(1.) < 0.5, "{u}");
+        }
     }
 }

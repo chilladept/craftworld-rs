@@ -333,6 +333,19 @@ pub struct PartData {
     /// PSwitchKey as stored: the tag a tag sensor looks for.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub switch_key: Option<SwitchKey>,
+    /// PCheckpoint as stored, the spawn counts (D307: the checkpoint's light).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<Checkpoint>,
+}
+
+/// PCheckpoint as stored, the fields kept (D307): the spawns left, the most it holds and
+/// whether this instance spawns without limit. The game's per-frame checkpoint update
+/// (01.33, 0x5aa9c) lights the checkpoint's ring from the share left.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct Checkpoint {
+    pub spawns_left: i32,
+    pub max_spawns_left: i32,
+    pub infinite_spawns: bool,
 }
 
 /// PSwitchKey as stored, the fields kept: the tag's colour index and its name (empty for
@@ -1086,13 +1099,18 @@ fn part_body(
         "CHECKPOINT" => {
             r.bool()?;
             r.i32()?;
-            r.s32()?;
-            r.s32()?;
-            r.bool()?;
+            let spawns_left = r.s32()?;
+            let max_spawns_left = r.s32()?;
+            let infinite_spawns = r.bool()?;
             thing_array(r, things)?;
             r.i32()?;
             r.i32()?;
             r.i32()?;
+            things.list[me].data.checkpoint = Some(Checkpoint {
+                spawns_left,
+                max_spawns_left,
+                infinite_spawns,
+            });
         }
         "PHYSICS_TWEAK" => physics_tweak(r, things)?,
         "SWITCH_KEY" => {

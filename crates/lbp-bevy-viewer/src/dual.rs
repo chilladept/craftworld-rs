@@ -189,14 +189,28 @@ impl MaterialExtension for SecondTexture {
     }
     /// D290: the glass's main-pass pipeline takes the dual-source shader and blends the
     /// colour as One + OneMinusSrc1 (a transmittance per channel); everything else, and
-    /// the glass on a device without the feature, keeps the pipeline as it was.
+    /// the glass on a device without the feature, keeps the pipeline as it was. D307: the
+    /// glass's alpha keeps the destination's (Zero + One) on both.
     fn specialize(
         _pipeline: &MaterialExtensionPipeline,
         descriptor: &mut RenderPipelineDescriptor,
         _layout: &MeshVertexBufferLayoutRef,
         key: MaterialExtensionKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
-        if !key.bind_group_data.glass || !DUAL_SOURCE.load(Ordering::Relaxed) {
+        if !key.bind_group_data.glass {
+            return Ok(());
+        }
+        if let Some(blend) = descriptor
+            .fragment
+            .as_mut()
+            .filter(|f| f.shader == SHADER && f.targets.len() == 1)
+            .and_then(|f| f.targets.first_mut())
+            .and_then(|t| t.as_mut())
+            .and_then(|t| t.blend.as_mut())
+        {
+            blend.alpha = glass_alpha_blend();
+        }
+        if !DUAL_SOURCE.load(Ordering::Relaxed) {
             return Ok(());
         }
         let Some(fragment) = descriptor.fragment.as_mut() else {
@@ -215,6 +229,19 @@ impl MaterialExtension for SecondTexture {
         fragment.shader = GLASS_DUAL_SHADER;
         fragment.shader_defs.push("GLASS_DUAL_SOURCE".into());
         Ok(())
+    }
+}
+/// D307 FOUND (frames 5247 and 14790, the blend state of every enabled blend): the glass
+/// (5247's 3033 and 2732) blends its alpha as Zero + One, so the scene keeps the alpha
+/// beneath it (a glowing surface behind the glass keeps its glow alpha). The translucent
+/// list's draws (the planets, 2910 to 3015; the Moon's 3903 to 4068) blend alpha as
+/// InvDstAlpha + One, `a_d + (1 - a_d) a_s`, which is Bevy's One + OneMinusSrcAlpha (`a_s +
+/// (1 - a_s) a_d`) for its blended pipelines; only the glass needs its own.
+fn glass_alpha_blend() -> BlendComponent {
+    BlendComponent {
+        src_factor: BlendFactor::Zero,
+        dst_factor: BlendFactor::One,
+        operation: BlendOperation::Add,
     }
 }
 /// D290: the glass's colour blend with dual sources: out = S + (1 - src1) D, src1 = 1 - t.
@@ -327,22 +354,71 @@ pub fn enable_alpha_test(material: &mut ViewerMaterial, level: f32) {
 }
 /// P3h: unlit glow added to the lit colour. `color` multiplies the optional map (graph slot
 /// 4, sRGB like the diffuse); `mode` 2 = primary UV, 3 = UV1. Rides graph_info.w and the
-/// last graph_param row, so it needs no per-fragment graph (slots shared).
+/// last graph_param row, so it needs no per-fragment graph (slots shared). D307: `fogged`
+/// says whether the material's program mixes its glow alpha towards 1 by the fog
+/// ([`glow_alpha_fogged`]); when it does not, [`GLOW_ALPHA_UNFOGGED_BIT`] rides graph_info.w.
 pub fn enable_glow(
     material: &mut ViewerMaterial,
     color: [f32; 3],
     map: Option<(Handle<Image>, u32)>,
+    fogged: bool,
 ) {
     let ext = &mut material.extension;
     let blur = ext.graph_param[31].w;
     ext.graph_param[31] = Vec4::new(color[0], color[1], color[2], blur);
-    ext.graph_info.w = match map {
+    let mode = match map {
         Some((image, mode)) => {
             ext.graph_image4 = Some(image);
             mode
         }
         None => 1,
     };
+    ext.graph_info.w = if fogged {
+        mode
+    } else {
+        mode | GLOW_ALPHA_UNFOGGED_BIT
+    };
+}
+/// D307: graph_info.w's bit for a glow whose alpha the fog leaves alone (the glow mode is
+/// the low four bits).
+pub const GLOW_ALPHA_UNFOGGED_BIT: u32 = 16;
+/// D307 FOUND (the 7,980 decoded gmat programs, variant 8, the alpha's last write): 524
+/// programs write the glow alpha as `tintcol.w x (a + f (1 - a))` with `a = 1 / (1 + 4
+/// |g|^2)` and `f = sat(TC3.z)` the fog (RCP, the fog MAD, MUL by tintcol), so the fog
+/// lifts the alpha towards 1 as it lerps the colour; these 23 write `tintcol.w / (1 + 4
+/// |g|^2)` (DIV by the sum, or `burn`'s RCP) and the fog leaves the alpha alone. Among them
+/// the lamp bulb and the stars of frame 5247 (part 54, the replay) and the checkpoint ring
+/// (`neon_lifebar`). Nothing in the material's stored graph or scalars tells the two apart
+/// (the same graph, flags and revision occur in both), so the list is by GUID.
+pub const GLOW_ALPHA_UNFOGGED: [u32; 23] = [
+    0x000175a3, // burn
+    0x0002c0b3, // cats_eyes_fi
+    0x00006a49, // cosmos_starc (the Pod's stars)
+    0x0005d405, // dcc_lanternpower
+    0x0001ea04, // evil_eye
+    0x00009888, // eye_01_base_colour
+    0x0002b27b, // killzone3_hazmat_to_metal
+    0x0002b283, // killzone3_rico_to_metal
+    0x0000d6cc, // light_bulb (the Pod's lamp bulb)
+    0x0000be15, // neon_lifebar (the checkpoint ring)
+    0x00018401, // proc_base_hologram
+    0x00024e3e, // toy_buzz_pack
+    0x00024e74, // toy_lounge_vcr
+    0x00025fb5, // toy_woodys_roundup
+    0x0002b365, // toy_zurg_badge_illum
+    0x0002ab42, // tron_abraxas_to
+    0x0002ab45, // tron_anon_he
+    0x0002894b, // tron_clu_hd
+    0x0002894c, // tron_clu_hd_disk
+    0x0002894d, // tron_clu_he_helmet
+    0x0002894f, // tron_clu_lg
+    0x00028950, // tron_clu_to
+    0x0001d1fd, // victoria_fire
+];
+/// D307: whether a glowing material's program mixes its alpha towards 1 by the fog: every
+/// program but [`GLOW_ALPHA_UNFOGGED`]'s (a material of unknown GUID takes the common form).
+pub fn glow_alpha_fogged(material: Option<u32>) -> bool {
+    material.is_none_or(|m| !GLOW_ALPHA_UNFOGGED.contains(&m))
 }
 /// P3i: reflection graph sampled at R.xy with LOD bias `blur` (docs/p3i-reflection.md).
 /// `images[k]` is graph texture k (at most 4, graph slots 0..=3), `steps` at most 31 rows
@@ -522,7 +598,18 @@ pub fn dissolve_mix(flat: [f32; 3], lit: [f32; 3], keep: f32) -> [f32; 3] {
 /// surface with glow `g` writes on the level-lighting route, `1 / (1 + 4 |g|^2)`.
 #[cfg(test)]
 pub fn glow_alpha(g: [f32; 3]) -> f32 {
-    1. / (1. + 4. * (g[0] * g[0] + g[1] * g[1] + g[2] * g[2]))
+    glow_alpha_under_fog(g, 0., false)
+}
+/// D307 FOUND (mirrors the shader): the glow alpha with the fog's share `f` (0 to 1): `a +
+/// f (1 - a)` for the common program, `a` for [`GLOW_ALPHA_UNFOGGED`]'s.
+#[cfg(test)]
+pub fn glow_alpha_under_fog(g: [f32; 3], f: f32, fogged: bool) -> f32 {
+    let a = 1. / (1. + 4. * (g[0] * g[0] + g[1] * g[1] + g[2] * g[2]));
+    if fogged {
+        a + f.clamp(0., 1.) * (1. - a)
+    } else {
+        a
+    }
 }
 /// D286: the glass's opacity, none when the material is not glass.
 #[cfg(test)]
@@ -888,11 +975,18 @@ const GAME_TINT: f32 = 4.0;
 fn lbp_encode(c: vec3<f32>) -> vec3<f32> {
     return clamp(sqrt(max(c * GAME_TINT, vec3<f32>(0.0))), vec3<f32>(0.0), vec3<f32>(1.0));
 }
+// D307: the fog's share at a view depth (the game's sat(TC3.z)), 0 without fog.
+fn lbp_fog_share(depth: f32) -> f32 {
+    if lbp_fog.w > 0.5 {
+        return clamp((depth - lbp_fog.x) * lbp_fog.y, 0.0, 1.0);
+    }
+    return 0.0;
+}
 // P2t: then the game's fog in that output space, by view depth (lbp_fog).
 fn lbp_fog_encoded(e: vec3<f32>, depth: f32) -> vec3<f32> {
     var v = e;
     if lbp_fog.w > 0.5 {
-        let k = clamp((depth - lbp_fog.x) * lbp_fog.y, 0.0, 1.0);
+        let k = lbp_fog_share(depth);
         let fogged = (dot(v, vec3<f32>(0.3, 0.6, 0.1)) * lbp_fog.z + 1.0) * lbp_fog_color.rgb;
         v = clamp(mix(v, fogged, k), vec3<f32>(0.0), vec3<f32>(1.0));
     }
@@ -900,7 +994,8 @@ fn lbp_fog_encoded(e: vec3<f32>, depth: f32) -> vec3<f32> {
 }
 // D303 FOUND (frame 5247, the lamp bulb's and the stars' program): a glowing material's
 // alpha is tintcol.w / (4 dot(g, g) + 1), g the glow added before the x4 and the square
-// root (tintcol.w = 1); the fog does not reach it.
+// root (tintcol.w = 1). D307 FOUND (the decoded programs): most programs then mix it
+// towards 1 by the fog's share, a + f (1 - a); the bulb's and the stars' do not.
 fn lbp_glow_alpha(g: vec3<f32>) -> f32 {
     return 1.0 / (1.0 + 4.0 * dot(g, g));
 }
@@ -1118,15 +1213,16 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool)
             rgb += refl.rgb * dot(factor, vec3<f32>(0.299, 0.587, 0.114));
         }
         // P3h: glow is added unlit before the square-root output (INFERRED scale 1).
-        if light_dir.w > 1.5 && graph_info.w > 0u && graph_info.x == 0u {
+        let glow_mode = graph_info.w & 15u;
+        if light_dir.w > 1.5 && glow_mode > 0u && graph_info.x == 0u {
             var glow = graph_param[31].rgb;
 #ifdef VERTEX_UVS_A
-            if graph_info.w == 2u {
+            if glow_mode == 2u {
                 glow *= textureSample(graph_image4, graph_sampler4, in.uv).rgb;
             }
 #endif
 #ifdef VERTEX_UVS_B
-            if graph_info.w == 3u {
+            if glow_mode == 3u {
                 glow *= textureSample(graph_image4, graph_sampler4, in.uv_b).rgb;
             }
 #endif
@@ -1135,6 +1231,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool)
         }
         if light_dir.w > 1.5 {
             let depth = -(view.view_from_world * vec4<f32>(in.world_position.xyz, 1.0)).z;
+            // D307: the common glow program lifts its alpha towards 1 by the fog.
+            if glow_mode > 0u && (graph_info.w & 16u) == 0u {
+                glow_alpha = mix(glow_alpha, 1.0, lbp_fog_share(depth));
+            }
             if dissolve_on {
                 // D291: the mix in the encoded output, then the fog, as the game does.
                 rgb = srgb_decode(lbp_fog_encoded(dissolve_mix(lbp_encode(rgb), dissolve_keep), depth));
@@ -1238,12 +1338,12 @@ fn main_pass_post_lighting_processing(p: PbrInputStub, c: vec4<f32>) -> vec4<f32
     fn glow_uses_the_free_graph_slots() {
         use bevy::prelude::*;
         let mut m = super::material(StandardMaterial::default());
-        super::enable_glow(&mut m, [0.2, 0.4, 0.6], None);
+        super::enable_glow(&mut m, [0.2, 0.4, 0.6], None, true);
         assert_eq!(m.extension.graph_info.w, 1);
         assert_eq!(m.extension.graph_param[31], Vec4::new(0.2, 0.4, 0.6, 0.));
         assert!(m.extension.graph_image4.is_none());
         let h = Handle::<Image>::default();
-        super::enable_glow(&mut m, [1.; 3], Some((h, 3)));
+        super::enable_glow(&mut m, [1.; 3], Some((h, 3)), true);
         assert_eq!(m.extension.graph_info.w, 3);
         assert!(m.extension.graph_image4.is_some());
     }
@@ -1261,7 +1361,7 @@ fn main_pass_post_lighting_processing(p: PbrInputStub, c: vec4<f32>) -> vec4<f32
         super::enable_reflection(&mut m, vec![Some(h.clone())], None, &[step, step], 0.45).unwrap();
         assert_eq!(m.extension.graph_info.z, 1 | (2 << 8));
         assert_eq!(m.extension.graph_param[31].w, 0.45);
-        super::enable_glow(&mut m, [0.5; 3], None);
+        super::enable_glow(&mut m, [0.5; 3], None, true);
         assert_eq!(m.extension.graph_param[31].w, 0.45, "glow keeps the blur");
         assert!(
             super::enable_reflection(&mut m, vec![Some(h.clone()); 5], None, &[step], 0.).is_err()
@@ -1290,6 +1390,56 @@ fn main_pass_post_lighting_processing(p: PbrInputStub, c: vec4<f32>) -> vec4<f32
             assert!(a <= last && a > 0.);
             last = a;
         }
+    }
+    /// D307: the glow alpha under fog. The common program lifts it towards 1 by the fog's
+    /// share (`a + f (1 - a)`); the 23 listed programs (the bulb, the stars, the checkpoint
+    /// ring among them) keep `a`; without fog both are D303's.
+    #[test]
+    fn d307_glow_alpha_under_fog() {
+        let ring = [1.; 3];
+        let a = super::glow_alpha(ring);
+        assert!((a - 1. / 13.).abs() < 1e-6);
+        assert_eq!(super::glow_alpha_under_fog(ring, 0., true), a);
+        assert_eq!(super::glow_alpha_under_fog(ring, 0.6, false), a);
+        let half = super::glow_alpha_under_fog(ring, 0.5, true);
+        assert!((half - (a + 0.5 * (1. - a))).abs() < 1e-6);
+        assert_eq!(super::glow_alpha_under_fog(ring, 1., true), 1.);
+        assert_eq!(super::glow_alpha_under_fog(ring, 2., true), 1.);
+        // Monotonic in the fog, never below the unfogged alpha.
+        let mut last = a;
+        for k in 0..=10 {
+            let v = super::glow_alpha_under_fog([0.6627, 0.5608, 0.], k as f32 * 0.1, true);
+            assert!(v >= last - 1e-6 && v <= 1.);
+            last = v;
+        }
+        for m in [0x0000_d6cc, 0x0000_6a49, 0x0000_be15] {
+            assert!(!super::glow_alpha_fogged(Some(m)), "{m:08x}");
+        }
+        // proc_da_vinci_glow and an unknown material take the common form.
+        assert!(super::glow_alpha_fogged(Some(0x0001_45b9)));
+        assert!(super::glow_alpha_fogged(None));
+        let mut sorted = super::GLOW_ALPHA_UNFOGGED;
+        sorted.sort_unstable();
+        assert!(sorted.windows(2).all(|w| w[0] < w[1]), "no duplicates");
+    }
+    /// D307: the unfogged bit rides graph_info.w above the glow mode.
+    #[test]
+    fn d307_glow_mode_keeps_the_unfogged_bit_apart() {
+        use bevy::prelude::*;
+        let mut m = super::material(StandardMaterial::default());
+        super::enable_glow(&mut m, [1.; 3], None, false);
+        assert_eq!(m.extension.graph_info.w, 1 | super::GLOW_ALPHA_UNFOGGED_BIT);
+        assert_eq!(m.extension.graph_info.w & 15, 1);
+        let h = Handle::<Image>::default();
+        super::enable_glow(&mut m, [1.; 3], Some((h, 3)), true);
+        assert_eq!(m.extension.graph_info.w, 3);
+        // The glass keeps the destination's alpha.
+        use bevy::render::render_resource::{BlendFactor, BlendOperation};
+        let b = super::glass_alpha_blend();
+        assert_eq!(
+            (b.src_factor, b.dst_factor, b.operation),
+            (BlendFactor::Zero, BlendFactor::One, BlendOperation::Add)
+        );
     }
     #[test]
     fn d278_the_dissolve_setter_writes_and_clears() {
@@ -1744,6 +1894,16 @@ fn main_pass_post_lighting_processing(p: PbrInputStub, c: vec4<f32>) -> vec4<f32
         // before the dissolve's.
         assert!(body.contains("glow_alpha = lbp_glow_alpha(glow);"));
         assert!(body.contains("return 1.0 / (1.0 + 4.0 * dot(g, g));"));
+        // D307: the glow mode in the low bits, the fog's lift of the alpha unless bit 16,
+        // the same fog share as the colour's.
+        assert!(body.contains("let glow_mode = graph_info.w & 15u;"));
+        assert!(body.contains("if glow_mode > 0u && (graph_info.w & 16u) == 0u {"));
+        assert!(body.contains("glow_alpha = mix(glow_alpha, 1.0, lbp_fog_share(depth));"));
+        assert!(body.contains("let k = lbp_fog_share(depth);"));
+        assert!(
+            body.find("glow_alpha = mix(glow_alpha, 1.0, lbp_fog_share(depth));")
+                < body.find("alpha = glow_alpha;")
+        );
         let glow_write = body
             .find(
                 "if (pbr.material.flags & ALPHA_MODE_BITS) == ALPHA_MODE_OPAQUE {

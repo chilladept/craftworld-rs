@@ -229,6 +229,17 @@ pub fn glow_in_program(graph: &GraphMetadata, blob: &[u8]) -> bool {
     let name = format!("\0ta{k}\0").into_bytes();
     blob.windows(name.len()).any(|w| w == name.as_slice())
 }
+/// D307: whether the compiled program cuts out by AlphaTestLevel. The 885 programs that name
+/// the constant write alpha 0 below it (P3a's reading); the others never read the colour's
+/// alpha and write their own (1, or a glow's `1 / (1 + 4 |g|^2)`, which the game draws: the
+/// checkpoint ring's `neon_lifebar`, drawn at a colour alpha of 0.5, stores AlphaTestLevel
+/// 0.5 and names no such constant). So the stored scalar cuts out only where the program
+/// names it. Raw scan for `\0AlphaTestLevel\0` as [`glow_in_program`]; an empty blob (not
+/// read) keeps the stored scalar.
+pub fn alpha_test_in_program(blob: &[u8]) -> bool {
+    const NAME: &[u8] = b"\0AlphaTestLevel\0";
+    blob.is_empty() || blob.windows(NAME.len()).any(|w| w == NAME)
+}
 fn is_static(node: &lbp_resource::material::BoxMetadata) -> bool {
     node.subtype_raw == 0
         && node
@@ -718,6 +729,16 @@ mod tests {
         assert_eq!(scalar((-1f32).to_bits(), 0., 16., 0.), 0.);
     }
 
+    /// D307: the stored AlphaTestLevel cuts out only where the program names the constant.
+    #[test]
+    fn d307_alpha_test_needs_the_program_to_name_it() {
+        assert!(alpha_test_in_program(
+            b"CGB\0tb1\0AlphaTestLevel\0tintcol\0"
+        ));
+        assert!(!alpha_test_in_program(b"CGB\0tb1\0tintcol\0fogcol\0"));
+        assert!(!alpha_test_in_program(b"\0AlphaTestLevelX\0"));
+        assert!(alpha_test_in_program(b""));
+    }
     #[test]
     fn p3h_glow_needs_the_program_to_name_the_colour_box() {
         // output <- port 4 <- colour box 1; the blob names ta1 or only ta10
