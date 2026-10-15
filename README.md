@@ -6,7 +6,10 @@ copy, browses its resources, previews them, loads levels, and can run a playable
 Sackboy and the game's scripts on a reimplemented runtime.
 
 This is an unofficial fan project, unaffiliated with Media Molecule or Sony.
-It was prepared with AI assistance.
+Despite the similar name, it is also not part of or affiliated with
+[Craftworld Toolkit / cwlib](https://github.com/ennuo/toolkit), the community's
+long-standing LittleBigPlanet modding toolkit, whose format work this project
+gratefully builds on as prior art. It was prepared with AI assistance.
 
 > **Status: experimental research software.** Many formats are only partly
 > understood, rendering and physics are approximations, and nothing here is a
