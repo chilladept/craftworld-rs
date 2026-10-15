@@ -11,7 +11,17 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D320 Sackboy at the pod computer in the scripted Pod (2026-10-15)
+## Latest: D319 the Pod main menu drawn from the scripts (2026-10-15)
+- Runtime and viewer (`docs/level-scripts.md` part 70): the main menu state's Gooey natives are
+  answered (`World::ui_call`, `lbp-runtime` `gooey.rs`), so its own `UpdateUI` builds the frame
+  tree (Story, Community, Recent Activity, Store, the player card, Me; focus on Story), and the
+  pod computer's per-frame `Draw__m` (FOUND constant matrix, 0x404598 / 0x404070) gives it its
+  matrix in the planets world. The scripted Pod draws it over the planets from tick 601, fading
+  in over 15 frames and zooming with them (game: there at 606, full by 616).
+- MEASURED (rt20_9601, tick 619): pills, card and Me within 1-4 px of the game's centres and
+  sizes; layout metrics fitted (INFERRED), OS font, PLACEHOLDER card picture.
+
+## Before: D320 Sackboy at the pod computer in the scripted Pod (2026-10-15)
 - Viewer (`docs/level-scripts.md` part 71): the scripted Pod has the viewer's own Sackboy by
   default (`--no-pod-sackboy` leaves him out); at the pod computer he plays the game's
   pod_computer_into / idle / out clips (FOUND, 01.33: GUIDs 42b3 / 42b2 / 42e9, weight (n+1)/3,

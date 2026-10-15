@@ -1,0 +1,1093 @@
+//! D319 (docs/level-scripts.md part 70): the pod computer's menus as the planets level's
+//! scripts build them. The Gooey (UI) natives a menu state calls in its `UpdateUI__Q5Gooey`
+//! describe a tree of frames, buttons and breaks; its `Draw__Q5Gooeym` hands the engine a
+//! matrix for the menu's root frame (`Gooey.SetItemViewMatrix__im`). [`GooeyState`] keeps
+//! both, and [`LevelScripts::pod_computer_draw`] makes the engine's per-frame draw call
+//! that leads to the matrix. [`layout`] places a recorded frame in the root frame's units.
+//!
+//! What each Gooey native does is known from its name and arguments only (the engine's
+//! Gooey code was not read): every answer and every layout rule below is INFERRED unless it
+//! says otherwise, and each was chosen to match the main menu in the game's frame
+//! (`rt20_9601`, tick 619), as part 70 measures.
+use crate::{LevelScripts, LevelWorld, StepReport};
+use lbp_script_vm::natives::Bindings;
+use lbp_script_vm::{Value, Vm};
+use std::collections::BTreeMap;
+
+/// The pod computer's script function the engine's per-frame draw function calls with one
+/// matrix ([`LevelScripts::pod_computer_draw`]).
+pub const POD_COMPUTER_DRAW: &str = "Draw__m";
+
+/// The register of `Draw__m`'s matrix argument (its argument row in the 01.33 script).
+const DRAW_MATRIX_REGISTER: u16 = 64;
+
+/// Frames nested deeper than this are not opened (a guard; counted in
+/// [`GooeyState::dropped`]).
+pub const MAX_GOOEY_DEPTH: usize = 64;
+/// Items one frame keeps (a guard; the rest are counted in [`GooeyState::dropped`]).
+pub const MAX_GOOEY_ITEMS: usize = 256;
+
+/// The matrix the engine hands `PodComputer.Draw__m` every frame, in the engine's order
+/// (element (row r, column c) at `c * 4 + r`, translation at 12..14).
+///
+/// FOUND (01.33): the pod computer object's draw function (0x404598) builds it in a local
+/// (0x404070) from constants alone and passes it to the script call 0x89470c -> 0x5038a4
+/// -> 0x6585e8, the call of the PodComputer export that takes one matrix (`Draw__m` is the
+/// class's only such export, INFERRED to be it). The builder is `B Rx(a) Rz(b) T(0, -100,
+/// 550)` with `a` = -1.24791 and `b` = 0.00706858 radians and the basis `B` below (its x
+/// axis, y axis, z axis and translation). With the main menu's own scale and offset
+/// (`SetupFrameMatrix`) it puts the 2400 x 1250 root frame over the whole screen in front
+/// of the planets level's camera (part 70).
+pub fn pod_computer_draw_matrix() -> [f32; 16] {
+    let basis = [
+        [1.08496, 0.010962, 0., 0.],
+        [0., 0., -1.08502, 0.],
+        [-0.010962, 1.08496, 0., 0.],
+        [0., -159.982, 168.926, 1.],
+    ];
+    let (a, b) = (-1.24791f32, 0.007_068_58f32);
+    let rx = rotation_x(a);
+    let rz = rotation_z(b);
+    let t = [
+        [1., 0., 0., 0.],
+        [0., 1., 0., 0.],
+        [0., 0., 1., 0.],
+        [0., -100., 550., 1.],
+    ];
+    let m = mul(&mul(&mul(&basis, &rx), &rz), &t);
+    let mut out = [0.; 16];
+    for (c, col) in m.iter().enumerate() {
+        out[c * 4..c * 4 + 4].copy_from_slice(col);
+    }
+    out
+}
+
+/// Column-major 4 x 4 (`m[column][row]`).
+type Cols = [[f32; 4]; 4];
+
+fn mul(a: &Cols, b: &Cols) -> Cols {
+    let mut out = [[0.; 4]; 4];
+    for (c, col) in b.iter().enumerate() {
+        for (r, cell) in out[c].iter_mut().enumerate() {
+            *cell = (0..4).map(|k| a[k][r] * col[k]).sum();
+        }
+    }
+    out
+}
+
+fn rotation_x(a: f32) -> Cols {
+    let (s, c) = a.sin_cos();
+    [
+        [1., 0., 0., 0.],
+        [0., c, s, 0.],
+        [0., -s, c, 0.],
+        [0., 0., 0., 1.],
+    ]
+}
+
+fn rotation_z(a: f32) -> Cols {
+    let (s, c) = a.sin_cos();
+    [
+        [c, s, 0., 0.],
+        [-s, c, 0., 0.],
+        [0., 0., 1., 0.],
+        [0., 0., 0., 1.],
+    ]
+}
+
+/// A frame (`Gooey.StartFrame*` ... `EndFrame*`) with the properties the script set on it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct GooeyFrame {
+    /// The id of `StartFrameNamed`, `None` for an unnamed frame.
+    pub id: Option<i32>,
+    /// The "UID high bits" in force when the frame was opened
+    /// (`Gooey.SetScriptUIDHighBits__i`): each pod computer state's ids are its own.
+    pub high_bits: i32,
+    /// `SetFrameLayout`: two codes and an optional float, as passed.
+    pub layout: Option<(i32, i32, f32)>,
+    /// `SetFrameSizing`: width and height in the root frame's units.
+    pub sizing: Option<[f32; 2]>,
+    /// `SetFrameBorders`: left, top, right, bottom (the two-float form gives x, y, x, y).
+    pub borders: Option<[f32; 4]>,
+    /// `SetFrameDefaultChildSpacing`: two floats as passed.
+    pub spacing: Option<[f32; 2]>,
+    /// `AddFrameColumn`: width and alignment code, in order.
+    pub columns: Vec<(f32, i32)>,
+    /// `SetFrameTransitionTime`: in and out, in frames (INFERRED unit).
+    pub transition: Option<[f32; 2]>,
+    /// Every other `SetFrame*` call, by native name, with its numbers.
+    pub other: BTreeMap<String, Vec<f32>>,
+    pub children: Vec<GooeyItem>,
+}
+
+/// One button (`DoSpaceButton*Named`) as passed.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct GooeyButton {
+    pub id: i32,
+    pub label: String,
+    /// `Gooey.EGooeyTextStyle`, `Gooey.EGooeyButtonState` and the int after them.
+    pub text_style: i32,
+    pub state: i32,
+    pub flags: i32,
+    /// The last float: MEASURED to be the pill's turn in radians, clockwise on the screen
+    /// (part 70: 0.2 / 0.075 / -0.075 / -0.2 / 0 against the game frame's pills).
+    pub angle: f32,
+    /// The font scale in force (`Gooey.set.FontScale`).
+    pub font_scale: f32,
+    /// The `...WithIcon...` form.
+    pub icon: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum GooeyItem {
+    Frame(GooeyFrame),
+    Button(GooeyButton),
+    /// `DoBreak__`: the next item starts a new row.
+    Break,
+    /// `DoHorizontalBreak*`, with its numbers.
+    HorizontalBreak(Vec<f32>),
+    /// `DoText*`: the string, the text style and the font scale in force.
+    Text {
+        text: String,
+        style: i32,
+        font_scale: f32,
+    },
+    /// `DoPlayerBigIcon*`: the player's picture card; the id when named.
+    PlayerIcon {
+        id: Option<i32>,
+    },
+    /// Any other `Do*` native, by name.
+    Other(String),
+}
+
+/// What the Gooey natives built and were told (one per level world). The tree is rebuilt
+/// each time a state's `UpdateUI` runs; a top-level frame that closes replaces the one
+/// with the same high bits and id.
+#[derive(Debug, Clone, Default)]
+pub struct GooeyState {
+    open: Vec<GooeyFrame>,
+    /// Closed top-level frames by (high bits, id; -1 = unnamed).
+    pub frames: BTreeMap<(i32, i32), GooeyFrame>,
+    /// `PWorld.Frame` when each top-level frame was first closed (for its transition).
+    pub first_built: BTreeMap<(i32, i32), i32>,
+    /// Builds of top-level frames.
+    pub builds: u64,
+    /// The node that has the focus (high bits, id), by `EnsureNodeOrDescendantHasFocus`.
+    pub focus: Option<(i32, i32)>,
+    pub high_bits: i32,
+    next_high_bits: i32,
+    font_scale: Option<f32>,
+    /// `SetItemViewMatrix(id, m)` by (high bits, id): the matrix the root frame is drawn
+    /// with, from its units to the planets level's world (level units).
+    pub item_matrices: BTreeMap<(i32, i32), [f32; 16]>,
+    /// `PWorld.Frame` of the last `SetItemViewMatrix` of each key.
+    pub item_matrix_frames: BTreeMap<(i32, i32), i32>,
+    /// `SetColoursFromPlayer`: the player the Gooey takes its colours from.
+    pub colours_player: Option<i32>,
+    /// `RenderToScreen` calls.
+    pub renders: u64,
+    /// Calls answered, by `Class.mangled`.
+    pub calls: BTreeMap<String, u64>,
+    /// Frames or items not kept (the depth and item guards, an `EndFrame` with no frame).
+    pub dropped: u64,
+}
+
+impl GooeyState {
+    fn font_scale(&self) -> f32 {
+        self.font_scale.unwrap_or(1.)
+    }
+
+    fn push(&mut self, item: GooeyItem) {
+        match self.open.last_mut() {
+            Some(f) if f.children.len() < MAX_GOOEY_ITEMS => f.children.push(item),
+            _ => self.dropped += 1,
+        }
+    }
+
+    fn start(&mut self, id: Option<i32>) {
+        if self.open.len() >= MAX_GOOEY_DEPTH {
+            self.dropped += 1;
+            return;
+        }
+        self.open.push(GooeyFrame {
+            id,
+            high_bits: self.high_bits,
+            ..Default::default()
+        });
+    }
+
+    fn end(&mut self, frame: i32) {
+        let Some(f) = self.open.pop() else {
+            self.dropped += 1;
+            return;
+        };
+        if self.open.is_empty() {
+            let key = (f.high_bits, f.id.unwrap_or(-1));
+            self.first_built.entry(key).or_insert(frame);
+            self.frames.insert(key, f);
+            self.builds += 1;
+        } else {
+            self.push(GooeyItem::Frame(f));
+        }
+    }
+
+    /// The frame with this id under the current high bits: an open one first, then a
+    /// closed top-level one.
+    fn find(&self, id: i32) -> Option<&GooeyFrame> {
+        fn within(f: &GooeyFrame, id: i32) -> Option<&GooeyFrame> {
+            if f.id == Some(id) {
+                return Some(f);
+            }
+            f.children.iter().find_map(|c| match c {
+                GooeyItem::Frame(c) => within(c, id),
+                _ => None,
+            })
+        }
+        let bits = self.high_bits;
+        self.open
+            .iter()
+            .rev()
+            .filter(|f| f.high_bits == bits)
+            .find_map(|f| within(f, id))
+            .or_else(|| {
+                self.frames
+                    .iter()
+                    .filter(|((b, _), _)| *b == bits)
+                    .find_map(|(_, f)| within(f, id))
+            })
+    }
+
+    /// The root frame of a menu that has been drawn: the top-level frame with an item
+    /// matrix, the last one set.
+    pub fn drawn_menu(&self) -> Option<DrawnMenu<'_>> {
+        let (key, frame_set) = self.item_matrix_frames.iter().max_by_key(|(_, f)| **f)?;
+        Some(DrawnMenu {
+            frame: self.frames.get(key)?,
+            matrix: *self.item_matrices.get(key)?,
+            first_built: self.first_built.get(key).copied(),
+            matrix_frame: *frame_set,
+            focus: self.focus.filter(|f| f.0 == key.0).map(|f| f.1),
+        })
+    }
+}
+
+/// A menu root frame with the matrix it is drawn with ([`GooeyState::drawn_menu`]).
+#[derive(Debug, Clone, Copy)]
+pub struct DrawnMenu<'a> {
+    pub frame: &'a GooeyFrame,
+    /// Root frame units (x right, y down) to the planets level's world.
+    pub matrix: [f32; 16],
+    /// `PWorld.Frame` when the frame was first built, and when the matrix was last set.
+    pub first_built: Option<i32>,
+    pub matrix_frame: i32,
+    /// The id of the focused node under the frame's high bits.
+    pub focus: Option<i32>,
+}
+
+fn num(v: Option<&Value>) -> f32 {
+    match v {
+        Some(Value::Float(f)) => *f,
+        Some(Value::Int(i)) => *i as f32,
+        _ => 0.,
+    }
+}
+
+fn int(v: Option<&Value>) -> i32 {
+    match v {
+        Some(Value::Int(i)) => *i,
+        Some(Value::Float(f)) => *f as i32,
+        Some(Value::Bool(b)) => i32::from(*b),
+        _ => 0,
+    }
+}
+
+fn text(v: Option<&Value>) -> String {
+    match v {
+        Some(Value::Str(s)) => s.to_string(),
+        _ => String::new(),
+    }
+}
+
+fn numbers(args: &[Value]) -> Vec<f32> {
+    args.iter()
+        .filter(|v| matches!(v, Value::Float(_) | Value::Int(_)))
+        .map(|v| num(Some(v)))
+        .collect()
+}
+
+/// The base name of a mangled native (`SetFrameLayout__iif` -> `SetFrameLayout`).
+fn base(mangled: &str) -> &str {
+    mangled.split("__").next().unwrap_or(mangled)
+}
+
+impl LevelWorld {
+    /// [`lbp_script_vm::natives::World::ui_call`]: the Gooey and callout natives and the
+    /// queries around the pod computer's menus. Every answer is INFERRED (the engine's
+    /// code for them was not read) unless its line says otherwise; `None` for a native
+    /// not listed here, which then counts as unbound.
+    pub fn ui_call(
+        &mut self,
+        class: &str,
+        mangled: &str,
+        receiver: Option<&Value>,
+        args: &[Value],
+    ) -> Option<Value> {
+        let _ = receiver;
+        let frame = self.pworld.frame;
+        let answer = match class {
+            "Gooey" => self.gooey_call(mangled, args, frame),
+            "Callout" => Some(callout(mangled)),
+            _ => self.menu_query(class, mangled, args),
+        }?;
+        *self
+            .gooey
+            .calls
+            .entry(format!("{class}.{mangled}"))
+            .or_default() += 1;
+        Some(answer)
+    }
+
+    fn gooey_call(&mut self, mangled: &str, args: &[Value], frame: i32) -> Option<Value> {
+        let g = &mut self.gooey;
+        let name = base(mangled);
+        let a = |i: usize| args.get(i);
+        Some(match name {
+            // A frame opens and the script fills it (true: the menus are drawn, so the
+            // game's answer is "open" while the menu shows).
+            "StartFrame" => {
+                g.start(None);
+                Value::Bool(true)
+            }
+            "StartFrameNamed" => {
+                g.start(Some(int(a(0))));
+                Value::Bool(true)
+            }
+            "EndFrame" => {
+                g.end(frame);
+                Value::Void
+            }
+            // No input reached the frame: no bit of the mask.
+            "EndFrameInput" => {
+                g.end(frame);
+                Value::Int(0)
+            }
+            "SetFrameLayout" => {
+                if let Some(f) = g.open.last_mut() {
+                    f.layout = Some((int(a(0)), int(a(1)), num(a(2))));
+                }
+                Value::Void
+            }
+            "SetFrameSizing" => {
+                if let Some(f) = g.open.last_mut() {
+                    f.sizing = Some([num(a(0)), num(a(1))]);
+                }
+                Value::Void
+            }
+            "SetFrameBorders" => {
+                if let Some(f) = g.open.last_mut() {
+                    f.borders = Some(match args.len() {
+                        4 => [num(a(0)), num(a(1)), num(a(2)), num(a(3))],
+                        _ => [num(a(0)), num(a(1)), num(a(0)), num(a(1))],
+                    });
+                }
+                Value::Void
+            }
+            "SetFrameDefaultChildSpacing" => {
+                if let Some(f) = g.open.last_mut() {
+                    f.spacing = Some([num(a(0)), num(a(1))]);
+                }
+                Value::Void
+            }
+            "SetFrameTransitionTime" => {
+                if let Some(f) = g.open.last_mut() {
+                    f.transition = Some([num(a(0)), num(a(1))]);
+                }
+                Value::Void
+            }
+            "AddFrameColumn" => {
+                if let Some(f) = g.open.last_mut() {
+                    f.columns.push((num(a(0)), int(a(1))));
+                }
+                Value::Void
+            }
+            n if n.starts_with("SetFrame") => {
+                if let Some(f) = g.open.last_mut() {
+                    f.other.insert(n.to_owned(), numbers(args));
+                }
+                Value::Void
+            }
+            // A button: (id, label, text style, state, int, angle). 0: not pressed (the
+            // 256 bit the menu tests is "activated").
+            "DoSpaceButtonNamed" | "DoSpaceButtonWithIconNamed" => {
+                let font_scale = g.font_scale();
+                g.push(GooeyItem::Button(GooeyButton {
+                    id: int(a(0)),
+                    label: text(a(1)),
+                    text_style: int(a(2)),
+                    state: int(a(3)),
+                    flags: int(a(4)),
+                    angle: num(args.last().filter(|v| matches!(v, Value::Float(_)))),
+                    font_scale,
+                    icon: name.contains("Icon"),
+                }));
+                Value::Int(0)
+            }
+            "DoBreak" => {
+                g.push(GooeyItem::Break);
+                Value::Void
+            }
+            "DoHorizontalBreak" => {
+                g.push(GooeyItem::HorizontalBreak(numbers(args)));
+                Value::Void
+            }
+            "DoText" => {
+                let font_scale = g.font_scale();
+                g.push(GooeyItem::Text {
+                    text: text(a(0)),
+                    style: int(a(1)),
+                    font_scale,
+                });
+                Value::Int(0)
+            }
+            "DoPlayerBigIcon" | "DoPlayerBigIconNamed" => {
+                let id = (name == "DoPlayerBigIconNamed").then(|| int(a(0)));
+                g.push(GooeyItem::PlayerIcon { id });
+                Value::Int(0)
+            }
+            n if n.starts_with("Do") => {
+                g.push(GooeyItem::Other(n.to_owned()));
+                Value::Int(0)
+            }
+            // The menu keeps its focus; a focus on no button moves to the node asked for.
+            "EnsureNodeOrDescendantHasFocus" => {
+                let id = int(a(0));
+                let bits = g.high_bits;
+                let on_button = g.focus.is_some_and(|(b, f)| {
+                    b == bits
+                        && g.frames.values().chain(g.open.iter()).any(|fr| {
+                            fn has(fr: &GooeyFrame, id: i32) -> bool {
+                                fr.children.iter().any(|c| match c {
+                                    GooeyItem::Button(b) => b.id == id,
+                                    GooeyItem::Frame(f) => has(f, id),
+                                    _ => false,
+                                })
+                            }
+                            has(fr, f)
+                        })
+                });
+                if !on_button {
+                    g.focus = Some((bits, id));
+                }
+                Value::Bool(true)
+            }
+            "IsValidNode" => Value::Bool(g.find(int(a(0))).is_some()),
+            "SetScriptUIDHighBits" => {
+                g.high_bits = int(a(0));
+                Value::Void
+            }
+            "ResetScriptUIDHighBits" => {
+                g.high_bits = 0;
+                Value::Void
+            }
+            // A new block of ids for a state: 1, 2, ... (the game's values were not read).
+            "GetUniqueContainerIDHighBits" => {
+                g.next_high_bits += 1;
+                Value::Int(g.next_high_bits)
+            }
+            // The frame's own size (its `SetFrameSizing`): the layout pass that may change
+            // it is not modelled.
+            "GetFrameSize" | "GetFrameSizeTarget" => {
+                let s = g.find(int(a(0))).and_then(|f| f.sizing).unwrap_or([0.; 2]);
+                Value::Vec4([s[0], s[1], 0., 0.])
+            }
+            "SetItemViewMatrix" => {
+                if let Some(Value::Mat44(m)) = a(1) {
+                    let key = (g.high_bits, int(a(0)));
+                    g.item_matrices.insert(key, *m);
+                    g.item_matrix_frames.insert(key, frame);
+                }
+                Value::Void
+            }
+            "RenderToScreen" => {
+                g.renders += 1;
+                Value::Void
+            }
+            // Nothing changed outside the scripts' own calls.
+            "NeedsUpdate" => Value::Bool(false),
+            "SetColoursFromPlayer" => {
+                g.colours_player = Some(int(a(0)));
+                Value::Void
+            }
+            "get.FontScale" => Value::Float(g.font_scale()),
+            "set.FontScale" => {
+                g.font_scale = Some(num(a(0)));
+                Value::Void
+            }
+            _ if mangled == ".get.FontScale__" => Value::Float(g.font_scale()),
+            _ if mangled == ".set.FontScale__f" => {
+                g.font_scale = Some(num(a(0)));
+                Value::Void
+            }
+            // The player's colour the Gooey took (`SetColoursFromPlayer`), as a colour
+            // vector; the first record's without one.
+            "GetPrimaryColour" => {
+                let number = g.colours_player;
+                let record = self
+                    .player_records
+                    .iter()
+                    .find(|r| Some(r.number) == number)
+                    .or(self.player_records.first());
+                Value::Vec4(lbp_script_vm::natives::colour_vector(
+                    record.map_or(lbp_script_vm::natives::DEFAULT_PLAYER_COLOUR, |r| r.colour),
+                ))
+            }
+            _ => return None,
+        })
+    }
+
+    fn menu_query(&mut self, class: &str, mangled: &str, args: &[Value]) -> Option<Value> {
+        let _ = args;
+        Some(match (class, mangled) {
+            // No overlay of the planets changed.
+            ("Planets", "CheckOverlayNeedsUpdate__") => Value::Bool(false),
+            // The primary local player uses the pod computer.
+            ("PodComputer", "GetPodComputerUserPlayerNumber__") => {
+                Value::Int(self.primary_player().unwrap_or(0))
+            }
+            // The title before (none).
+            ("PodComputer", "SetActivityTitle__Q28SearchDetails.EActivityTitle") => Value::Int(0),
+            // Offline, no crossplay, no friends, no streams, no DLC, the retail game, a
+            // profile that has not played the first game.
+            ("PodComputer", "HasPSNDemoBuyButton__")
+            | ("Network", "IsCrossPlayConnected__")
+            | ("Network", "IsCrossPlayConnectionError__")
+            | ("System", "IsOnline__")
+            | ("System", "IsBeta__")
+            | ("Profile", "HasPlayedLBP1__")
+            | ("Profile", "HasCrossplayDLC__")
+            | ("Profile", "HasMoveDLC__") => Value::Bool(false),
+            // The menu offers Story for a profile that has played the intro levels; the
+            // game frame's profile has (INFERRED from the frame: Story is there).
+            ("Profile", "HasPlayedIntroLevels__") => Value::Bool(true),
+            ("PartyManagement", "GetNumFriends__") | ("Store", "GetNumDLCStoryPacks__") => {
+                Value::Int(0)
+            }
+            ("Start_Menu", "GetFriendStatus__Q13PodFriendData") => Value::Int(0),
+            ("Network", "CrossPlayDisconnect__")
+            | ("Network", "SendPodStateChangedTelemetryMessage__Q6String")
+            | ("PartyManagement", "GatherFriendData__[Q13PodFriendData") => Value::Void,
+            ("StreamManager", _) | ("Game", "GetLocalPlayerOnlineID__") => Value::Object(None),
+            ("HUD", "GetScreenEdgeCrop__") => Value::Float(0.),
+            ("HUD", "SDF_INFO__iii") => Value::Vec4([0.; 4]),
+            ("Audio", "RequestVoiceOverMovePack__Q7StringAbbb") => Value::Bool(false),
+            _ => return None,
+        })
+    }
+}
+
+/// The callouts (hint bubbles): none is made (`CreateCallout` gives null), so none is
+/// valid, active or drawn.
+fn callout(mangled: &str) -> Value {
+    match base(mangled) {
+        "IsValid" | "IsActive" => Value::Bool(false),
+        "GetFramesInState" => Value::Int(0),
+        "CreateCallout" => Value::Object(None),
+        _ => Value::Void,
+    }
+}
+
+impl LevelScripts {
+    /// The engine's per-frame draw call of the pod computer: `Draw__m` with
+    /// [`pod_computer_draw_matrix`] on its PodComputer script object, in the planets level
+    /// only. FOUND (01.33, 0x404598): the pod computer object's draw function makes this
+    /// call and then the video call ([`LevelScripts::update_video`]), once a rendered
+    /// frame. The script hands the matrix to each state's `OnDraw`; the main menu's
+    /// `SetupFrameMatrix` turns it into its root frame's matrix (`SetItemViewMatrix`,
+    /// [`GooeyState::item_matrices`]). A call that faults or yields is reported once in
+    /// [`StepReport::thread_faults`] and not made again.
+    pub fn pod_computer_draw(
+        &mut self,
+        vm: &mut Vm,
+        host: &mut Bindings<LevelWorld>,
+        budget: u64,
+    ) -> StepReport {
+        let mut report = StepReport::default();
+        if self.pod_computer_draw_stopped || !self.is_planets_level(vm, &host.world) {
+            return report;
+        }
+        let Some(object) = host.world.pod_computer else {
+            return report;
+        };
+        let Some(class) = vm.class_of(object) else {
+            return report;
+        };
+        if !vm.has_code(class, POD_COMPUTER_DRAW) {
+            return report;
+        }
+        let args = [(
+            DRAW_MATRIX_REGISTER,
+            Value::Mat44(pod_computer_draw_matrix()),
+        )];
+        match crate::run_on_object_with(vm, host, class, object, POD_COMPUTER_DRAW, &args, budget) {
+            Ok(()) => report.pod_computer_draws += 1,
+            Err(e) => {
+                self.pod_computer_draw_stopped = true;
+                report.thread_faults.push(format!("PodComputer {e}"));
+            }
+        }
+        report
+    }
+}
+
+/// One placed item of a menu, in the root frame's units (x right, y down from its top
+/// left corner): the centre, the size before the turn and the turn ([`layout`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlacedItem {
+    pub kind: PlacedKind,
+    pub centre: [f32; 2],
+    pub size: [f32; 2],
+    /// Radians, clockwise on the screen.
+    pub angle: f32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PlacedKind {
+    Button {
+        id: i32,
+        label: String,
+        focused: bool,
+        state: i32,
+    },
+    PlayerIcon,
+    Text(String),
+}
+
+/// Gooey metrics in the root frame's units, fitted to the game frame's main menu (part 70;
+/// the engine's sizes were not read). A button's text is this many units per em at font
+/// scale 1 ...
+pub const BUTTON_EM: f32 = 56.3;
+/// ... with this much pill at the two ends together (the pill is as long as the node) ...
+pub const BUTTON_PAD: f32 = 58.9;
+/// ... in a node this tall (a row: rows have no gap); the pill drawn in it is
+/// [`PILL_HEIGHT`] tall.
+pub const BUTTON_ROW: f32 = 103.6;
+pub const PILL_HEIGHT: f32 = 82.;
+/// The focused button is drawn this much larger about its centre; the layout keeps its
+/// unfocused size.
+pub const FOCUS_SCALE: f32 = 1.56;
+/// The player's card (`DoPlayerBigIcon`): its node, and the card drawn at the node's top,
+/// centred across (wider than the node).
+pub const PLAYER_ICON: [f32; 2] = [167., 472.];
+pub const PLAYER_CARD: [f32; 2] = [234., 291.];
+/// The root frame's rows sit this much lower than the bottom-aligned rule puts them
+/// (fitted: the game frame's three columns are all 14.5 units lower; not explained).
+pub const ROOT_ROWS_DOWN: f32 = 14.5;
+
+/// Width of a text in ems: a rounded sans serif's widths by character class (INFERRED,
+/// fitted to the game frame's pill lengths, part 70).
+pub fn text_ems(text: &str) -> f32 {
+    text.chars()
+        .map(|c| match c {
+            'i' | 'l' | 'j' | 't' | 'f' | 'r' | ' ' | '.' | ',' | '\'' | 'I' => 0.3,
+            'm' | 'w' | 'M' | 'W' => 0.85,
+            c if c.is_uppercase() => 0.68,
+            _ => 0.55,
+        })
+        .sum()
+}
+
+#[derive(Clone, Copy)]
+struct Rect {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+}
+
+/// Alignment of a Gooey code along one axis: the share of the free space before the item
+/// (INFERRED from the main menu: 0 start, 1 end, 3 centre; the root's (3, 1) puts its rows
+/// at the bottom, the left column's (1, 3) puts its pills at the right).
+fn share(code: i32) -> f32 {
+    match code {
+        1 => 1.,
+        3 => 0.5,
+        _ => 0.,
+    }
+}
+
+/// The size an item asks for.
+fn measure(item: &GooeyItem) -> [f32; 2] {
+    match item {
+        GooeyItem::Frame(f) => frame_size(f, None),
+        GooeyItem::Button(b) => [
+            BUTTON_PAD + BUTTON_EM * b.font_scale * text_ems(&b.label),
+            BUTTON_ROW,
+        ],
+        GooeyItem::PlayerIcon { .. } => PLAYER_ICON,
+        GooeyItem::Text {
+            text, font_scale, ..
+        } => [BUTTON_EM * font_scale * text_ems(text), BUTTON_ROW],
+        _ => [0., 0.],
+    }
+}
+
+fn borders(f: &GooeyFrame) -> [f32; 4] {
+    f.borders.unwrap_or([0.; 4])
+}
+
+/// Rows of items: a break ends a row.
+fn rows(f: &GooeyFrame) -> Vec<Vec<&GooeyItem>> {
+    let mut out = vec![Vec::new()];
+    for c in &f.children {
+        match c {
+            GooeyItem::Break | GooeyItem::HorizontalBreak(_) => out.push(Vec::new()),
+            c => out.last_mut().expect("a row").push(c),
+        }
+    }
+    out.retain(|r| !r.is_empty());
+    out
+}
+
+/// The content size of a frame's children (columns side by side, else rows stacked).
+fn content(f: &GooeyFrame) -> [f32; 2] {
+    if !f.columns.is_empty() {
+        let sizes: Vec<[f32; 2]> = f.children.iter().map(measure).collect();
+        return [
+            sizes.iter().map(|s| s[0]).sum(),
+            sizes.iter().map(|s| s[1]).fold(0., f32::max),
+        ];
+    }
+    let rows = rows(f);
+    let mut w: f32 = 0.;
+    let mut h = 0.;
+    for r in &rows {
+        let sizes: Vec<[f32; 2]> = r.iter().map(|c| measure(c)).collect();
+        w = w.max(sizes.iter().map(|s| s[0]).sum());
+        h += sizes.iter().map(|s| s[1]).fold(0., f32::max);
+    }
+    [w, h]
+}
+
+/// A frame's size: `SetFrameSizing` per axis (above 0: that size; below 0: the space
+/// given, `fill`; 0 or none: the content and borders).
+fn frame_size(f: &GooeyFrame, fill: Option<[f32; 2]>) -> [f32; 2] {
+    let b = borders(f);
+    let c = content(f);
+    let fit = [c[0] + b[0] + b[2], c[1] + b[1] + b[3]];
+    let s = f.sizing.unwrap_or([0., 0.]);
+    let axis = |i: usize| {
+        if s[i] > 0. {
+            s[i]
+        } else if s[i] < 0. {
+            fill.map_or(fit[i], |f| f[i])
+        } else {
+            fit[i]
+        }
+    };
+    [axis(0), axis(1)]
+}
+
+fn place(item: &GooeyItem, r: Rect, angle_focus: (Option<i32>, &mut Vec<PlacedItem>)) {
+    let (focus, out) = angle_focus;
+    let centre = [r.x + r.w / 2., r.y + r.h / 2.];
+    match item {
+        GooeyItem::Frame(f) => place_frame(f, r, focus, out),
+        GooeyItem::Button(b) => {
+            // The pill: as long as the node, [`PILL_HEIGHT`] tall, larger when focused.
+            let focused = focus == Some(b.id);
+            let k = if focused { FOCUS_SCALE } else { 1. };
+            out.push(PlacedItem {
+                kind: PlacedKind::Button {
+                    id: b.id,
+                    label: b.label.clone(),
+                    focused,
+                    state: b.state,
+                },
+                centre,
+                size: [r.w * k, PILL_HEIGHT * k],
+                angle: b.angle,
+            })
+        }
+        GooeyItem::PlayerIcon { .. } => out.push(PlacedItem {
+            kind: PlacedKind::PlayerIcon,
+            centre: [centre[0], r.y + PLAYER_CARD[1] / 2.],
+            size: PLAYER_CARD,
+            angle: 0.,
+        }),
+        GooeyItem::Text { text, .. } => out.push(PlacedItem {
+            kind: PlacedKind::Text(text.clone()),
+            centre,
+            size: [r.w, r.h],
+            angle: 0.,
+        }),
+        _ => {}
+    }
+}
+
+fn place_frame(f: &GooeyFrame, r: Rect, focus: Option<i32>, out: &mut Vec<PlacedItem>) {
+    let b = borders(f);
+    let inner = Rect {
+        x: r.x + b[0],
+        y: r.y + b[1],
+        w: (r.w - b[0] - b[2]).max(0.),
+        h: (r.h - b[1] - b[3]).max(0.),
+    };
+    let (ax, ay) = f.layout.map_or((0., 0.), |(x, y, _)| (share(x), share(y)));
+    if !f.columns.is_empty() {
+        // Columns: a width of 0 is the child's own, a negative width a share of what the
+        // others leave; each child goes in the next column, aligned by the column's code
+        // across and by the frame's code down.
+        let sizes: Vec<[f32; 2]> = f.children.iter().map(measure).collect();
+        let fixed: f32 = f
+            .columns
+            .iter()
+            .zip(&sizes)
+            .filter(|((w, _), _)| *w >= 0.)
+            .map(|((w, _), s)| if *w > 0. { *w } else { s[0] })
+            .sum();
+        let weights: f32 = f
+            .columns
+            .iter()
+            .filter(|(w, _)| *w < 0.)
+            .map(|(w, _)| -w)
+            .sum();
+        let free = (inner.w - fixed).max(0.);
+        let mut x = inner.x;
+        for (i, child) in f.children.iter().enumerate() {
+            let Some((w, align)) = f.columns.get(i) else {
+                break;
+            };
+            let s = sizes[i];
+            let cw = if *w > 0. {
+                *w
+            } else if *w < 0. && weights > 0. {
+                free * -w / weights
+            } else {
+                s[0]
+            };
+            let cell = Rect {
+                x: x + (cw - s[0]) * share(*align),
+                y: inner.y + (inner.h - s[1]) * ay,
+                w: s[0],
+                h: s[1],
+            };
+            place(child, cell, (focus, out));
+            x += cw;
+        }
+        return;
+    }
+    // Rows: stacked down from the top of the content block, which the frame's codes align;
+    // in a row the items go side by side, the row aligned across by the first code.
+    let rows = rows(f);
+    let c = content(f);
+    let mut y = inner.y + (inner.h - c[1]) * ay;
+    for row in rows {
+        let sizes: Vec<[f32; 2]> = row
+            .iter()
+            .map(|it| match it {
+                GooeyItem::Frame(fr) => frame_size(fr, Some([inner.w, inner.h])),
+                it => measure(it),
+            })
+            .collect();
+        let rw: f32 = sizes.iter().map(|s| s[0]).sum();
+        let rh = sizes.iter().map(|s| s[1]).fold(0., f32::max);
+        let mut x = inner.x + (inner.w - rw) * ax;
+        for (it, s) in row.iter().zip(&sizes) {
+            let cell = Rect {
+                x,
+                y: y + (rh - s[1]) * 0.5,
+                w: s[0],
+                h: s[1],
+            };
+            place(it, cell, (focus, out));
+            x += s[0];
+        }
+        y += rh;
+    }
+}
+
+/// Places a menu's root frame and everything in it, in the root frame's units
+/// ([`PlacedItem`]); `focus` is the focused node's id.
+pub fn layout(root: &GooeyFrame, focus: Option<i32>) -> Vec<PlacedItem> {
+    let size = frame_size(root, None);
+    let mut out = Vec::new();
+    place_frame(
+        root,
+        Rect {
+            x: 0.,
+            y: 0.,
+            w: size[0],
+            h: size[1],
+        },
+        focus,
+        &mut out,
+    );
+    for item in &mut out {
+        item.centre[1] += ROOT_ROWS_DOWN;
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn s(t: &str) -> Value {
+        Value::Str(t.into())
+    }
+
+    #[test]
+    fn d319_the_draw_matrix_puts_the_root_frame_before_the_in_use_camera() {
+        // The menu's chain at rest: the draw matrix, the menu's scale 2.8 and its offset
+        // (-w/2, -h/2 - 50, 800) for its 2400 x 1250 root (part 70).
+        let m = pod_computer_draw_matrix();
+        let at = |x: f32, y: f32| {
+            let (u, v, w) = ((x - 1200.) * 2.8, (y - 675.) * 2.8, 800. * 2.8);
+            [0, 1, 2].map(|r| m[r] * u + m[4 + r] * v + m[8 + r] * w + m[12 + r])
+        };
+        let corner = at(0., 0.);
+        for (got, want) in corner.iter().zip([-3660.8, 2835.7, -2008.6]) {
+            assert!((got - want).abs() < 2., "{corner:?}");
+        }
+        // Root x runs along world x, root y down the picture (world y falls).
+        let (right, below) = (at(100., 0.), at(0., 100.));
+        assert!(right[0] - corner[0] > 300. && (right[1] - corner[1]).abs() < 2.);
+        assert!(below[1] < corner[1]);
+    }
+
+    fn menu_tree(w: &mut LevelWorld) {
+        let g =
+            |w: &mut LevelWorld, name: &str, args: &[Value]| w.ui_call("Gooey", name, None, args);
+        let f = |v: f32| Value::Float(v);
+        let i = Value::Int;
+        g(w, "SetScriptUIDHighBits__i", &[i(1)]);
+        g(
+            w,
+            "StartFrameNamed__iQ23Gooey.EGooeyBubbleStyle",
+            &[i(1), i(0)],
+        );
+        g(w, "SetFrameLayout__iif", &[i(3), i(1), f(0.5)]);
+        g(w, "SetFrameSizing__ff", &[f(2400.), f(1250.)]);
+        g(w, "SetFrameBorders__ffff", &[f(0.), f(0.), f(0.), f(150.)]);
+        g(w, "SetFrameTransitionTime__ff", &[f(15.), f(15.)]);
+        g(w, "StartFrame__Q23Gooey.EGooeyBubbleStyle", &[i(0)]);
+        g(w, "SetFrameLayout__iif", &[i(3), i(3), f(0.5)]);
+        g(w, "SetFrameSizing__ff", &[f(-1.), f(500.)]);
+        for (width, align) in [(-0.5, 1), (0., 3), (-0.5, 0)] {
+            g(w, "AddFrameColumn__fi", &[f(width), i(align)]);
+        }
+        g(w, "StartFrame__Q23Gooey.EGooeyBubbleStyle", &[i(0)]);
+        g(w, "SetFrameLayout__ii", &[i(1), i(3)]);
+        g(w, "SetFrameBorders__ff", &[f(32.), f(32.)]);
+        let button =
+            "DoSpaceButtonNamed__iQ6StringQ21Gooey.EGooeyTextStyleQ23Gooey.EGooeyButtonStateif";
+        for (n, (id, label, angle)) in [
+            (6, "Story", 0.2),
+            (9, "Community", 0.075),
+            (11, "Store", -0.2),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if n > 0 {
+                g(w, "DoBreak__", &[]);
+            }
+            let r = g(w, button, &[i(id), s(label), i(1), i(0), i(256), f(angle)]);
+            assert_eq!(r, Some(Value::Int(0)));
+        }
+        g(w, "EnsureNodeOrDescendantHasFocus__i", &[i(6)]);
+        g(w, "EndFrame__", &[]);
+        g(w, "StartFrame__Q23Gooey.EGooeyBubbleStyle", &[i(0)]);
+        g(
+            w,
+            "SetFrameBorders__ffff",
+            &[f(64.), f(128.), f(64.), f(0.)],
+        );
+        g(
+            w,
+            "DoPlayerBigIcon__Q7StringAQ21Gooey.EGooeyTextStyleQ23Gooey.EGooeyButtonStateibb",
+            &[],
+        );
+        g(w, "EndFrame__", &[]);
+        g(w, "StartFrame__Q23Gooey.EGooeyBubbleStyle", &[i(0)]);
+        g(w, "SetFrameLayout__ii", &[i(0), i(3)]);
+        g(w, "SetFrameBorders__ff", &[f(32.), f(32.)]);
+        g(w, button, &[i(12), s("Me"), i(1), i(6), i(0), f(0.)]);
+        g(w, "EndFrame__", &[]);
+        g(w, "EndFrame__", &[]);
+        g(w, "EndFrameInput__i", &[i(512)]);
+        g(w, "ResetScriptUIDHighBits__", &[]);
+    }
+
+    #[test]
+    fn d319_the_gooey_calls_build_the_menu_and_its_matrix() {
+        let mut w = LevelWorld::default();
+        menu_tree(&mut w);
+        let g = &w.gooey;
+        assert_eq!(g.builds, 1);
+        assert_eq!(g.focus, Some((1, 6)));
+        let root = &g.frames[&(1, 1)];
+        assert_eq!(root.sizing, Some([2400., 1250.]));
+        assert_eq!(root.borders, Some([0., 0., 0., 150.]));
+        let GooeyItem::Frame(columns) = &root.children[0] else {
+            panic!("{root:?}");
+        };
+        assert_eq!(columns.columns, [(-0.5, 1), (0., 3), (-0.5, 0)]);
+        // No matrix yet: nothing drawn. The draw step asks the root's size and sets it.
+        assert!(g.drawn_menu().is_none());
+        let call =
+            |w: &mut LevelWorld, name: &str, args: &[Value]| w.ui_call("Gooey", name, None, args);
+        call(&mut w, "SetScriptUIDHighBits__i", &[Value::Int(1)]);
+        assert_eq!(
+            call(&mut w, "GetFrameSize__i", &[Value::Int(1)]),
+            Some(Value::Vec4([2400., 1250., 0., 0.]))
+        );
+        let m = Value::Mat44(pod_computer_draw_matrix());
+        call(&mut w, "SetItemViewMatrix__im", &[Value::Int(1), m]);
+        let menu = w.gooey.drawn_menu().expect("drawn");
+        assert_eq!(menu.focus, Some(6));
+        assert_eq!(menu.first_built, Some(0));
+        // A native the world does not answer counts as unbound.
+        assert_eq!(w.ui_call("Gooey", "NoSuchNative__", None, &[]), None);
+        assert_eq!(
+            w.ui_call("Callout", "IsValid__Q5Gooey", None, &[]),
+            Some(Value::Bool(false))
+        );
+    }
+
+    #[test]
+    fn d319_the_layout_puts_the_columns_about_the_card() {
+        let mut w = LevelWorld::default();
+        menu_tree(&mut w);
+        let placed = layout(&w.gooey.frames[&(1, 1)], Some(6));
+        let button = |label: &str| {
+            placed
+                .iter()
+                .find(|p| matches!(&p.kind, PlacedKind::Button { label: l, .. } if l == label))
+                .expect(label)
+        };
+        let (story, community, store, me) = (
+            button("Story"),
+            button("Community"),
+            button("Store"),
+            button("Me"),
+        );
+        let card = placed
+            .iter()
+            .find(|p| p.kind == PlacedKind::PlayerIcon)
+            .expect("card");
+        // The card in the middle; the left column's pills end at one right edge (the
+        // focused one is drawn larger about its own centre); Me starts right of the card.
+        assert!((card.centre[0] - 1200.).abs() < 0.01);
+        let right = |p: &PlacedItem, k: f32| p.centre[0] + p.size[0] / k / 2.;
+        assert!((right(community, 1.) - right(store, 1.)).abs() < 0.01);
+        assert!((right(story, FOCUS_SCALE) - right(store, 1.)).abs() < 0.01);
+        assert!(right(store, 1.) < card.centre[0] - PLAYER_ICON[0] / 2.);
+        assert!(me.centre[0] - me.size[0] / 2. > card.centre[0] + PLAYER_ICON[0] / 2.);
+        // Rows one node apart, the column and Me centred on one line.
+        assert!((community.centre[1] - story.centre[1] - BUTTON_ROW).abs() < 0.01);
+        assert!(((story.centre[1] + store.centre[1]) / 2. - me.centre[1]).abs() < 0.01);
+        assert_eq!(story.size[1], PILL_HEIGHT * FOCUS_SCALE);
+        assert!((story.angle - 0.2).abs() < 1e-6 && me.angle == 0.);
+    }
+}

@@ -545,14 +545,30 @@ pub fn install(app: &mut App) -> Result<(), String> {
     })
     .insert_resource(crate::CaptureHold(hold_at.is_some()))
     .insert_resource(Time::<Fixed>::from_hz(f64::from(TICK_HZ)))
+    .init_resource::<crate::pod_menu::ScriptMenu>()
     .add_systems(
         FixedUpdate,
-        (tick, relight, follow_fog, follow_things, follow_world).chain(),
+        (
+            tick,
+            relight,
+            follow_fog,
+            follow_things,
+            follow_world,
+            follow_menu,
+        )
+            .chain(),
     )
     // After the viewer's own camera has placed the follow camera, before a capture.
+    // D319: the scripts' main menu is drawn by that camera.
     .add_systems(
         Update,
-        (script_camera, follow_dof, follow_dissolve, layer_depths)
+        (
+            script_camera,
+            follow_dof,
+            follow_dissolve,
+            layer_depths,
+            crate::pod_menu::paint_script_menu,
+        )
             .chain()
             .after(crate::camera)
             .before(crate::capture),
@@ -1135,6 +1151,22 @@ fn follow_level(
             if first { " (new scene)" } else { "" },
             done.line()
         );
+    }
+}
+
+/// D319 (part 70): the main menu the pod computer's scripts built and drew, handed to the
+/// viewer after each tick (`pod_menu::paint_script_menu` draws it); none before.
+fn follow_menu(play: NonSend<Play>, mut menu: ResMut<crate::pod_menu::ScriptMenu>) {
+    let now = crate::pod_menu::ScriptMenuFrame::of(&play.host.world);
+    if menu.0 != now {
+        if menu.0.is_none() && now.is_some() {
+            println!(
+                "Main menu at tick {}: built by the pod computer's scripts and drawn by their matrix ({} items)",
+                play.scripts.ticks,
+                now.as_ref().map_or(0, |m| m.placed.len())
+            );
+        }
+        menu.0 = now;
     }
 }
 

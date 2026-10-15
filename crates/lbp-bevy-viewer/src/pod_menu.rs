@@ -720,9 +720,349 @@ pub fn install_overlay(app: &mut App) -> Result<(), String> {
     Ok(())
 }
 
+/// D319 (docs/level-scripts.md part 70): the main menu the planets level's scripts built,
+/// as `level_play` hands it over after each tick: the items laid out in the root frame's
+/// units ([`lbp_runtime::layout`]), the matrix the pod computer's draw call gave the root
+/// frame (root frame units to the planets level's world, level units), the fade of the
+/// frame's transition and the colour the Gooey took from the player.
+#[derive(Resource, Default, Clone)]
+pub struct ScriptMenu(pub Option<ScriptMenuFrame>);
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScriptMenuFrame {
+    pub placed: Vec<lbp_runtime::PlacedItem>,
+    pub matrix: Mat4,
+    /// 0 when the frame was first built, 1 once its transition time has passed.
+    pub fade: f32,
+    /// The player's primary colour (`Gooey.SetColoursFromPlayer`), RGBA 0..1.
+    pub colour: [f32; 4],
+}
+
+impl ScriptMenuFrame {
+    /// The drawn menu of a level world, if its scripts have drawn one.
+    pub fn of(world: &lbp_runtime::LevelWorld) -> Option<Self> {
+        let menu = world.gooey.drawn_menu()?;
+        // INFERRED: the frame fades in linearly over its transition time (frames) from
+        // the frame it was first built on (`SetFrameTransitionTime(15, 15)`); MEASURED in
+        // the game's alpha at 606 / 609 / 611 / 616: 0.32 / 0.60 / 0.73 / 1.
+        let time = menu.frame.transition.map_or(0., |t| t[0]);
+        let age = menu
+            .first_built
+            .map_or(f32::MAX, |b| (world.pworld.frame - b) as f32);
+        let fade = if time > 0. {
+            (age / time).clamp(0., 1.)
+        } else {
+            1.
+        };
+        let player = world.gooey.colours_player;
+        let colour = world
+            .player_records
+            .iter()
+            .find(|r| Some(r.number) == player)
+            .or(world.player_records.first())
+            .map_or(lbp_script_vm::natives::DEFAULT_PLAYER_COLOUR, |r| r.colour);
+        Some(Self {
+            placed: lbp_runtime::layout(menu.frame, menu.focus),
+            matrix: Mat4::from_cols_array(&menu.matrix),
+            fade,
+            colour: lbp_script_vm::natives::colour_vector(colour),
+        })
+    }
+}
+
+#[derive(Component)]
+pub(crate) struct ScriptMenuRoot;
+
+/// One placed item's node ([`ScriptMenuFrame::placed`] index).
+#[derive(Component)]
+pub(crate) struct ScriptMenuNode(usize);
+
+/// A part of the card (its picture, an icon) with its colour, faded with the menu.
+#[derive(Component)]
+pub(crate) struct ScriptMenuPart([f32; 3]);
+
+/// The label of a button node.
+#[derive(Component)]
+pub(crate) struct ScriptMenuLabel(usize);
+
+/// The focused pill's colour: MEASURED on the game frame's Story pill (31 to 51, 204 to
+/// 211, 200 to 204), the third colour of the default player colour (entry 0 of the script
+/// class `PlayerColour`: 29, 220, 205). INFERRED: the focus takes that colour.
+const FOCUS_COLOUR: [f32; 3] = [29. / 255., 220. / 255., 205. / 255.];
+/// MEASURED (game frame, alpha channel = the menu's coverage): an unfocused pill's body
+/// covers 82 / 255 of the picture, its text about 0.62.
+const PILL_ALPHA: f32 = 82. / 255.;
+const LABEL_ALPHA: f32 = 0.62;
+/// Text size against the pill's height (INFERRED by eye from the game frame's letters).
+const LABEL_SIZE: f32 = 0.56;
+/// PLACEHOLDER card: the white frame MEASURED on the game frame (209, 207, 208 at 0.88),
+/// the picture a flat colour (the mean of the game's picture of the player), the three
+/// round icons along its bottom edge in the game's colours.
+const CARD_FRAME: [f32; 4] = [209. / 255., 207. / 255., 208. / 255., 0.88];
+const CARD_PICTURE: [f32; 3] = [132. / 255., 128. / 255., 105. / 255.];
+const CARD_ICONS: [[f32; 3]; 3] = [
+    [161. / 255., 179. / 255., 132. / 255.],
+    [253. / 255., 253. / 255., 253. / 255.],
+    [253. / 255., 120. / 255., 1. / 255.],
+];
+
+fn rgba(c: [f32; 3], a: f32) -> Color {
+    Color::srgba(c[0], c[1], c[2], a)
+}
+
+/// Builds the menu's nodes for `menu` under a new root.
+fn spawn_script_menu(commands: &mut Commands, menu: &ScriptMenuFrame) {
+    let root = commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                width: Val::Percent(100.),
+                height: Val::Percent(100.),
+                ..default()
+            },
+            ScriptMenuRoot,
+        ))
+        .id();
+    for (i, item) in menu.placed.iter().enumerate() {
+        let node = match &item.kind {
+            lbp_runtime::PlacedKind::Button { label, .. } => commands
+                .spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        justify_content: JustifyContent::Center,
+                        align_items: AlignItems::Center,
+                        border_radius: BorderRadius::all(Val::Px(9999.)),
+                        ..default()
+                    },
+                    UiTransform::IDENTITY,
+                    BackgroundColor(Color::NONE),
+                    ScriptMenuNode(i),
+                    children![(
+                        Text::new(label.clone()),
+                        TextFont {
+                            font: bevy::text::FontSource::SansSerif,
+                            weight: bevy::text::FontWeight::BOLD,
+                            ..TextFont::from_font_size(20.)
+                        },
+                        TextColor(Color::WHITE),
+                        TextLayout::new(Justify::Center, LineBreak::NoWrap),
+                        ScriptMenuLabel(i),
+                    )],
+                ))
+                .id(),
+            lbp_runtime::PlacedKind::PlayerIcon => {
+                let icon = |n: usize| {
+                    (
+                        Node {
+                            position_type: PositionType::Absolute,
+                            left: Val::Percent(3.5 + 29. * n as f32),
+                            top: Val::Percent(74.),
+                            width: Val::Percent(27.),
+                            height: Val::Percent(22.),
+                            border_radius: BorderRadius::all(Val::Px(9999.)),
+                            ..default()
+                        },
+                        BackgroundColor(rgba(CARD_ICONS[n], 1.)),
+                        ScriptMenuPart(CARD_ICONS[n]),
+                    )
+                };
+                // Every part is placed in percent of the card itself (absolute), so the
+                // card keeps the size the projection gives it. Places by eye from the game
+                // frame's card.
+                commands
+                    .spawn((
+                        Node {
+                            position_type: PositionType::Absolute,
+                            ..default()
+                        },
+                        UiTransform::IDENTITY,
+                        BackgroundColor(Color::NONE),
+                        ScriptMenuNode(i),
+                        children![
+                            (
+                                Node {
+                                    position_type: PositionType::Absolute,
+                                    left: Val::Percent(8.),
+                                    top: Val::Percent(5.),
+                                    width: Val::Percent(85.),
+                                    height: Val::Percent(71.),
+                                    ..default()
+                                },
+                                BackgroundColor(rgba(CARD_PICTURE, 1.)),
+                                ScriptMenuPart(CARD_PICTURE),
+                            ),
+                            icon(0),
+                            icon(1),
+                            icon(2),
+                        ],
+                    ))
+                    .id()
+            }
+            lbp_runtime::PlacedKind::Text(text) => commands
+                .spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        justify_content: JustifyContent::Center,
+                        align_items: AlignItems::Center,
+                        ..default()
+                    },
+                    UiTransform::IDENTITY,
+                    BackgroundColor(Color::NONE),
+                    ScriptMenuNode(i),
+                    children![(
+                        Text::new(text.clone()),
+                        TextFont::from_font_size(20.),
+                        TextColor(Color::WHITE),
+                        TextLayout::new(Justify::Center, LineBreak::NoWrap),
+                        ScriptMenuLabel(i),
+                    )],
+                ))
+                .id(),
+        };
+        commands.entity(root).add_child(node);
+    }
+}
+
+/// Where a point of the menu's root frame (its units) shows, in logical pixels from the
+/// top left, through `world_from_menu`, the level's display matrix and the camera.
+fn menu_to_screen(clip_from_world: Mat4, world_from_menu: Mat4, p: Vec2, size: Vec2) -> Vec3 {
+    let world = world_from_menu.transform_point3(p.extend(0.));
+    let clip = clip_from_world * world.extend(1.);
+    let ndc = clip.truncate() / clip.w;
+    Vec3::new(
+        (ndc.x + 1.) / 2. * size.x,
+        (1. - ndc.y) / 2. * size.y,
+        clip.w,
+    )
+}
+
+/// D319: draws the scripts' main menu over the planets each frame, after the script camera
+/// is placed: every item at the place the menu's matrix, the level's display matrix and the
+/// camera give its centre, sized and turned by the same projection (the menu follows the
+/// planets world through the zoom), the pill colours of the game frame, faded in by the
+/// frame's transition. Text is the OS sans serif in bold, not the game's font; the card is
+/// a PLACEHOLDER (no picture of the player).
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+pub(crate) fn paint_script_menu(
+    mut commands: Commands,
+    menu: Option<Res<ScriptMenu>>,
+    display: Option<Res<crate::sackboy_play::LevelDisplay>>,
+    cameras: Query<(&Transform, &Projection), With<Camera3d>>,
+    windows: Query<&Window>,
+    mut roots: Query<(Entity, &mut Visibility), With<ScriptMenuRoot>>,
+    mut nodes: Query<
+        (
+            &ScriptMenuNode,
+            &mut Node,
+            &mut UiTransform,
+            &mut BackgroundColor,
+        ),
+        Without<ScriptMenuRoot>,
+    >,
+    mut labels: Query<(&ScriptMenuLabel, &mut TextFont, &mut TextColor)>,
+    mut parts: Query<(&ScriptMenuPart, &mut BackgroundColor), Without<ScriptMenuNode>>,
+    mut built: Local<Option<usize>>,
+) {
+    let frame = menu.as_ref().and_then(|m| m.0.as_ref());
+    let (Some(frame), Some(display), Ok((transform, projection)), Ok(window)) =
+        (frame, display, cameras.single(), windows.single())
+    else {
+        for (_, mut v) in &mut roots {
+            *v = Visibility::Hidden;
+        }
+        return;
+    };
+    if *built != Some(frame.placed.len()) {
+        for (e, _) in &roots {
+            commands.entity(e).despawn();
+        }
+        spawn_script_menu(&mut commands, frame);
+        *built = Some(frame.placed.len());
+        return;
+    }
+    for (_, mut v) in &mut roots {
+        *v = Visibility::Inherited;
+    }
+    let size = Vec2::new(window.width(), window.height());
+    let clip_from_world =
+        projection.get_clip_from_view() * transform.to_matrix().inverse() * display.0;
+    let world_from_menu = frame.matrix;
+    let fade = frame.fade;
+    for (ScriptMenuPart(c), mut background) in &mut parts {
+        *background = BackgroundColor(rgba(*c, fade));
+    }
+    for (ScriptMenuNode(i), mut node, mut ui, mut background) in &mut nodes {
+        let Some(item) = frame.placed.get(*i) else {
+            continue;
+        };
+        let c = Vec2::from(item.centre);
+        let at = menu_to_screen(clip_from_world, world_from_menu, c, size);
+        let along = menu_to_screen(clip_from_world, world_from_menu, c + Vec2::X, size);
+        let down = menu_to_screen(clip_from_world, world_from_menu, c + Vec2::Y, size);
+        let (dx, dy) = ((along - at).truncate(), (down - at).truncate());
+        let (w, h) = (item.size[0] * dx.length(), item.size[1] * dy.length());
+        if at.z <= 0. || !w.is_finite() || !h.is_finite() {
+            node.display = Display::None;
+            continue;
+        }
+        node.display = Display::Flex;
+        node.left = Val::Px(at.x - w / 2.);
+        node.top = Val::Px(at.y - h / 2.);
+        node.width = Val::Px(w);
+        node.height = Val::Px(h);
+        ui.rotation = Rot2::radians(item.angle + dx.y.atan2(dx.x));
+        *background = BackgroundColor(match &item.kind {
+            lbp_runtime::PlacedKind::Button { focused: true, .. } => rgba(FOCUS_COLOUR, fade),
+            lbp_runtime::PlacedKind::Button { .. } => {
+                let c = frame.colour;
+                Color::srgba(c[0], c[1], c[2], PILL_ALPHA * fade)
+            }
+            lbp_runtime::PlacedKind::PlayerIcon => Color::srgba(
+                CARD_FRAME[0],
+                CARD_FRAME[1],
+                CARD_FRAME[2],
+                CARD_FRAME[3] * fade,
+            ),
+            lbp_runtime::PlacedKind::Text(_) => Color::NONE,
+        });
+        for (ScriptMenuLabel(j), mut font, mut colour) in &mut labels {
+            if j != i {
+                continue;
+            }
+            let px = (h * LABEL_SIZE * 2.).round() / 2.;
+            if !matches!(font.font_size, bevy::text::FontSize::Px(s) if s == px) {
+                font.font_size = bevy::text::FontSize::Px(px.max(1.));
+            }
+            let focused = matches!(
+                item.kind,
+                lbp_runtime::PlacedKind::Button { focused: true, .. }
+            );
+            let a = if focused { 1. } else { LABEL_ALPHA };
+            *colour = TextColor(Color::srgba(1., 1., 1., a * fade));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn d319_menu_points_project_through_the_menu_matrix() {
+        // A menu matrix that puts root units 1:1 on the plane z = -10 in front of a camera
+        // at the origin: its centre projects to the screen's centre, and a unit step along
+        // x moves right.
+        let world_from_menu = Mat4::from_translation(Vec3::new(-5., 3., -10.))
+            * Mat4::from_scale(Vec3::new(0.01, -0.01, 1.));
+        let clip = Mat4::perspective_rh(1., 16. / 9., 0.1, 100.);
+        let size = Vec2::new(1280., 720.);
+        let centre = menu_to_screen(clip, world_from_menu, Vec2::new(500., 300.), size);
+        assert!((centre.x - 640.).abs() < 0.01 && (centre.y - 360.).abs() < 0.01);
+        let right = menu_to_screen(clip, world_from_menu, Vec2::new(510., 300.), size);
+        let below = menu_to_screen(clip, world_from_menu, Vec2::new(500., 310.), size);
+        assert!(right.x > centre.x && (right.y - centre.y).abs() < 1e-3);
+        assert!(below.y > centre.y);
+    }
 
     #[test]
     fn p2k_planets_world_matches_the_game_and_frames_the_globe_and_moon() {

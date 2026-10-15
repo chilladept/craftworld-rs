@@ -29,6 +29,7 @@ use std::sync::Arc;
 mod camera;
 mod display;
 mod global_settings;
+mod gooey;
 mod media;
 mod message_view;
 mod messages;
@@ -39,6 +40,7 @@ pub mod transform;
 pub use camera::*;
 pub use display::*;
 pub use global_settings::*;
+pub use gooey::*;
 pub use media::*;
 pub use message_view::*;
 pub use messages::*;
@@ -424,6 +426,8 @@ pub struct LevelWorld {
     pub display: DisplayState,
     /// What the Pod's world script asks for and sets ([`PodState`]).
     pub pod: PodState,
+    /// D319: what the pod computer's menus built and were told ([`GooeyState`]).
+    pub gooey: GooeyState,
     /// The names of the level's tags and tag sensors; a [`TagKey`] holds an index.
     pub tag_names: Vec<String>,
     /// The world's tag map as the last switch pass left it
@@ -2403,6 +2407,16 @@ impl World for LevelWorld {
     fn cinema_mode_count(&mut self) -> Result<i32, String> {
         Ok(0)
     }
+    /// D319: [`LevelWorld::ui_call`].
+    fn ui_call(
+        &mut self,
+        class: &str,
+        mangled: &str,
+        receiver: Option<&Value>,
+        args: &[Value],
+    ) -> Result<Option<Value>, String> {
+        Ok(LevelWorld::ui_call(self, class, mangled, receiver, args))
+    }
     fn write(&mut self, text: &str) {
         if self.written.len() < 1000 {
             self.written.push(text.to_owned());
@@ -2922,6 +2936,9 @@ pub struct StepReport {
     /// Calls of the pod computer's per-frame step that ran to their end
     /// ([`LevelScripts::pod_computer_frame`]).
     pub pod_computer_frames: usize,
+    /// D319: calls of the pod computer's per-frame draw that ran to their end
+    /// ([`LevelScripts::pod_computer_draw`]).
+    pub pod_computer_draws: usize,
 }
 
 /// Counts of one or more switch passes. Unit: a visited output target (one Thing on one
@@ -2996,6 +3013,7 @@ impl StepReport {
         self.planets_arrived += other.planets_arrived;
         self.video_updates += other.video_updates;
         self.pod_computer_frames += other.pod_computer_frames;
+        self.pod_computer_draws += other.pod_computer_draws;
     }
 
     fn add(&mut self, thing: u32, o: Outcome) {
@@ -3047,6 +3065,9 @@ pub struct LevelScripts {
     /// The pod computer's per-frame step faulted or yielded: it is not called again
     /// ([`LevelScripts::pod_computer_frame`]).
     pub pod_computer_frame_stopped: bool,
+    /// D319: the pod computer's per-frame draw faulted or yielded: it is not called again
+    /// ([`LevelScripts::pod_computer_draw`]).
+    pub pod_computer_draw_stopped: bool,
 }
 
 impl LevelScripts {
@@ -3060,6 +3081,7 @@ impl LevelScripts {
             planets: BTreeMap::new(),
             video_update_stopped: false,
             pod_computer_frame_stopped: false,
+            pod_computer_draw_stopped: false,
         }
     }
 
@@ -3574,6 +3596,9 @@ impl LevelScripts {
         let mut planets = self.run_all(vm, host, None, budget, &busy, Entries::Planets, frame_tick);
         self.start_threads(vm, host, budget, &mut planets);
         report.absorb(planets);
+        // D319: the pod computer's draw call, then its video call, as its draw function
+        // makes them (FOUND, 0x404598).
+        report.absorb(self.pod_computer_draw(vm, host, budget));
         report.absorb(self.update_video(vm, host, budget));
         host.world.step_camera();
         host.world.advance_frame();

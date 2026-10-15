@@ -640,6 +640,21 @@ pub trait World {
     fn cinema_mode_count(&mut self) -> Result<i32, String> {
         Err(not_available("the HUD"))
     }
+    /// D319: a native of the pod computer's menus that [`TABLE`] does not bind: any native
+    /// of the classes in [`UI_CLASSES`] (the Gooey frame tree, the callouts) and the
+    /// natives in [`UI_NATIVES`] the main menu asks around it. `receiver` is the object a
+    /// member call is made on. `Ok(None)`: the world does not answer this native, and the
+    /// call counts as unbound (it faults, or returns its type's default with
+    /// [`Bindings::default_unbound`]).
+    fn ui_call(
+        &mut self,
+        _class: &str,
+        _mangled: &str,
+        _receiver: Option<&Value>,
+        _args: &[Value],
+    ) -> Result<Option<Value>, String> {
+        Ok(None)
+    }
     /// Outcome of a `Test.Check*` / `Test.Fail` native in the game's own test scripts.
     fn test_check(&mut self, _passed: bool, _message: &str, _line: i32) {}
     /// Uniform in [0, 1); only `NonDeterministic*` natives use it.
@@ -729,32 +744,54 @@ pub fn bound() -> impl Iterator<Item = (&'static str, &'static str)> {
     TABLE.iter().map(|(c, m, _)| (*c, *m))
 }
 
-/// Calls a native through the table, checking arity against the mangled signature.
+/// The staged values of a call split by the mangled signature ([`Call`]).
+fn split<'a>(class: &str, mangled: &str, args: &'a [Value]) -> Result<Call<'a>, String> {
+    let n = signature::parse(mangled).map_or(0, |s| s.params.len());
+    if args.len() == n {
+        Ok(Call {
+            receiver: None,
+            params: args,
+        })
+    } else if args.len() == n + 1 {
+        Ok(Call {
+            receiver: args.first(),
+            params: &args[1..],
+        })
+    } else {
+        Err(format!(
+            "{class}.{mangled}: {} arguments for {n} parameters",
+            args.len()
+        ))
+    }
+}
+
+/// Is this native one [`World::ui_call`] is asked about ([`UI_CLASSES`], [`UI_NATIVES`])?
+pub fn is_ui_native(class: &str, mangled: &str) -> bool {
+    UI_CLASSES.contains(&class) || UI_NATIVES.contains(&(class, mangled))
+}
+
+/// Calls a native through the table, checking arity against the mangled signature. A
+/// native the table does not bind goes to [`World::ui_call`] when [`is_ui_native`]; `None`
+/// when nothing answers it.
 pub fn dispatch(
     world: &mut dyn World,
     class: &str,
     mangled: &str,
     args: &[Value],
 ) -> Option<Result<Value, String>> {
-    let f = lookup(class, mangled)?;
-    let n = signature::parse(mangled).map_or(0, |s| s.params.len());
-    let call = if args.len() == n {
-        Call {
-            receiver: None,
-            params: args,
+    let Some(f) = lookup(class, mangled) else {
+        if !is_ui_native(class, mangled) {
+            return None;
         }
-    } else if args.len() == n + 1 {
-        Call {
-            receiver: args.first(),
-            params: &args[1..],
-        }
-    } else {
-        return Some(Err(format!(
-            "{class}.{mangled}: {} arguments for {n} parameters",
-            args.len()
-        )));
+        let call = match split(class, mangled, args) {
+            Ok(c) => c,
+            Err(e) => return Some(Err(e)),
+        };
+        return world
+            .ui_call(class, mangled, call.receiver, call.params)
+            .transpose();
     };
-    Some(f(world, &call))
+    Some(split(class, mangled, args).and_then(|call| f(world, &call)))
 }
 
 impl<W: World> Host for Bindings<W> {
@@ -1121,6 +1158,83 @@ fn smooth_vec(c: &Call<'_>, k: usize) -> Result<[f32; 4], String> {
     );
     let (acc, max_vel) = (float(param(c, 3)?)?, float(param(c, 4)?)?);
     Ok(smooth_nd(pos, vel, target, acc, max_vel, k))
+}
+
+/// The inverse of a 4 x 4 matrix (any memory order: the inverse of the transpose is the
+/// transpose of the inverse), by cofactors; `None` when its determinant is 0 or not finite.
+pub fn inverse4(m: &[f32; 16]) -> Option<[f32; 16]> {
+    let a = m.map(f64::from);
+    let mut inv = [0f64; 16];
+    // Cofactors of the transposed adjugate, expanded along rows.
+    inv[0] = a[5] * a[10] * a[15] - a[5] * a[11] * a[14] - a[9] * a[6] * a[15]
+        + a[9] * a[7] * a[14]
+        + a[13] * a[6] * a[11]
+        - a[13] * a[7] * a[10];
+    inv[4] = -a[4] * a[10] * a[15] + a[4] * a[11] * a[14] + a[8] * a[6] * a[15]
+        - a[8] * a[7] * a[14]
+        - a[12] * a[6] * a[11]
+        + a[12] * a[7] * a[10];
+    inv[8] = a[4] * a[9] * a[15] - a[4] * a[11] * a[13] - a[8] * a[5] * a[15]
+        + a[8] * a[7] * a[13]
+        + a[12] * a[5] * a[11]
+        - a[12] * a[7] * a[9];
+    inv[12] = -a[4] * a[9] * a[14] + a[4] * a[10] * a[13] + a[8] * a[5] * a[14]
+        - a[8] * a[6] * a[13]
+        - a[12] * a[5] * a[10]
+        + a[12] * a[6] * a[9];
+    inv[1] = -a[1] * a[10] * a[15] + a[1] * a[11] * a[14] + a[9] * a[2] * a[15]
+        - a[9] * a[3] * a[14]
+        - a[13] * a[2] * a[11]
+        + a[13] * a[3] * a[10];
+    inv[5] = a[0] * a[10] * a[15] - a[0] * a[11] * a[14] - a[8] * a[2] * a[15]
+        + a[8] * a[3] * a[14]
+        + a[12] * a[2] * a[11]
+        - a[12] * a[3] * a[10];
+    inv[9] = -a[0] * a[9] * a[15] + a[0] * a[11] * a[13] + a[8] * a[1] * a[15]
+        - a[8] * a[3] * a[13]
+        - a[12] * a[1] * a[11]
+        + a[12] * a[3] * a[9];
+    inv[13] = a[0] * a[9] * a[14] - a[0] * a[10] * a[13] - a[8] * a[1] * a[14]
+        + a[8] * a[2] * a[13]
+        + a[12] * a[1] * a[10]
+        - a[12] * a[2] * a[9];
+    inv[2] = a[1] * a[6] * a[15] - a[1] * a[7] * a[14] - a[5] * a[2] * a[15]
+        + a[5] * a[3] * a[14]
+        + a[13] * a[2] * a[7]
+        - a[13] * a[3] * a[6];
+    inv[6] = -a[0] * a[6] * a[15] + a[0] * a[7] * a[14] + a[4] * a[2] * a[15]
+        - a[4] * a[3] * a[14]
+        - a[12] * a[2] * a[7]
+        + a[12] * a[3] * a[6];
+    inv[10] = a[0] * a[5] * a[15] - a[0] * a[7] * a[13] - a[4] * a[1] * a[15]
+        + a[4] * a[3] * a[13]
+        + a[12] * a[1] * a[7]
+        - a[12] * a[3] * a[5];
+    inv[14] = -a[0] * a[5] * a[14] + a[0] * a[6] * a[13] + a[4] * a[1] * a[14]
+        - a[4] * a[2] * a[13]
+        - a[12] * a[1] * a[6]
+        + a[12] * a[2] * a[5];
+    inv[3] = -a[1] * a[6] * a[11] + a[1] * a[7] * a[10] + a[5] * a[2] * a[11]
+        - a[5] * a[3] * a[10]
+        - a[9] * a[2] * a[7]
+        + a[9] * a[3] * a[6];
+    inv[7] = a[0] * a[6] * a[11] - a[0] * a[7] * a[10] - a[4] * a[2] * a[11]
+        + a[4] * a[3] * a[10]
+        + a[8] * a[2] * a[7]
+        - a[8] * a[3] * a[6];
+    inv[11] = -a[0] * a[5] * a[11] + a[0] * a[7] * a[9] + a[4] * a[1] * a[11]
+        - a[4] * a[3] * a[9]
+        - a[8] * a[1] * a[7]
+        + a[8] * a[3] * a[5];
+    inv[15] = a[0] * a[5] * a[10] - a[0] * a[6] * a[9] - a[4] * a[1] * a[10]
+        + a[4] * a[2] * a[9]
+        + a[8] * a[1] * a[6]
+        - a[8] * a[2] * a[5];
+    let det = a[0] * inv[0] + a[1] * inv[4] + a[2] * inv[8] + a[3] * inv[12];
+    if det == 0. || !det.is_finite() {
+        return None;
+    }
+    Some(inv.map(|v| (v / det) as f32))
 }
 
 /// `Math.ModAngleToWithinPI__f`: an angle in radians less whole turns, so that it lies
@@ -2981,6 +3095,17 @@ const TABLE: &[(&str, &str, NativeFn)] = &[
     ("Math", "ModAngleToWithinPI__f", |_, c| {
         Ok(Value::Float(mod_angle_to_within_pi(float(param(c, 0)?)?)))
     }),
+    // ---- D319: the pod computer state's frame matrix (docs/level-scripts.md part 70) ----
+    // FOUND (01.33, 0x62ad64 -> 0x5f0c20). Declared static `m44 inverse(m44)` on Math:
+    // the callee's result is copied out column by column. INFERRED: the full inverse of the
+    // 4 x 4 matrix (the callee was not followed); `SetupFrameMatrix` inverts a planets
+    // view's transform with it. A matrix without an inverse is an error here.
+    ("Math", "inverse__m", |_, c| {
+        let m = matrix(param(c, 0)?)?;
+        inverse4(&m)
+            .map(Value::Mat44)
+            .ok_or_else(|| "matrix has no inverse".to_owned())
+    }),
     // ---- the game's own test scripts ----
     ("Test", "Check__bQ7StringAi", |w, c| {
         let ok = boolean(param(c, 0)?)?;
@@ -3125,6 +3250,44 @@ pub const MESSAGING: [&str; 10] = [
 /// Natives the VM itself handles; they never reach a host.
 pub const VM_HANDLED: [(&str, &str); 1] = [("System", "Yield__")];
 
+/// D319 (docs/level-scripts.md part 70): classes every native of which [`TABLE`] does not
+/// bind goes to [`World::ui_call`]: the Gooey (UI frame tree) and the callouts (hint
+/// bubbles) the pod computer's menus build.
+pub const UI_CLASSES: [&str; 2] = ["Gooey", "Callout"];
+
+/// D319: natives of other classes the pod computer's per-frame step and its main menu ask
+/// (part 46 found 28 kinds of them unbound in the planets level), also answered by
+/// [`World::ui_call`].
+pub const UI_NATIVES: [(&str, &str); 24] = [
+    ("Planets", "CheckOverlayNeedsUpdate__"),
+    ("PodComputer", "GetPodComputerUserPlayerNumber__"),
+    (
+        "PodComputer",
+        "SetActivityTitle__Q28SearchDetails.EActivityTitle",
+    ),
+    ("PodComputer", "HasPSNDemoBuyButton__"),
+    ("Network", "IsCrossPlayConnected__"),
+    ("Network", "IsCrossPlayConnectionError__"),
+    ("Network", "CrossPlayDisconnect__"),
+    ("Network", "SendPodStateChangedTelemetryMessage__Q6String"),
+    ("System", "IsOnline__"),
+    ("System", "IsBeta__"),
+    ("PartyManagement", "GetNumFriends__"),
+    ("PartyManagement", "GatherFriendData__[Q13PodFriendData"),
+    ("Store", "GetNumDLCStoryPacks__"),
+    ("Profile", "HasPlayedLBP1__"),
+    ("Profile", "HasPlayedIntroLevels__"),
+    ("Profile", "HasCrossplayDLC__"),
+    ("Profile", "HasMoveDLC__"),
+    ("Game", "GetLocalPlayerOnlineID__"),
+    ("StreamManager", "GetStreamManager__"),
+    ("StreamManager", "GetOrCreateMyStream__bbbbbbji"),
+    ("HUD", "GetScreenEdgeCrop__"),
+    ("HUD", "SDF_INFO__iii"),
+    ("Audio", "RequestVoiceOverMovePack__Q7StringAbbb"),
+    ("Start_Menu", "GetFriendStatus__Q13PodFriendData"),
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3152,6 +3315,77 @@ mod tests {
 
     fn call(class: &str, m: &str, args: &[Value]) -> Result<Value, String> {
         dispatch(&mut Tree, class, m, args).expect("bound")
+    }
+
+    /// D319: a world that answers the UI natives, and records what it was asked.
+    #[derive(Default)]
+    struct Ui(Vec<String>);
+    impl World for Ui {
+        fn ui_call(
+            &mut self,
+            class: &str,
+            mangled: &str,
+            receiver: Option<&Value>,
+            args: &[Value],
+        ) -> Result<Option<Value>, String> {
+            self.0.push(format!(
+                "{class}.{mangled} {} {}",
+                receiver.is_some(),
+                args.len()
+            ));
+            Ok((mangled != "Unknown__").then_some(Value::Int(7)))
+        }
+    }
+
+    #[test]
+    fn d319_ui_natives_reach_the_world_and_inverse_inverts() {
+        // Not in the table: every Gooey or Callout native and the listed others go to the
+        // world, split by their signature; the world may decline (unbound).
+        for (class, mangled) in UI_NATIVES {
+            assert!(
+                lookup(class, mangled).is_none(),
+                "{class}.{mangled} is in the table"
+            );
+            assert!(signature::parse(mangled).is_some(), "{mangled}");
+        }
+        let mut w = Ui::default();
+        let gooey = Value::Object(None);
+        let r = dispatch(
+            &mut w,
+            "Gooey",
+            "SetFrameSizing__ff",
+            &[gooey.clone(), Value::Float(1.), Value::Float(2.)],
+        );
+        assert_eq!(r, Some(Ok(Value::Int(7))));
+        assert_eq!(w.0, ["Gooey.SetFrameSizing__ff true 2"]);
+        assert_eq!(dispatch(&mut w, "Gooey", "Unknown__", &[]), None);
+        assert_eq!(
+            dispatch(&mut w, "System", "IsOnline__", &[]),
+            Some(Ok(Value::Int(7)))
+        );
+        // A native neither listed nor of a UI class never reaches it.
+        assert_eq!(dispatch(&mut w, "System", "IsOnlineToo__", &[]), None);
+        // The table's Gooey natives stay with the table; the default world declines.
+        assert!(lookup("Gooey", "PerFrameUpdate__Q18Game.EPlayerNumberi").is_some());
+        assert_eq!(dispatch(&mut Tree, "Gooey", "EndFrame__", &[gooey]), None);
+
+        // Math.inverse: a turn, scale and translation and back; a flat matrix has none.
+        let m = [
+            0., 2., 0., 0., -2., 0., 0., 0., 0., 0., 3., 0., 5., 6., 7., 1.,
+        ];
+        let Ok(Value::Mat44(inv)) = call("Math", "inverse__m", &[Value::Mat44(m)]) else {
+            panic!("no inverse");
+        };
+        for c in 0..4 {
+            for r in 0..4 {
+                let v: f32 = (0..4).map(|k| m[k * 4 + r] * inv[c * 4 + k]).sum();
+                assert!(
+                    (v - f32::from(u8::from(r == c))).abs() < 1e-5,
+                    "{r} {c} {v}"
+                );
+            }
+        }
+        assert!(call("Math", "inverse__m", &[Value::Mat44([0.; 16])]).is_err());
     }
 
     #[test]
@@ -3706,8 +3940,8 @@ mod tests {
         let pressed = dispatch(&mut w, "Video", start, &[]).unwrap();
         assert_eq!(pressed, Ok(Value::Bool(false)));
         assert_eq!(w.0[7].pad.unwrap().now, START_BUTTON);
-        // The table: 249 natives before these six; D274 added two, D295 four.
-        assert_eq!(bound().count(), 261);
+        // The table: 249 natives before these six; D274 added two, D295 four, D319 one.
+        assert_eq!(bound().count(), 262);
     }
 
     #[test]
@@ -3766,8 +4000,8 @@ mod tests {
         assert!((wrap(-2. * TAU - 0.5) + 0.5).abs() < 1e-4);
         assert!(call("Math", "ModAngleToWithinPI__f", &[Value::Int(1)]).is_err());
         assert_eq!(mod_angle_to_within_pi(0.25), wrap(0.25));
-        // The table: 255 natives before these two; D295 added four.
-        assert_eq!(bound().count(), 261);
+        // The table: 255 natives before these two; D295 added four, D319 one.
+        assert_eq!(bound().count(), 262);
     }
 
     #[test]
@@ -3892,8 +4126,9 @@ mod tests {
             ]
         );
         assert_eq!(w.0, 3);
-        // The table: 238 natives before these eleven; D273 added six, D274 two, D295 four.
-        assert_eq!(bound().count(), 261);
+        // The table: 238 natives before these eleven; D273 added six, D274 two, D295 four, D319
+        // one.
+        assert_eq!(bound().count(), 262);
     }
 
     #[test]

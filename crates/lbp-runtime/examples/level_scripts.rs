@@ -86,6 +86,8 @@ use std::path::Path;
 
 const BUDGET_PER_CALL: u64 = 1_000_000;
 const MAX_FAULTS: usize = 30;
+/// D319: drawn menu matrices kept in a session report (one a tick).
+const MAX_MENU_MATRICES: usize = 2000;
 
 fn main() {
     if let Err(e) = run() {
@@ -2032,6 +2034,11 @@ struct SessionSide<'a> {
     thread_faults: Vec<String>,
     /// The planets world's view type and blend the path was last told.
     view: Option<serde_json::Value>,
+    /// D319: the pod computer's draw calls; the menu frames built when the path was last
+    /// told; the drawn menu's matrix by tick.
+    pod_computer_draws: usize,
+    menu_builds: u64,
+    menu_matrices: Vec<serde_json::Value>,
 }
 
 impl<'a> SessionSide<'a> {
@@ -2064,8 +2071,11 @@ impl<'a> SessionSide<'a> {
             planets_arrived: 0,
             video_updates: 0,
             pod_computer_frames: 0,
+            pod_computer_draws: 0,
             thread_faults: Vec::new(),
             view: None,
+            menu_builds: 0,
+            menu_matrices: Vec::new(),
         }
     }
 
@@ -2080,6 +2090,7 @@ impl<'a> SessionSide<'a> {
         self.planets_arrived += r.planets_arrived;
         self.video_updates += r.video_updates;
         self.pod_computer_frames += r.pod_computer_frames;
+        self.pod_computer_draws += r.pod_computer_draws;
         for f in &r.thread_faults {
             if self.thread_faults.len() < MAX_FAULTS {
                 self.thread_faults.push(f.clone());
@@ -2160,6 +2171,61 @@ impl<'a> SessionSide<'a> {
             say(event, serde_json::json!(self.eye));
         }
         (self.eye, self.camera_moving) = (eye, moving);
+        // D319: the pod computer's menu frames built, and the drawn menu's matrix on
+        // every tick it is set.
+        if w.gooey.builds != self.menu_builds {
+            if self.menu_builds == 0 {
+                say("menu_built", serde_json::json!(w.gooey.frames.len()));
+            }
+            self.menu_builds = w.gooey.builds;
+        }
+        if let Some(menu) = w.gooey.drawn_menu() {
+            if self.menu_matrices.len() < MAX_MENU_MATRICES {
+                self.menu_matrices.push(serde_json::json!({
+                    "tick": tick,
+                    "frame": menu.matrix_frame,
+                    "first_built": menu.first_built,
+                    "matrix": menu.matrix,
+                }));
+            }
+        }
+    }
+
+    /// D319: the menus the pod computer's states built, the drawn one laid out.
+    fn gooey_json(&self) -> serde_json::Value {
+        let g = &self.host.world.gooey;
+        let drawn = g.drawn_menu().map(|m| {
+            let placed: Vec<_> = lbp_runtime::layout(m.frame, m.focus)
+                .into_iter()
+                .map(|p| {
+                    serde_json::json!({
+                        "kind": format!("{:?}", p.kind),
+                        "centre": p.centre,
+                        "size": p.size,
+                        "angle": p.angle,
+                    })
+                })
+                .collect();
+            serde_json::json!({
+                "root": format!("{:?}", m.frame),
+                "focus": m.focus,
+                "first_built": m.first_built,
+                "matrix_frame": m.matrix_frame,
+                "matrix": m.matrix,
+                "placed": placed,
+            })
+        });
+        serde_json::json!({
+            "frames_built": g.builds,
+            "top_level_frames": g.frames.keys().map(|k| format!("{k:?}")).collect::<Vec<_>>(),
+            "renders": g.renders,
+            "colours_player": g.colours_player,
+            "dropped": g.dropped,
+            "calls": g.calls,
+            "pod_computer_draws": self.pod_computer_draws,
+            "drawn_menu": drawn,
+            "menu_matrices": self.menu_matrices,
+        })
     }
 
     fn json(&self) -> serde_json::Value {
@@ -2207,6 +2273,7 @@ impl<'a> SessionSide<'a> {
             "video_requests": w.media.video_requests(),
             "voice_over_requests": w.media.voice_over_requests(),
             "script_camera_at_end": script_camera_json(self.scripts.ticks, w),
+            "gooey": self.gooey_json(),
             "things_inside_triggers_at_end": w.things.iter()
                 .filter_map(|t| t.trigger.as_ref())
                 .map(|g| g.inside.len())
