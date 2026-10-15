@@ -110,7 +110,7 @@ copy the relevant ones into each subagent brief.
 - **Merging.** "merge verified PRs without asking me" (2026-10-09) and "from now on
   merge any cloud work into main once it passes the PC checks, without asking me"
   (2026-10-07). Wait for CI green first. Verified = CI green, checked against game data
-  or oracles, one-line verdict comment posted. Repo chilladept/lbp2-asset-explorer
+  or oracles, one-line verdict comment posted. Repo chilladept/craftworld-rs
   only. Ask before deleting user data or saves, publishing outside the private pages,
   or pushing to someone else's repo.
 - **Data before pixels.** Prefer game data, memory reads and oracles to screenshots.

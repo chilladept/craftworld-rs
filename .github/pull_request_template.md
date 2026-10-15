@@ -16,4 +16,4 @@
 - [ ] This PR adds no game assets, archives, executables, keys, saves, screenshots, emulator frames or captures.
 - [ ] It contains no decompiled or disassembled game code, and nothing translated from it.
 
-See [CONTRIBUTING.md](https://github.com/chilladept/lbp2-asset-explorer/blob/main/CONTRIBUTING.md) for details.
+See [CONTRIBUTING.md](https://github.com/chilladept/craftworld-rs/blob/main/CONTRIBUTING.md) for details.

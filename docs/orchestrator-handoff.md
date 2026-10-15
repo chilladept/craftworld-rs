@@ -42,7 +42,7 @@ STATUS-CURRENT.md. The Claude Project is now only a phone status remote.
 
 ## Key paths and links
 - Canonical repo: E:\Projects\LBP2 Rust Rewrite (main); remote
-  github.com/chilladept/lbp2-asset-explorer.
+  github.com/chilladept/craftworld-rs.
 - Launcher: `E:\Projects\LBP2 Rust Rewrite\Launch Asset Explorer (Levels).cmd` runs the
   build from worktree E:\Projects\lbp2-explorer-test (target
   E:\Projects\lbp2-explorer-test-target), snapshot

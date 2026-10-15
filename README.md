@@ -1,4 +1,4 @@
-# LBP2 Asset Explorer
+# craftworld-rs
 
 An independent, experimental asset explorer and runtime for *LittleBigPlanet 2*,
 written in Rust with [Bevy](https://bevyengine.org). It reads **your own** game

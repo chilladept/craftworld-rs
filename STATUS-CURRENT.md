@@ -1279,7 +1279,7 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 ## Environment
 - Toolchain: `. ./scripts/use-local-rust.ps1` (project-local, windows-gnu). Build trees are
   ~11 GB: reuse `target-pr*` through `CARGO_TARGET_DIR`.
-- Git: remote origin github.com/chilladept/lbp2-asset-explorer (private), default-deny
+- Git: remote origin github.com/chilladept/craftworld-rs (private), default-deny
   `.gitignore`, CI `.github/workflows/ci.yml`. Standing rules: CLAUDE.md.
 - Native QA windows hidden or on the non-primary monitor; never steal focus.
 
