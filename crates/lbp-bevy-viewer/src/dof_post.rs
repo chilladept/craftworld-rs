@@ -16,9 +16,10 @@
 //!    (bilinear) is blended over the scene by its alpha `r`; the scene's alpha is kept.
 //!
 //! The range is the scripts' `Cam.SetDOFAndFog` start and end (level units along the
-//! view), the same call whose third value is the fog bias. Under `--depth-of-field` on the
-//! level-lighting route only (off by default), and only while the scripts have passed a
-//! usable range.
+//! view), the same call whose third value is the fog bias. On the level-lighting route
+//! only: by default in the Pod picture (`--pod-camera`, D304; `--no-depth-of-field` turns it
+//! off), elsewhere under `--depth-of-field`; and only while the scripts have passed a usable
+//! range.
 use bevy::{
     core_pipeline::{tonemapping::tonemapping, Core3d, Core3dSystems, FullscreenShader},
     prelude::*,
@@ -81,13 +82,19 @@ pub const DOF_SAME_LAYER: f32 = 0.01;
 /// composite.
 pub const DOF_RING_PASSES: usize = 2;
 
-/// D298 `--depth-of-field` (level-lighting route only, `main.rs`).
+/// D298 `--depth-of-field` (level-lighting route only, `main.rs`); D304 on by default in the Pod.
 static ENABLED: AtomicBool = AtomicBool::new(false);
 pub fn enable() {
     ENABLED.store(true, Ordering::Relaxed);
 }
 pub fn enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
+}
+/// D304: whether the depth of field runs: on the level-lighting route only; by default in the
+/// Pod picture (`--pod-camera`) and off elsewhere. `flag` is `Some(true)` under
+/// `--depth-of-field` (on in any level there) and `Some(false)` under `--no-depth-of-field`.
+pub fn dof_route(level_route: bool, pod: bool, flag: Option<bool>) -> bool {
+    level_route && flag.unwrap_or(pod)
 }
 
 /// D298: on the main 3D camera: the scripts' depth-of-field range in display units
@@ -888,5 +895,24 @@ mod tests {
         assert!(DepthOfField::extract_component((&DepthOfField::default(), &lens)).is_none());
         let ortho = Projection::Orthographic(OrthographicProjection::default_3d());
         assert!(DepthOfField::extract_component((&dof, &ortho)).is_none());
+    }
+
+    /// D304: on by default in the Pod picture on the level-lighting route, off by default in
+    /// any other level; `--depth-of-field` turns it on there, `--no-depth-of-field` off in the
+    /// Pod; never off the level-lighting route.
+    #[test]
+    fn d304_dof_on_by_default_in_the_pod() {
+        // (level_route, pod, flag) -> runs
+        assert!(dof_route(true, true, None));
+        assert!(dof_route(true, true, Some(true)));
+        assert!(!dof_route(true, true, Some(false)));
+        assert!(!dof_route(true, false, None));
+        assert!(dof_route(true, false, Some(true)));
+        assert!(!dof_route(true, false, Some(false)));
+        for pod in [false, true] {
+            for flag in [None, Some(true), Some(false)] {
+                assert!(!dof_route(false, pod, flag));
+            }
+        }
     }
 }

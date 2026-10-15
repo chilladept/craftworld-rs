@@ -25,7 +25,7 @@
 //! The job's own code is not followed beyond its edge test (the blend is INFERRED as the
 //! published algorithm with the measured weights). The game's copy back has alpha 0 (part
 //! 51); here the scene's alpha is kept and the final pass's `SCENE_ALPHA_CLEARED` applies the
-//! 0 in the Pod. Under `--mlaa`, in the Pod picture (`--pod-camera`) on the level-lighting
+//! 0 in the Pod. By default (D304; `--no-mlaa` turns it off), in the Pod picture (`--pod-camera`) on the level-lighting
 //! route only, with the camera's MSAA off (the game's scene target has one sample, MEASURED
 //! in the capture). When the glow chain's composite runs (`glow_post.rs`), the result goes to
 //! a texture of its own that the composite reads as the scene, so the glow's source still reads
@@ -79,10 +79,11 @@ pub fn enable() {
 pub fn enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }
-/// D302: whether the job runs: under `--mlaa`, on the level-lighting route, in the Pod picture
-/// (where the game runs it, part 51); its camera then renders without MSAA.
-pub fn mlaa_route(level_route: bool, pod: bool, flag: bool) -> bool {
-    flag && level_route && pod
+/// D302: whether the job runs: on the level-lighting route, in the Pod picture (where the game
+/// runs it, part 51); its camera then renders without MSAA. D304: on by default there; `flag`
+/// is `Some(true)` under `--mlaa` (no change there) and `Some(false)` under `--no-mlaa`.
+pub fn mlaa_route(level_route: bool, pod: bool, flag: Option<bool>) -> bool {
+    level_route && pod && flag != Some(false)
 }
 
 /// D302: on the main 3D camera; extracted only while the job is on.
@@ -821,18 +822,32 @@ mod tests {
         }
     }
 
-    /// D302: the job runs only under the flag, in the Pod picture on the level-lighting
-    /// route; the component reaches the render world only while it is on.
+    /// D302: the job runs only in the Pod picture on the level-lighting route; the component
+    /// reaches the render world only while it is on.
     #[test]
     fn d302_route_and_extract() {
-        assert!(mlaa_route(true, true, true));
-        assert!(!mlaa_route(true, true, false));
-        assert!(!mlaa_route(true, false, true));
-        assert!(!mlaa_route(false, true, true));
+        assert!(mlaa_route(true, true, Some(true)));
+        assert!(!mlaa_route(true, false, Some(true)));
+        assert!(!mlaa_route(false, true, Some(true)));
         if !enabled() {
             assert!(Mlaa::extract_component(&Mlaa).is_none());
         }
         enable();
         assert_eq!(Mlaa::extract_component(&Mlaa), Some(Mlaa));
+    }
+
+    /// D304: on by default in the Pod picture on the level-lighting route, off there under
+    /// `--no-mlaa`; never in another level or off the route, with or without `--mlaa`.
+    #[test]
+    fn d304_mlaa_on_by_default_in_the_pod() {
+        // (level_route, pod, flag) -> runs
+        assert!(mlaa_route(true, true, None));
+        assert!(mlaa_route(true, true, Some(true)));
+        assert!(!mlaa_route(true, true, Some(false)));
+        for flag in [None, Some(true), Some(false)] {
+            assert!(!mlaa_route(true, false, flag));
+            assert!(!mlaa_route(false, true, flag));
+            assert!(!mlaa_route(false, false, flag));
+        }
     }
 }
