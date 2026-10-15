@@ -11,7 +11,17 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D318 the Pod planets' turn against the game's captures (2026-10-15)
+## Latest: D320 Sackboy at the pod computer in the scripted Pod (2026-10-15)
+- Viewer (`docs/level-scripts.md` part 71): the scripted Pod has the viewer's own Sackboy by
+  default (`--no-pod-sackboy` leaves him out); at the pod computer he plays the game's
+  pod_computer_into / idle / out clips (FOUND, 01.33: GUIDs 42b3 / 42b2 / 42e9, weight (n+1)/3,
+  offset blend (n-5)/11, out 1-(n-5)/10) over his own pose.
+- MEASURED (heads on frames 8980 / 9601): at the target's depth he was 1.21x the game's; drawn
+  at z -200 (the game's memory) with the offset's depth reversed (INFERRED) his head is the
+  game's within 1-3 px (616: 630-695 top 604 vs 632-698 top 606; 619: 622-683 top 619 vs
+  624-685 top 620). Open: what moves him to -200; button and stick clips.
+
+## Before: D318 the Pod planets' turn against the game's captures (2026-10-15)
 - Research (`docs/level-scripts.md` part 69), no code change. MEASURED (lane B's six RenderDoc
   captures, `local-analysis/d321-planet-turn/`; drawn vertices paired with pod_planets' model by
   order, clip y un-flipped): in the planets level's frame the Earth and the Moon are at their

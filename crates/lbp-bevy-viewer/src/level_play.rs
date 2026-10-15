@@ -625,25 +625,45 @@ fn tick(
     }
     // Part 33: the viewer's own Sackboy at the pod computer. While it is in use (by him,
     // the only and so the primary player) his movement input is not applied, he turns to
-    // face into the screen and his figure is drawn toward the engage target by the
-    // change-over value (`sackboy_play::engage_blend`).
+    // face into the screen and his figure is drawn toward the engage target. D320: by the
+    // pod computer layer's blend (`sackboy_play::PodUserAnim`), stepped once a script
+    // tick, which also gives the layer's clip, frame and weight.
     if let (Some(shell), Some(pod)) = (&p.shell, pod.as_deref_mut()) {
         let in_use = shell.own_sackboy && shell.host.world.pod_computer_in_use;
-        let blend = crate::sackboy_play::engage_blend(in_use, shell.opening);
         if pod.in_use != in_use {
             pod.in_use = in_use;
             println!(
                 "Pod Sackboy at tick {}: {}",
                 shell.scripts.ticks,
                 if in_use {
-                    "at the pod computer: his movement input is not applied, he turns to face into the screen (angle pi), his figure is drawn toward the engage target by the change-over value (placeholder for the clip's progress); his physics place is not moved"
+                    "at the pod computer: his movement input is not applied, he turns to face into the screen (angle pi), the pod computer layer starts (into clip, then idle) and his figure is drawn toward the engage target by its blend; his physics place is not moved"
                 } else {
-                    "the pod computer is no longer in use: his input is applied again, the drawn offset is 0"
+                    "the pod computer is no longer in use: his input is applied again, the out clip plays and the drawn offset goes back to 0"
                 }
             );
         }
-        if pod.blend != blend {
-            pod.blend = blend;
+        if pod.stepped != Some(shell.scripts.ticks) {
+            pod.stepped = Some(shell.scripts.ticks);
+            let frames = pod.frames;
+            let user = pod.anim.step(in_use, frames);
+            if user.map(|u| u.clip) != pod.user.map(|u| u.clip) {
+                println!(
+                    "Pod Sackboy at tick {}: pod computer layer {}",
+                    shell.scripts.ticks,
+                    user.map_or("off".into(), |u| format!(
+                        "{} from frame {} (weight {:.2}, offset blend {:.2})",
+                        u.clip.name(),
+                        u.frame,
+                        u.weight,
+                        u.offset
+                    ))
+                );
+            }
+            pod.user = user;
+            let blend = user.map_or(0., |u| u.offset);
+            if pod.blend != blend {
+                pod.blend = blend;
+            }
         }
     }
 }

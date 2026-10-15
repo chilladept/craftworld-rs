@@ -27,7 +27,9 @@
 //! his place and the pad to the script worlds ([`PodSackboy`]). In a script `e` is the
 //! engage button (Square) on the step's first tick. While the pod computer is in use his
 //! movement input is not applied, he faces into the screen and his figure is drawn toward
-//! the engage target (D282, docs/level-scripts.md part 33).
+//! the engage target (D282, docs/level-scripts.md part 33). D320 (part 71): the scripted Pod
+//! has him without `--play-sackboy` too (`--no-pod-sackboy` leaves him out), and at the pod
+//! computer he plays the game's into / idle / out clips by its rule ([`PodUserAnim`]).
 use bevy::prelude::*;
 use lbp_catalog::{attachment::AttachedSource, LoadControl};
 use lbp_preview::level_scene;
@@ -83,11 +85,25 @@ pub(crate) struct PodSackboy {
     /// ([`pod_facing`]).
     pub in_use: bool,
     /// D282: how far his figure is drawn toward [`PodSackboy::target`], 0..1
-    /// ([`engage_blend`]); 0 when the pod computer is not in use.
+    /// (D320: the pod computer layer's offset blend, [`PodUserAnim`]); 0 when the layer
+    /// is off.
     pub blend: f32,
     /// D282: the engage target in the shell level's units ([`engage_target`]).
     pub target: [f32; 3],
+    /// D320: the pod computer layer's state, stepped once a script tick by `level_play`.
+    pub anim: PodUserAnim,
+    /// D320: the shell's script tick the layer was last stepped on.
+    pub stepped: Option<u64>,
+    /// D320: the pod computer layer on the latest script tick ([`PodUserAnim::step`]).
+    pub user: Option<PodUserFrame>,
+    /// D320: the frame counts of [`POD_CLIPS`]: the loaded clips' once his figure is
+    /// there, before that [`POD_CLIP_FRAMES`].
+    pub frames: [u32; 3],
 }
+
+/// D320: the frame counts of [`POD_CLIPS`] (MEASURED, the clip files of 01.33); the loaded
+/// clips' replace them ([`PodSackboy::frames`]).
+pub(crate) const POD_CLIP_FRAMES: [u32; 3] = [31, 21, 31];
 
 /// D282: the place his figure is drawn toward at the pod computer: FOUND (01.33, the
 /// Sackboy animation code for the pod computer user) a constant, whose x the game
@@ -101,23 +117,155 @@ pub(crate) fn engage_target(controller_x: Option<f32>) -> [f32; 3] {
     [controller_x.unwrap_or(x), y, z]
 }
 
-/// D282: the blend of the drawn offset at the pod computer. FOUND: the clip's progress,
-/// 0..1. PLACEHOLDER: the clips are not available and their timing is not known, so the
-/// change-over value of pod.bin's script (`level_play`'s opening, 0.05 to 1.0 over about
-/// 20 ticks after the host's answer) stands in for it; 0 when not in use.
-pub(crate) fn engage_blend(in_use: bool, opening: f32) -> f32 {
-    if in_use {
-        opening.clamp(0., 1.)
-    } else {
-        0.
-    }
-}
-
 /// D282: where his figure is drawn: his physics position moved by (target - position)
 /// times the blend. FOUND the offset rule (a root offset of his drawn body); INFERRED
 /// that it is drawn only, since no write to his physics position was found.
+///
+/// D320: in depth the game draws him where this rule does not: MEASURED (his head on two
+/// captured frames of the game, 1.21 times smaller than the viewer's at the target's
+/// depth, with the DualShock the same size) about 300 units deeper than the target's z,
+/// just in front of the DualShock (the "pod_controller" Thing, z -354 in the game's
+/// memory). INFERRED: his z is [`POD_USER_LANE_Z`] while he is the user (the game's
+/// memory, 2026-10-09) and the z part of the offset is applied reversed, z - (target z -
+/// z) x blend: the root offset goes to his model in the axes (x, -z, y) (FOUND), and the
+/// depth's sign is not established. At blend 1 that is -306.8 (the size gives about -300).
+/// x and y are the FOUND rule (his x on the frames is the target's within 5 px).
 pub(crate) fn engage_drawn(at: [f32; 3], target: [f32; 3], blend: f32) -> [f32; 3] {
-    std::array::from_fn(|i| at[i] + (target[i] - at[i]) * blend)
+    let z = POD_USER_LANE_Z;
+    [
+        at[0] + (target[0] - at[0]) * blend,
+        at[1] + (target[1] - at[1]) * blend,
+        z - (target[2] - z) * blend,
+    ]
+}
+
+/// D320: his z while he is the pod computer's user: MEASURED -200 in the game's memory
+/// with the pod computer open (2026-10-09, his x unchanged). INFERRED one lane back; what
+/// moves him there is not established (no walk back is drawn: he is at this z from the
+/// first tick of the pod computer layer to its last).
+pub(crate) const POD_USER_LANE_Z: f32 = -200.;
+
+/// D320: the pod computer's clips of Sackboy's animation set, in [`PodClip`] order: FOUND
+/// (01.33, the Sackboy animation object's loader and the GUID table it reads, which the
+/// inventory names `sack_boy_pinched_anims/pod_computer_into`, `_idle` and `_out`).
+pub(crate) const POD_CLIPS: [u32; 3] = [0x42b3, 0x42b2, 0x42e9];
+
+/// D320: which of [`POD_CLIPS`] his pod computer layer plays.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PodClip {
+    Into,
+    Idle,
+    Out,
+}
+
+impl PodClip {
+    pub(crate) fn index(self) -> usize {
+        self as usize
+    }
+
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            PodClip::Into => "pod_computer_into",
+            PodClip::Idle => "pod_computer_idle",
+            PodClip::Out => "pod_computer_out",
+        }
+    }
+}
+
+/// D320: the pod computer layer on one tick: the clip and its frame, the layer's weight
+/// over his own pose, and the drawn offset's blend toward [`PodSackboy::target`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct PodUserFrame {
+    pub clip: PodClip,
+    pub frame: u32,
+    pub weight: f32,
+    pub offset: f32,
+}
+
+/// D320: the pod computer user's animation state, one step per script tick. FOUND (01.33,
+/// the Sackboy animation code for the pod computer user; the rule, not its code):
+///
+/// - The tick he becomes the user the into clip starts at frame 0 and counts one frame a
+///   tick; the layer's weight is (n + 1) / 3 and the drawn offset's blend (n - 5) / 11,
+///   each clamped to 0..1 (n the frames played). When the clip has played out the idle
+///   clip loops from frame 0, weight and blend 1.
+/// - The tick he stops being the user the out clip starts at frame 0: blend 1 - (n - 5) /
+///   10, weight (frames - n) / 3, clamped; when it has played out the layer is off.
+/// - Not modelled: the button clips the pad's cross and circle start while holding (the
+///   viewer's pad writes only the engage bit), the stick clip's layers, and a creature
+///   state the into clip waits for (INFERRED: a standing Sackboy's; the viewer's stands).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct PodUserAnim {
+    phase: Option<PodClip>,
+    n: u32,
+}
+
+impl PodUserAnim {
+    /// One tick: `user` whether he is the pod computer's user on it, `frames` the frame
+    /// counts of the three clips ([`PodClip`] order). None when the layer is off.
+    pub(crate) fn step(&mut self, user: bool, frames: [u32; 3]) -> Option<PodUserFrame> {
+        let ramp = |x: f32| x.clamp(0., 1.);
+        match (user, self.phase) {
+            (true, None | Some(PodClip::Out)) => {
+                *self = Self {
+                    phase: Some(PodClip::Into),
+                    n: 0,
+                }
+            }
+            (false, Some(PodClip::Into | PodClip::Idle)) => {
+                *self = Self {
+                    phase: Some(PodClip::Out),
+                    n: 0,
+                }
+            }
+            _ => {}
+        }
+        let n = self.n;
+        let out = match self.phase? {
+            PodClip::Into => {
+                let offset = ramp((n as f32 - 5.) / 11.);
+                let weight = ramp((n as f32 + 1.) / 3.);
+                if n >= frames[0] {
+                    self.phase = Some(PodClip::Idle);
+                    self.n = 0;
+                    PodUserFrame {
+                        clip: PodClip::Idle,
+                        frame: 0,
+                        weight,
+                        offset,
+                    }
+                } else {
+                    PodUserFrame {
+                        clip: PodClip::Into,
+                        frame: n,
+                        weight,
+                        offset,
+                    }
+                }
+            }
+            PodClip::Idle => PodUserFrame {
+                clip: PodClip::Idle,
+                frame: n % frames[1].max(1),
+                weight: 1.,
+                offset: 1.,
+            },
+            PodClip::Out => {
+                let offset = 1. - ramp((n as f32 - 5.) / 10.);
+                let weight = ramp((frames[2] as f32 - n as f32) / 3.);
+                if n >= frames[2] {
+                    self.phase = None;
+                }
+                PodUserFrame {
+                    clip: PodClip::Out,
+                    frame: n.min(frames[2].saturating_sub(1)),
+                    weight,
+                    offset,
+                }
+            }
+        };
+        self.n += 1;
+        Some(out)
+    }
 }
 
 /// D282: his pad input while the pod computer is in use: none. FOUND: the game switches
@@ -177,9 +325,13 @@ pub(crate) fn checkpoint_arrival(m: &[f32; 16], box_z: Option<f32>, slot: usize)
 /// D281: the shell level's GUID when the Sackboy plays in the Pod: `--play-sackboy` with
 /// `--level-scripts`, `--pod-camera N` and `--pod-shell HEX` (the condition under which
 /// `level_play` has the shell level in its session, plus the play mode).
+///
+/// D320: the scripted Pod has him without `--play-sackboy` too (the game's Pod always has
+/// its player); `--no-pod-sackboy` leaves him out there (part 30's undrawn record).
 pub(crate) fn pod_shell(all: &[String]) -> Result<Option<u32>, String> {
     let has = |flag: &str| all.iter().any(|a| a == flag);
-    if !(has("--play-sackboy") && has("--level-scripts") && has("--pod-camera")) {
+    let wanted = has("--play-sackboy") || !has("--no-pod-sackboy");
+    if !(wanted && has("--level-scripts") && has("--pod-camera")) {
         return Ok(None);
     }
     value(all, "--pod-shell")
@@ -271,6 +423,11 @@ pub(crate) struct Figure {
     /// D282: the shown facing is not the picker's (turned to the pod computer, or on the
     /// way back from it; [`pod_facing`]).
     turned: bool,
+    /// D320: [`POD_CLIPS`] bound to the rig, in [`PodClip`] order (None for a clip that
+    /// failed to load).
+    pod_bank: Vec<Option<BoundAnimation>>,
+    /// D320: the pod computer layer the shown pose was blended with.
+    pod_posed: Option<PodUserFrame>,
 }
 
 /// Sackboy's body mesh, the play figure when `--select-guid` is not given: `0000043f`
@@ -279,14 +436,20 @@ pub(crate) struct Figure {
 pub(crate) const SACKBOY_MESH: &str = "0000043f";
 
 /// Reads the mesh once and binds every [`ClipId::ALL`] clip to its rig; the first
-/// (stand) is the playing clip, the rest come back in order. Runs on the load worker.
+/// (stand) is the playing clip, the rest come back in order, then (D320) the three
+/// [`POD_CLIPS`]. Runs on the load worker.
 pub(crate) fn load_bank(
     source: &AttachedSource,
     catalog: &lbp_catalog::Catalog,
     mesh_key: &lbp_catalog::attachment::LocationKey,
     control: &LoadControl,
 ) -> Result<(SkinnedClip, Vec<Result<BoundAnimation, String>>), String> {
-    let guids = ClipId::ALL.map(ClipId::guid);
+    // D320: the pod computer's clips follow the picker's ([`POD_CLIPS`]).
+    let guids: Vec<u32> = ClipId::ALL
+        .map(ClipId::guid)
+        .into_iter()
+        .chain(POD_CLIPS)
+        .collect();
     let (mut clip, mut bank) =
         lbp_preview::skinned::load_clip_bank(source, catalog, mesh_key, &guids, control)?;
     // D246: Sackboy's Biped bones do not pass their scale on (the stand clip breathes by
@@ -298,9 +461,10 @@ pub(crate) fn load_bank(
     Ok((clip, bank))
 }
 
-/// True when the viewer was started with `--play-sackboy`.
+/// True when the viewer was started with `--play-sackboy`, or (D320) when the scripted Pod
+/// has its Sackboy ([`in_pod`]).
 pub(crate) fn enabled() -> bool {
-    std::env::args().any(|a| a == "--play-sackboy")
+    std::env::args().any(|a| a == "--play-sackboy") || in_pod()
 }
 
 /// The pose for one tick's layers: from bind, each lerp layer moves the bones it drives
@@ -317,6 +481,7 @@ fn blend_frame(
     frame: &AnimFrame,
     squash: f32,
     plant: f32,
+    pod: Option<(&BoundAnimation, f32, f32)>,
 ) -> BlendPose {
     let mut pose = BlendPose::bind(&stand.rig);
     // The game's upper-body mask: Spine1 and below, without the head and what hangs on it.
@@ -355,6 +520,12 @@ fn blend_frame(
                     pose.lerp_masked(rig, &p, l.weight, mask);
                 }
             }
+        }
+    }
+    // D320: the pod computer layer (clip, frame, weight) over his own pose, the whole body.
+    if let Some((b, f, w)) = pod {
+        if let Some(p) = sample_pose(&b.animation, f) {
+            pose.lerp(&b.rig, &p, w);
         }
     }
     // The clips' root rotation is the facing channel the game overwrites (stand 0, walk
@@ -419,10 +590,33 @@ pub(crate) fn spawn_figure(
     // Clip bank: stand is the playing clip; the others are blended in by ClipId index.
     let banked = bank.is_some() && matches!(clip, Some(Ok(_)));
     let mut slots: Vec<Option<BoundAnimation>> = ClipId::ALL.iter().map(|_| None).collect();
+    let mut pod_slots: Vec<Option<BoundAnimation>> = POD_CLIPS.iter().map(|_| None).collect();
     let mut bank_line = String::new();
-    if let (true, Some(bank)) = (banked, bank) {
+    if let (true, Some(mut bank)) = (banked, bank) {
         let mut missing = Vec::new();
         let mut odd = Vec::new();
+        // D320: the pod computer's clips come after the picker's.
+        let pod = bank.split_off((ClipId::ALL.len() - 1).min(bank.len()));
+        let mut pod_line = Vec::new();
+        for ((slot, bound), name) in pod_slots
+            .iter_mut()
+            .zip(pod)
+            .zip([PodClip::Into, PodClip::Idle, PodClip::Out].map(PodClip::name))
+        {
+            match bound {
+                Ok(b) => {
+                    pod_line.push(format!(
+                        "{name} {} frames at {} fps",
+                        b.report.frames, b.report.fps
+                    ));
+                    *slot = Some(b);
+                }
+                Err(e) => pod_line.push(format!("{name} not loaded: {e}")),
+            }
+        }
+        if !pod_line.is_empty() {
+            bank_line += &format!("; pod computer clips: {}", pod_line.join(", "));
+        }
         for (id, bound) in ClipId::ALL[1..].iter().zip(bank) {
             match bound {
                 Ok(b) => {
@@ -435,7 +629,7 @@ pub(crate) fn spawn_figure(
             }
         }
         bank_line = format!(
-            "; clip bank {}/{} bound to one rig, blended by the EBOOT layer rules",
+            "; clip bank {}/{} bound to one rig, blended by the EBOOT layer rules{bank_line}",
             ClipId::ALL.len() - missing.len(),
             ClipId::ALL.len()
         );
@@ -464,6 +658,8 @@ pub(crate) fn spawn_figure(
                 posed: 0,
                 display: under.map(|u| u.1),
                 turned: false,
+                pod_bank: pod_slots,
+                pod_posed: None,
             },
         ))
         .id();
@@ -693,7 +889,7 @@ fn data_spawn(
 /// Reads the level and adds physics and Sackboy when `--play-sackboy` is given.
 pub fn install(app: &mut App) -> Result<(), String> {
     let all: Vec<String> = std::env::args().collect();
-    if !all.iter().any(|a| a == "--play-sackboy") {
+    if !enabled() {
         return Ok(());
     }
     let snapshot = value(&all, "--snapshot").ok_or("--play-sackboy requires --snapshot")?;
@@ -856,6 +1052,7 @@ pub fn install(app: &mut App) -> Result<(), String> {
         );
         app.insert_resource(PodSackboy {
             target,
+            frames: POD_CLIP_FRAMES,
             ..default()
         })
         .add_systems(FixedFirst, pod_report);
@@ -1054,6 +1251,18 @@ fn tick_anim(
     mut figure: Query<&mut Figure>,
     mut pod: Option<ResMut<PodSackboy>>,
 ) {
+    // D320: the pod computer clips' own frame counts, once his figure has them.
+    if let (Some(pod), Ok(f)) = (pod.as_mut(), figure.single()) {
+        let mut frames = pod.frames;
+        for (n, b) in frames.iter_mut().zip(&f.pod_bank) {
+            if let Some(b) = b {
+                *n = u32::from(b.report.frames);
+            }
+        }
+        if pod.frames != frames {
+            pod.frames = frames;
+        }
+    }
     // D281: his pose stands still while the script ticks are held for a capture.
     if pod.as_ref().is_some_and(|p| p.held) {
         return;
@@ -1224,8 +1433,9 @@ pub(crate) fn show_sackboy(
         f.facing = f.yaw[0] + (f.yaw[1] - f.yaw[0]) * alpha;
         // D282: at the pod computer his figure is drawn toward the engage target; his
         // physics place stays.
+        // D320: while the pod computer layer is on (`PodSackboy::user`).
         let [dx, dy, dz] = match pod.as_deref() {
-            Some(pod) if pod.blend > 0. => {
+            Some(pod) if pod.user.is_some() => {
                 engage_drawn([p[0], p[1], slab.z], pod.target, pod.blend)
             }
             _ => [p[0], p[1], slab.z],
@@ -1240,20 +1450,28 @@ pub(crate) fn show_sackboy(
         );
         if f.banked {
             // Clip bank: one blended pose per picked tick (stand stays the playing clip).
-            if f.posed != f.picked {
+            // D320: and again when the pod computer layer moves on.
+            let user = pod.as_deref().and_then(|p| p.user);
+            if f.posed != f.picked || f.pod_posed != user {
                 if let (Some(a), Some(playing)) = (&f.anim, &mut v.playing) {
                     let c = &body.controller;
+                    let layer = user.and_then(|u| {
+                        let b = f.pod_bank.get(u.clip.index())?.as_ref()?;
+                        Some((b, u.frame as f32, u.weight))
+                    });
                     let pose = blend_frame(
                         &playing.clip,
                         &f.bank,
                         a,
                         c.landing_squash(),
                         c.foot_plant(),
+                        layer,
                     );
                     dump_pose(&playing.clip.blended_positions(&pose), f.picked);
                     playing.blended = Some(pose);
                 }
                 f.posed = f.picked;
+                f.pod_posed = user;
             }
         } else if let Some(fps) = v
             .playing
@@ -1335,12 +1553,20 @@ mod tests {
             "000027b9",
         ];
         assert_eq!(pod_shell(&args(&all)), Ok(Some(0x27b9)));
-        // Without any one of them he plays in the level given, as before.
-        for (skip, len) in [(0, 1), (1, 1), (2, 2), (4, 2)] {
+        // Without any one of the three he plays in the level given, as before.
+        for (skip, len) in [(1, 1), (2, 2), (4, 2)] {
             let mut less = all.to_vec();
             less.drain(skip..skip + len);
             assert_eq!(pod_shell(&args(&less)), Ok(None), "{less:?}");
         }
+        // D320: the scripted Pod has him without the play mode's option too, unless
+        // `--no-pod-sackboy`, which the play mode's option overrides.
+        assert_eq!(pod_shell(&args(&all[1..])), Ok(Some(0x27b9)));
+        let mut off = all[1..].to_vec();
+        off.push("--no-pod-sackboy");
+        assert_eq!(pod_shell(&args(&off)), Ok(None));
+        off.push("--play-sackboy");
+        assert_eq!(pod_shell(&args(&off)), Ok(Some(0x27b9)));
         let bad = args(&[
             "--play-sackboy",
             "--level-scripts",
@@ -1475,17 +1701,19 @@ mod tests {
         assert_eq!(target, POD_ENGAGE_TARGET);
         assert_eq!(engage_target(None), POD_ENGAGE_TARGET);
         assert_eq!(engage_target(Some(4.))[0], 4.);
-        assert_eq!(engage_drawn(at, target, 0.), at);
+        // D320: x and y by the found rule; z from his lane at the pod computer, reversed.
+        assert_eq!(
+            engage_drawn(at, target, 0.),
+            [at[0], at[1], POD_USER_LANE_Z]
+        );
         let full = engage_drawn(at, target, 1.);
         assert!(
-            (0..3).all(|i| (full[i] - target[i]).abs() < 1e-4),
+            (0..2).all(|i| (full[i] - target[i]).abs() < 1e-4),
             "{full:?}"
         );
+        assert!((full[2] + 306.83).abs() < 1e-2, "{full:?}");
         let half = engage_drawn(at, target, 0.5);
-        assert!((half[2] - target[2] / 2.).abs() < 1e-4, "{half:?}");
-        assert_eq!(engage_blend(true, 0.4), 0.4);
-        assert_eq!(engage_blend(true, 3.), 1.);
-        assert_eq!(engage_blend(false, 1.), 0.);
+        assert!((half[2] + 253.415).abs() < 1e-2, "{half:?}");
         let walk = Input {
             x: -1.,
             jump: true,
@@ -1509,6 +1737,54 @@ mod tests {
         assert_eq!((yaw, turned), (0., false));
         // Never in use: the picker's angle as it is.
         assert_eq!(pod_facing(0.3, 1.2, false, false), (1.2, false));
+    }
+
+    /// D320. The pod computer layer: off until he is the user; then the into clip from
+    /// frame 0 with weight (n + 1) / 3 and offset blend (n - 5) / 11, the idle clip
+    /// looping once it has played out; the out clip when he stops, offset 1 - (n - 5) / 10
+    /// and weight (frames - n) / 3; off again after it.
+    #[test]
+    fn d320_the_pod_computer_layer_runs_into_idle_and_out() {
+        let frames = [20, 8, 12];
+        let mut a = PodUserAnim::default();
+        assert_eq!(a.step(false, frames), None);
+        let into: Vec<_> = (0..20).map(|_| a.step(true, frames).unwrap()).collect();
+        assert!(into.iter().all(|u| u.clip == PodClip::Into));
+        assert_eq!(
+            into.iter().map(|u| u.frame).collect::<Vec<_>>(),
+            (0..20).collect::<Vec<_>>()
+        );
+        assert!((into[0].weight - 1. / 3.).abs() < 1e-6 && into[2].weight == 1.);
+        assert!(into[..=5].iter().all(|u| u.offset == 0.));
+        assert!((into[6].offset - 1. / 11.).abs() < 1e-6 && into[16].offset == 1.);
+        // Played out: the idle clip from frame 0, then looping.
+        let idle: Vec<_> = (0..10).map(|_| a.step(true, frames).unwrap()).collect();
+        assert!(idle
+            .iter()
+            .all(|u| u.clip == PodClip::Idle && u.weight == 1. && u.offset == 1.));
+        assert_eq!(
+            idle.iter().map(|u| u.frame).collect::<Vec<_>>(),
+            [0, 1, 2, 3, 4, 5, 6, 7, 0, 1]
+        );
+        // Out.
+        let out: Vec<_> = (0..13).map(|_| a.step(false, frames)).collect();
+        assert!(out
+            .iter()
+            .all(|u| u.is_some_and(|u| u.clip == PodClip::Out)));
+        let out: Vec<_> = out.into_iter().flatten().collect();
+        assert!(out[..=5].iter().all(|u| u.offset == 1.));
+        assert!((out[10].offset - 0.5).abs() < 1e-6);
+        assert!(out[9].weight == 1. && (out[10].weight - 2. / 3.).abs() < 1e-6);
+        assert_eq!((out[12].weight, out[12].frame), (0., 11));
+        assert_eq!(a.step(false, frames), None);
+        // He becomes the user again during the out clip: the into clip starts over.
+        let mut b = PodUserAnim::default();
+        b.step(true, frames);
+        b.step(false, frames);
+        assert_eq!(
+            b.step(true, frames).map(|u| (u.clip, u.frame)),
+            Some((PodClip::Into, 0))
+        );
     }
 
     #[test]
