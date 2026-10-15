@@ -3586,6 +3586,89 @@ mod tests {
             .any(|l| l.starts_with("Per-bone placement")));
     }
 
+    /// D317: the per-bone copy is baked in the frame of the item's matrix, so when the
+    /// scripts move the item's Thing and its bone Things by one matrix (the Pod Earth's
+    /// bone Things are its children), drawing the copy at the item matrix moved by that
+    /// matrix (what the viewer's Thing map does) gives the vertices a scene built from
+    /// the moved Things would.
+    #[test]
+    fn d317_per_bone_copy_follows_its_thing_when_the_bones_move_with_it() {
+        let mut scale = identity_at(-2295.);
+        scale[13] = 1132.;
+        for k in [0, 5, 10] {
+            scale[k] = 0.961;
+        }
+        let stretch = mul44(&scale, &{
+            let mut m = identity_at(0.);
+            m[0] = 1.015;
+            m[5] = 1.04;
+            m
+        });
+        let earth_things = |by: &[f32; 16]| {
+            let mut earth = thing(0, Some(0x10), Some(mul44(by, &scale)));
+            earth.data.render_mesh.as_mut().unwrap().bone_things = vec![Some(0), Some(1)];
+            vec![earth, thing(1, None, Some(mul44(by, &stretch)))]
+        };
+        let mesh: Vec<[f32; 3]> = vec![[0., 10., 0.], [0., 10., 0.], [10., 0., 0.]];
+        let joints = vec![[0, 0, 0, 0], [1, 0, 0, 0], [1, 0, 0, 0]];
+        let weights = vec![[1., 0., 0., 0.]; 3];
+        let mut bind = identity_at(3.);
+        bind[14] = -2.;
+        let binds = || {
+            vec![
+                BindPose {
+                    skin: identity_at(0.),
+                    inv: identity_at(0.),
+                },
+                BindPose {
+                    skin: identity_at(0.),
+                    inv: bind,
+                },
+            ]
+        };
+        let world_points = |things: &[ThingRecord]| {
+            let mut scene = build_scene(
+                things,
+                |_| Ok(mesh.clone()),
+                |p| points_bounds(p),
+                |_| false,
+                |_| binds(),
+                PosPlacement::InverseBind,
+            );
+            skin_bone_things(
+                &mut scene,
+                things,
+                |_| Ok((joints.clone(), weights.clone())),
+                |p| Some(&p[..]),
+                |_| binds(),
+                |_, positions| positions,
+            );
+            assert_eq!(scene.counts.per_bone_skinned, 1);
+            let item = scene.items[0].clone();
+            (item.world, scene.meshes[item.mesh].payload.clone())
+        };
+        let (world, baked) = world_points(&earth_things(&identity_at(0.)));
+        // The scripts' move: a translation (as the Earth's, MEASURED) and a turn.
+        let mut by = identity_at(1045.66);
+        by[13] = -1132.22;
+        by[14] = -40.17;
+        (by[0], by[1], by[4], by[5]) = (0.6, 0.8, -0.8, 0.6);
+        let (moved_world, moved_baked) = world_points(&earth_things(&by));
+        // The copy is the same mesh; the item matrix carries the move.
+        for (a, b) in baked.iter().zip(&moved_baked) {
+            assert!(close(a.map(f64::from), b.map(f64::from)));
+        }
+        let followed = mul44(&by, &world);
+        for (i, p) in baked.iter().enumerate() {
+            assert!(close(
+                apply(&followed, *p),
+                apply(&moved_world, moved_baked[i])
+            ));
+        }
+        // And bone 1 is not at bone 0's place: the per-bone rule did change the copy.
+        assert!(!close(apply(&world, baked[1]), apply(&world, mesh[1])));
+    }
+
     #[test]
     fn span_joints_skin_rigid_ends_and_stretch_the_bridge() {
         let things = vec![

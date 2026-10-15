@@ -184,11 +184,16 @@ struct LevelMode {
 impl LevelMode {
     /// P2o: per-bone placement is on with `--per-bone-placement`, and by default under
     /// `--pod-game-camera`, where D185/D203 confirmed it for the Pod Earth
-    /// (`--no-per-bone-placement` turns it off there). D275: not by default where the
-    /// planets' own scripts place them (`pod_scripted`): the per-bone rule puts the
-    /// stored places of the bone Things into the vertices.
+    /// (`--no-per-bone-placement` turns it off there). D317: by default where the
+    /// planets' own scripts place them (`pod_scripted`) too. The per-bone mesh is baked
+    /// from the stored places of the bone Things in the frame of the item's own Thing,
+    /// and the Thing map moves it with that Thing (`thing_item`). MEASURED (probe
+    /// `pod_bone_things`): the Earth's bone Things 2 and 3 are children of Thing 1 and
+    /// the scripts move all three by one translation, so the stored places relative to
+    /// Thing 1 hold at every tick (D275 had per-bone off here because the per-bone
+    /// model was left out of the Thing map and stayed at its stored place).
     fn per_bone_on(&self) -> bool {
-        self.per_bone || (self.game_camera && !self.no_per_bone && !self.pod_scripted())
+        self.per_bone || (!self.no_per_bone && (self.game_camera || self.pod_scripted()))
     }
     /// D275: the Pod's planets level (`--pod-camera N`) under `--level-scripts`: its
     /// world script writes the camera and moves the world Thing, and the planets' own
@@ -795,7 +800,7 @@ fn options_from(mut args: impl Iterator<Item = String>) -> Result<Viewer, String
             println!("lbp-bevy-viewer --snapshot FILE --game-dir DIRECTORY [--select-guid HEX]\n--play-animation HEX: play an animation on the selected mesh\n--animation-frame N: hold that running frame instead of playing (QA captures)\n--skinning gpu|cpu: Bevy joint skinning (default) or the CPU reference path\n--model-up z|y: single-mesh model up axis (default z: Z-up, front -Y, shown upright facing the camera; y: raw axes)\n--browse-query TEXT; --show-unavailable: browser filters\n--animation-base: local animation base-row snapshot (not game time; also levels)\n--no-animation-base, --no-instance-default: turn off the D188 single-mesh defaults (animation base values; white instance color 1,1,1,1 when no Thing supplies one) and the D191 level defaults (animation base values; each Thing's editorColor as its instance color, inferred)\n--instance-rgba R,G,B,A: supplied linear instance color (overrides the white default)\n--synthetic: authored depth/UV/repeat/clamp scene\n--synthetic-groups: authored mixed material groups\n--synthetic-affine: authored UV scale/offset/reflection\n--qa-capture NEW_PNG_UNDER_LOCAL_ANALYSIS: capture then exit (window shown without taking focus)
 --no-activate: show the window without taking focus or the foreground (interactive runs)
 --qa-hide-ui: draw no panels (clean captures)\n--window-16-9: 1280x720 window (the game's 16:9 frame; RPCS3 comparisons)\n--preview-lighting: key + ambient preview lighting (not game lighting; levels use their stored settings, approximate)\n--lighting-preset N|main: with a level, light from its stored preset N instead of the main settings (P2l; --lbp-lighting defaults to preset 0 when one is stored, main forces the main block)\n--lbp-lighting: preview lighting shaped like the community brdf.cg reconstruction (hemisphere ambient, sun, two rims, squared combine; unfitted stored values, uniform mapping inferred, P2l); on by default in level mode (P2w), --no-lbp-lighting draws levels unlit, --preview-lighting keeps the older Lambert preview\n--no-glow: skip material glow (output port 4; P3h A/B)\n--no-edge-glow: skip the glow post pass on the Pod dissolve's line (D292 A/B)
---final-pass / --no-final-pass: with a level on the level lighting, the game's final pass over the frame, x1.2998 and its vignette mixed back by the scene's alpha: 0 in the Pod picture (--pod-camera), the scene's own elsewhere (D294, D300; on by default)\n--depth-of-field / --no-depth-of-field: with a level on the level lighting, the game's depth of field over the scripts' Cam.SetDOFAndFog range (D298; on by default in the Pod picture, --pod-camera, off by default in other levels, D304)\n--mlaa / --no-mlaa: in the Pod picture (--pod-camera) on the level lighting, the game's anti-aliasing job (EDGE MLAA: edge thresholds 10 and 0.348 of the brighter pixel, Reshetov blend) after the depth of field, without MSAA (D302; on by default there, D304)\n--no-baked-ao: skip the backdrop lightmap baked AO under --lbp-lighting (P3k A/B)\n--bump-gloss / --no-bump-gloss: material bump maps (output port 3) and static gloss colours (port 2) under --lbp-lighting, on with it by default (P2q; offsets and frame inferred)\n{CENSUS_FLAGS_HELP}\n--print-census: print the corpus-count panel text and exit (no window)\n--ui-demo: authored UI layer demo (no game data; other options ignored)\n--slot-browser: story slot browser over --snapshot/--game-dir (--slot-browser-report prints counts and exits; --slot-browser-slots adds one line per slot)\n--text-browser: .trans tables (search by text, tag or key) and font glyph sheets (--text-browser-report prints counts and exits)\n--ui-script CLASS: run one of your UI scripts headlessly (stub natives) and draw the frame tree it builds; --ui-script-function NAME (default UpdateUI__Q5Gooey), --ui-script-report prints counts and the outline (--qa-hide-ui draws the tree without the count lines)\n--pod-menu CLASS: the Pod main menu as pills on a globe and moon (placeholder spheres; pill positions from the RPCS3 reference), Up/Down/Enter; with a level, the pills over the level view\n--pod-camera N: with a level, home view that puts Thing N (the Pod globe) where the RPCS3 frame has it\n--pod-shell HEX: with --pod-camera, the Pod shell level (000027b9) as a layer over the view; Space or gamepad Square opens/closes the Puter (camera dolly), Esc or Circle closes; --pod-game-camera: the planets view through the game's own camera (presets, vfov 57.3 deg), World transform and main-menu Earth/Moon placement instead of the globe fit (P2k);\n--pod-open: start open; the side panels are clear glass (D286; --runtime-texture 00002f6c:0:HEX paints a texture on them, --no-pod-wall is accepted and does nothing); --pod-t T: start at opening progress T (0-1, mid-dolly captures); --pod-shell-camera FX,FY,FZ,TX,TY,TZ: closed shell eye from the game camera preset (shell level units); --select-guid HEX (Sackboy 0000043f) stands in front of the DualShock, --play-animation HEX plays on him, --pod-hold-animation HEX while the Puter is open; --pod-figure-data: closed spot from the shell's data (checkpoint + spawn offset, dropped to the floor) instead of the RPCS3 fit (both are reported)\n--puter-screen CLASS: in the 3D view, that UI script's frame tree on a screen quad (arrows/Enter focus); --puter-function NAME, --puter-at X,Y,Z[,WIDTH] (display units, facing +Z; default 1.1,0,0,1.2)\n--popit: inventory browser over the disc plans (--popit-report prints counts; add --popit-decode-icons to measure icon decoding)\n--level-guid HEX | --level-path MAP_PATH: level scene mode (RENDER_MESH Things at POS)\n--level-placement inverse-bind|pos-only: POS Things at POS x inverse bind of bone 0 (default, D120) or POS only (D113)\n--shape-bevels: with a level, bevelled shapes (geometry inferred, unverified; default straight)\n--per-bone-placement: with a level, models with boneThings place each vertex by its bone's Thing (P2m; inferred rigid skinning; default bone 0 rule, but on under --pod-game-camera unless --no-per-bone-placement)\n--runtime-texture MESH:SLOT:TEXTURE (hex GUIDs, slot 0-7, repeatable): with a level (and --pod-shell), draw Solid groups of that mesh whose material lists SLOT as unrendered with TEXTURE (UV0, Repeat, untinted; inferred, game binding unconfirmed)\n--level-report: with a level, print scene counts and exit (no window)\n--level-focus-thing N: with a level, frame the view on Thing N (reader order)\n--level-scripts: with a level, run its scripts at 30 Hz (OnCreate__, then Update__ each tick) and show the counts, with the open speech bubbles and the subtitle drawn as plain boxes the level lit again when a script changes the global lighting or darkness, and each Thing's own model hidden, tinted and moved as the scripts set it (a mesh that is not visible in play mode is hidden), and the camera moved to a script's override camera while one is on, or put at the camera a script writes itself (the Pod's planets level: with --pod-camera N and no --pod-shell the level also hangs under its script-moved world Thing); --level-scripts-flags N,..: progression flags set on the profile; --level-scripts-hold-at N (QA): the scripts stop after tick N, so a capture shows that tick; --level-scripts-in-use-at N (QA): the pod computer is in use once N ticks have run (a stand-in for the player engaging it), so the Pod level's change-over runs and its pod mesh is swapped; with --pod-camera N and --pod-shell HEX the shell level is played in the same session with a Sackboy (not drawn, a placeholder) on the pod computer's trigger, and Space or gamepad Square is the engage button on the pad the scripts read for one tick (the pod's own script then asks for the pod computer, once the intro has set its progression flags), or while the computer is in use a request to the host to close it, as Esc or Circle (placeholder: no script path for closing was found); --level-scripts-press-at N (QA): that engage press on tick N without a key\n--play-sackboy: with a level, its shapes as a physics world and Sackboy at the first checkpoint, drawn as his mesh (0000043f unless --select-guid) with stand/walk/lane/jump/land clips picked from his state (rules inferred; --play-animation HEX plays one clip instead) (arrows walk and change lanes, Space jumps, I/K/L/J moods happy/sad/angry/scared; camera follows); --play-sackboy-at X,Y,Z spawn; --play-sackboy-input r:40,rj:12,-:30 scripted keys (l r j b f, mood presses U D R L) with the position printed each tick; --qa-record DIR,START,END[,SPEED] (QA only) saves one PNG per scripted tick START..END into a new local-analysis DIR, game time at SPEED (default 0.25), then exits\nLeft drag orbit; right/middle drag pan; wheel zoom; R reset; F frame.");
+--final-pass / --no-final-pass: with a level on the level lighting, the game's final pass over the frame, x1.2998 and its vignette mixed back by the scene's alpha: 0 in the Pod picture (--pod-camera), the scene's own elsewhere (D294, D300; on by default)\n--depth-of-field / --no-depth-of-field: with a level on the level lighting, the game's depth of field over the scripts' Cam.SetDOFAndFog range (D298; on by default in the Pod picture, --pod-camera, off by default in other levels, D304)\n--mlaa / --no-mlaa: in the Pod picture (--pod-camera) on the level lighting, the game's anti-aliasing job (EDGE MLAA: edge thresholds 10 and 0.348 of the brighter pixel, Reshetov blend) after the depth of field, without MSAA (D302; on by default there, D304)\n--no-baked-ao: skip the backdrop lightmap baked AO under --lbp-lighting (P3k A/B)\n--bump-gloss / --no-bump-gloss: material bump maps (output port 3) and static gloss colours (port 2) under --lbp-lighting, on with it by default (P2q; offsets and frame inferred)\n{CENSUS_FLAGS_HELP}\n--print-census: print the corpus-count panel text and exit (no window)\n--ui-demo: authored UI layer demo (no game data; other options ignored)\n--slot-browser: story slot browser over --snapshot/--game-dir (--slot-browser-report prints counts and exits; --slot-browser-slots adds one line per slot)\n--text-browser: .trans tables (search by text, tag or key) and font glyph sheets (--text-browser-report prints counts and exits)\n--ui-script CLASS: run one of your UI scripts headlessly (stub natives) and draw the frame tree it builds; --ui-script-function NAME (default UpdateUI__Q5Gooey), --ui-script-report prints counts and the outline (--qa-hide-ui draws the tree without the count lines)\n--pod-menu CLASS: the Pod main menu as pills on a globe and moon (placeholder spheres; pill positions from the RPCS3 reference), Up/Down/Enter; with a level, the pills over the level view\n--pod-camera N: with a level, home view that puts Thing N (the Pod globe) where the RPCS3 frame has it\n--pod-shell HEX: with --pod-camera, the Pod shell level (000027b9) as a layer over the view; Space or gamepad Square opens/closes the Puter (camera dolly), Esc or Circle closes; --pod-game-camera: the planets view through the game's own camera (presets, vfov 57.3 deg), World transform and main-menu Earth/Moon placement instead of the globe fit (P2k);\n--pod-open: start open; the side panels are clear glass (D286; --runtime-texture 00002f6c:0:HEX paints a texture on them, --no-pod-wall is accepted and does nothing); --pod-t T: start at opening progress T (0-1, mid-dolly captures); --pod-shell-camera FX,FY,FZ,TX,TY,TZ: closed shell eye from the game camera preset (shell level units); --select-guid HEX (Sackboy 0000043f) stands in front of the DualShock, --play-animation HEX plays on him, --pod-hold-animation HEX while the Puter is open; --pod-figure-data: closed spot from the shell's data (checkpoint + spawn offset, dropped to the floor) instead of the RPCS3 fit (both are reported)\n--puter-screen CLASS: in the 3D view, that UI script's frame tree on a screen quad (arrows/Enter focus); --puter-function NAME, --puter-at X,Y,Z[,WIDTH] (display units, facing +Z; default 1.1,0,0,1.2)\n--popit: inventory browser over the disc plans (--popit-report prints counts; add --popit-decode-icons to measure icon decoding)\n--level-guid HEX | --level-path MAP_PATH: level scene mode (RENDER_MESH Things at POS)\n--level-placement inverse-bind|pos-only: POS Things at POS x inverse bind of bone 0 (default, D120) or POS only (D113)\n--shape-bevels: with a level, bevelled shapes (geometry inferred, unverified; default straight)\n--per-bone-placement: with a level, models with boneThings place each vertex by its bone's Thing (P2m; inferred rigid skinning; default bone 0 rule, but on under --pod-game-camera and in the scripted Pod, --level-scripts with --pod-camera N, unless --no-per-bone-placement)\n--runtime-texture MESH:SLOT:TEXTURE (hex GUIDs, slot 0-7, repeatable): with a level (and --pod-shell), draw Solid groups of that mesh whose material lists SLOT as unrendered with TEXTURE (UV0, Repeat, untinted; inferred, game binding unconfirmed)\n--level-report: with a level, print scene counts and exit (no window)\n--level-focus-thing N: with a level, frame the view on Thing N (reader order)\n--level-scripts: with a level, run its scripts at 30 Hz (OnCreate__, then Update__ each tick) and show the counts, with the open speech bubbles and the subtitle drawn as plain boxes the level lit again when a script changes the global lighting or darkness, and each Thing's own model hidden, tinted and moved as the scripts set it (a mesh that is not visible in play mode is hidden), and the camera moved to a script's override camera while one is on, or put at the camera a script writes itself (the Pod's planets level: with --pod-camera N and no --pod-shell the level also hangs under its script-moved world Thing); --level-scripts-flags N,..: progression flags set on the profile; --level-scripts-hold-at N (QA): the scripts stop after tick N, so a capture shows that tick; --level-scripts-in-use-at N (QA): the pod computer is in use once N ticks have run (a stand-in for the player engaging it), so the Pod level's change-over runs and its pod mesh is swapped; with --pod-camera N and --pod-shell HEX the shell level is played in the same session with a Sackboy (not drawn, a placeholder) on the pod computer's trigger, and Space or gamepad Square is the engage button on the pad the scripts read for one tick (the pod's own script then asks for the pod computer, once the intro has set its progression flags), or while the computer is in use a request to the host to close it, as Esc or Circle (placeholder: no script path for closing was found); --level-scripts-press-at N (QA): that engage press on tick N without a key\n--play-sackboy: with a level, its shapes as a physics world and Sackboy at the first checkpoint, drawn as his mesh (0000043f unless --select-guid) with stand/walk/lane/jump/land clips picked from his state (rules inferred; --play-animation HEX plays one clip instead) (arrows walk and change lanes, Space jumps, I/K/L/J moods happy/sad/angry/scared; camera follows); --play-sackboy-at X,Y,Z spawn; --play-sackboy-input r:40,rj:12,-:30 scripted keys (l r j b f, mood presses U D R L) with the position printed each tick; --qa-record DIR,START,END[,SPEED] (QA only) saves one PNG per scripted tick START..END into a new local-analysis DIR, game time at SPEED (default 0.25), then exits\nLeft drag orbit; right/middle drag pan; wheel zoom; R reset; F frame.");
             std::process::exit(0);
         }
         let value = args.next().ok_or("Missing option value")?;
@@ -2538,7 +2543,11 @@ fn plan_level(
     })
 }
 /// D268: the Thing a scene item draws, when the item is the Thing's own model: a mesh
-/// named by a RENDER_MESH or a decoration, placed by its own matrix.
+/// named by a RENDER_MESH or a decoration, placed by its own matrix. D317: or that mesh
+/// skinned per bone (P2m), which is baked in the frame of the item's matrix and so
+/// moves with the item's Thing like the file's mesh. INFERRED for bone Things that keep
+/// their places relative to the item's Thing under the scripts (MEASURED for the Pod
+/// Earth: its bone Things are children of the Earth Thing and move with it).
 fn thing_item<T>(
     scene: &level_scene::LevelScene<T>,
     item: &level_scene::SceneItem,
@@ -2546,7 +2555,9 @@ fn thing_item<T>(
     let source = &scene.meshes.get(item.mesh)?.source;
     let model = matches!(
         source,
-        level_scene::MeshSource::Guid(_) | level_scene::MeshSource::Sha1(_)
+        level_scene::MeshSource::Guid(_)
+            | level_scene::MeshSource::Sha1(_)
+            | level_scene::MeshSource::BoneSkin { .. }
     );
     let backdrop = Some(item.thing) == scene.counts.backdrop.thing;
     (model && !backdrop && item.shapes == 0).then(|| thing_view::Item {
@@ -4933,6 +4944,71 @@ mod tests {
                 other => panic!("UV0 {other:?}"),
             }
         }
+    }
+    #[test]
+    fn d317_per_bone_is_on_in_the_scripted_pod_unless_turned_off() {
+        let mode = |scripts, pod: bool, game_camera, per_bone, no_per_bone| LevelMode {
+            scripts,
+            pod: pod.then_some(1),
+            game_camera,
+            per_bone,
+            no_per_bone,
+            ..Default::default()
+        };
+        // Off by default; on with the flag.
+        assert!(!mode(false, false, false, false, false).per_bone_on());
+        assert!(mode(false, false, false, true, false).per_bone_on());
+        // Under --pod-game-camera, and in the scripted Pod with or without it.
+        assert!(mode(false, true, true, false, false).per_bone_on());
+        assert!(mode(true, true, false, false, false).per_bone_on());
+        assert!(mode(true, true, true, false, false).per_bone_on());
+        // Scripts without the Pod, or the Pod without scripts or its camera: off.
+        assert!(!mode(true, false, false, false, false).per_bone_on());
+        assert!(!mode(false, true, false, false, false).per_bone_on());
+        // --no-per-bone-placement keeps the bone-0 rule in both.
+        assert!(!mode(false, true, true, false, true).per_bone_on());
+        assert!(!mode(true, true, false, false, true).per_bone_on());
+    }
+    #[test]
+    fn d317_a_model_skinned_per_bone_is_on_the_thing_map() {
+        let mut scene = level_scene::LevelScene::<u8>::default();
+        let base = || Box::new(level_scene::MeshSource::Guid(0x27bd));
+        for source in [
+            level_scene::MeshSource::Guid(0x27bd),
+            level_scene::MeshSource::BoneSkin {
+                mesh: base(),
+                thing: 1,
+            },
+            level_scene::MeshSource::JointSkin {
+                mesh: base(),
+                thing: 1,
+            },
+        ] {
+            scene.meshes.push(level_scene::SceneMesh {
+                source,
+                payload: 0,
+                bounds: None,
+                neutral_groups: false,
+            });
+        }
+        let item = |mesh| level_scene::SceneItem {
+            mesh,
+            world: Mat4::from_translation(Vec3::X).to_cols_array(),
+            thing: 1,
+            uid: None,
+            shapes: 0,
+            decoration: false,
+            alternate: false,
+        };
+        let file = thing_item(&scene, &item(0)).expect("the file's mesh");
+        let skinned = thing_item(&scene, &item(1)).expect("the per-bone mesh");
+        // Same Thing, matrix and base mesh: the scripts move it as the file's mesh.
+        assert_eq!(
+            (skinned.thing, skinned.world, skinned.mesh),
+            (file.thing, file.world, Some(0x27bd))
+        );
+        // A joint span is placed at its own origin, not by the Thing: not mapped.
+        assert!(thing_item(&scene, &item(2)).is_none());
     }
     #[test]
     fn level_placement_normalizes_frames_side_on_and_counts_display_skips() {
