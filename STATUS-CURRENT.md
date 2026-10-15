@@ -11,7 +11,19 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D313 the depth of field's ring against the game's own frame (2026-10-15)
+## Latest: D314 the open room's light against the game's (2026-10-15)
+- Viewer (`docs/level-scripts.md` part 65): the planets level's sun no longer turns with a
+  root that hangs under the world Thing (`planets_light_turn`); the dolly's root still turns it.
+- FOUND (8980, draws 2400 / 2416, `local-analysis/d314-mip/`): the game's sun is the level's
+  sun x 300,000, unturned, while its normals turn with the world Thing; the viewer's normals
+  matched, its sun (turned 19 degrees) gave N.L 0.93 against 0.79, so x 1.07 to 1.09 light.
+  Samplers are trilinear, anisotropy 1, bias 0; the mural is mip 0; the disc's mips are
+  softer than the viewer's box filter but decide only 6 % of the box.
+- MEASURED (all post off): the room box's luma percentiles 1.04-1.05 -> 0.99-1.00 of the game's,
+  contrast x 1.10 -> x 1.02, gradient 1.136 -> 1.056 (game 1.008). Closed Pod at 600 a little
+  darker (the root is turned there too); Da Vinci byte-equal.
+
+## Before: D313 the depth of field's ring against the game's own frame (2026-10-15)
 - Viewer (`docs/level-scripts.md` part 64): the ring taps' +y now points down the picture,
   in both the shader and the CPU mirror (`dof_ring_cpu`).
 - MEASURED (8980, each pass run on the game's own input, `local-analysis/d313-blur/`): the

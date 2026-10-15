@@ -7690,6 +7690,98 @@ the one that fails on main (`sackboy_play::tests::input_script_steps`).
 
 Counts: +0 newly viewable / +0 newly Complete (viewer fidelity).
 
+## Part 65: the open room's light against the game's (2026-10-15, D314)
+
+Viewer, and a RenderDoc read of the open room's draws in capture 8980 (viewer tick 616). Part 64
+left the viewer's open room sharper, brighter and with more contrast than the game's scene
+before its post chain. This part finds why: the viewer turned the planets level's sun with the
+world Thing's root, and the game does not.
+
+### What was found
+
+- FOUND (RenderDoc 1.46, 8980, `local-analysis/d314-mip/`, each draw's change to the main
+  target read in its stored row order): three draws reach the box (scene x 47-207, y 442-559)
+  before DoF 1. 2400 is the room's wall (921 vertices, 2014 strip indices) with a 256 x 256
+  BC1_SRGB diffuse (r15693, at 2 x UV0), a 256 x 256 BC1_SRGB second colour layer (r15636, at
+  UV1) and a 256 x 256 BC3 normal map (r15701, at 2 x UV0), plus a specular term (power 22).
+  2416 is the same mesh again with the mural (256 x 512 BC3_SRGB, r15924, at UV1), alpha tested,
+  no normal map and no specular: it is the last writer on 12,341 of the box's 18,720 pixels.
+  2467 (another mesh, 1024 x 512 / 512 x 512 textures) covers 2,474.
+- FOUND (the same draws): every sampler is LINEAR / LINEAR / LINEAR mip, anisotropy 1, LOD bias
+  0, LOD 0 to 15, wrap; the programs sample with plain `texture()`. Each texture carries the
+  disc's mips down to 4 x 4 (7 or 8 levels).
+- MEASURED (post-VS positions and UVs, interpolated per pixel; the GL rule log2 of the larger
+  texel step): the mural is magnified (LOD -0.74, mip 0 only) and so is r15636 (-1.6); the
+  wall's diffuse and normal map sit at LOD 1.4 (mips 1 and 2).
+- MEASURED (the disc's mips against the viewer's box-filtered chain, `adapter.rs` 426-448, built
+  from the same mip 0): the disc's are softer, mean gradient x 1.50 (diffuse) and x 1.48
+  (normal map) at mip 1, x 1.17 / x 1.24 at mip 2, the mural's x 1.17 to x 1.25. They decide
+  only the 1,145 wall pixels the mural leaves, whose sharpness relative to their contrast is the
+  game's (x 0.96).
+- MEASURED (box, game against main): the extra detail is the same in every band (x 1.10 to
+  x 1.20, highest at the coarsest), and relative to its contrast the box is the game's (x 1.02):
+  part 64's "sharper" is contrast, not a sharper mip.
+- FOUND (2416's program and constants): out = sqrt(4 x tex x L^2), then the fog, with
+  L = ambient x (N.y 0.15 + 0.5) + sun x saturate(N.L) + saturate(rim colour x (N.V + 0.9)^2),
+  N the normalised TC2. Ambient fc11 (0.1164, 0.4084, 0.5486) and sun fc12 (0.3641, 0.2007,
+  0.0370) equal the viewer's (`raw_key` already holds the sun multiplier). The sun is a point:
+  fc0 = (222886.6, 160217.0, 298809.0), the level's sun x 300,000, not turned. The fog share
+  is (w - 7885) / 52649 here (w the clip w, fit exact), 0.37 on the mural.
+- MEASURED (this model against the game's pixels, the texel taken from the viewer's unlit still):
+  within 0.2 % in every channel. The viewer's unlit texel equals the game's (x 0.997).
+- MEASURED (temporary debug builds, not kept): the viewer's normal on the mural is the game's
+  (median (0.529, -0.224, 0.820) against (0.520, -0.223, 0.825)), its fog share 0.33. Its
+  light was x 1.07 to x 1.09 the game's in every channel, all of it the sun term: N.L 0.93
+  against 0.79. At 616 the planets root (under the world Thing) is turned 19 degrees, mostly
+  about x, and the viewer turned the sun with it to (0.498, 0.120, 0.859). The game turns the
+  geometry (its TC2 is the turned normal) but keeps the sun where the level puts it.
+- INFERRED: the dolly's root (`planets_root`, no level scripts) is the same motion in the game,
+  but no capture of it was compared, so it keeps turning the light.
+
+### What the viewer does
+
+`lbp-bevy-viewer`, `main.rs`: `apply_lighting` takes the planets layer's light turn from
+`planets_light_turn`, which is no turn for a root that hangs under the world Thing
+(`level_play::WorldThingRoot`) and the root's rotation otherwise. The shell layer is unchanged.
+
+### Measured
+
+Release build, hidden window, level lighting (`local-analysis/d314-mip/`, `vshot.ps1` /
+`shot.ps1`, prefix d314; main is `target-d313`, 205c7c7). Open room box, scene before the post
+chain (all post off) against 8980 before event 2706:
+
+| | game | main | this build |
+| --- | --- | --- | --- |
+| mean colour | (151, 135, 110) | (158, 142, 114) | (148, 135, 112) |
+| luma 5 / 50 / 95 % ratio | 1 | 1.04 / 1.05 / 1.05 | 0.99 / 1.00 / 1.00 |
+| contrast (sd) ratio | 1 | 1.10 | 1.02 |
+| gradient | 1.008 | 1.136 | 1.056 |
+| gradient over the mural, ratio | 1 | 1.26 | 1.18 |
+| registration | | 0.966 | 0.983 |
+
+- After the whole chain, presented pixels: the open room 0.482 game, 0.544 main, 0.500 this
+  build (warped; mean (154, 137, 111) / (161, 143, 114) / (150, 136, 113)); the desk box 1.542 /
+  1.480 / 1.664.
+- Left: red 2.6 % low and blue 2.1 % high on the mural (the viewer's sun is a direction, the
+  game's a point, and its fog share 0.33 against 0.37, INFERRED), and the mural's detail
+  relative to its contrast x 1.13 with the same mip 0 on both sides (not resolved).
+- Closed Pod at 600: 418,467 pixels change by more than 2 (mean |d| 1.64; the room and the
+  planets x 0.955 / 0.973 / 0.994, the root is already turned there). Da Vinci (0001e786)
+  byte-equal to main.
+
+### Verification
+
+`lbp-bevy-viewer`, no game data:
+
+- `d314_world_thing_root_keeps_the_sun_in_world_space`.
+- `d314_open_room_sun_term_matches_the_capture`: the box's median normal against the kept sun
+  gives the capture's N.L 0.79 (within 0.03); the turned sun gives above 0.9.
+
+fmt and `cargo clippy --all-targets -D warnings` pass. The viewer's tests pass (153), except
+the one that fails on main (`sackboy_play::tests::input_script_steps`).
+
+Counts: +0 newly viewable / +0 newly Complete (viewer fidelity).
+
 ## Next
 
 - From part 59: the checkpoint's light level (+0x20,
@@ -7700,9 +7792,11 @@ Counts: +0 newly viewable / +0 newly Complete (viewer fidelity).
   off, part 62): a level frame with the patches off.
 - From part 53: the job's program beyond its edge test (its run search, the pattern rules, its
   length limit, INFERRED 40); MSAA in the Pod's other views.
-- From part 64: the open room's scene going in, about 13 % sharper (21 % on the mural) and 4.5 %
-  brighter than the game's at 616 (texture mip / LOD selection and the wall's lighting gain,
-  INFERRED). Also: DoF 2's offset texture, which is non-zero in 8980 over a middle
+- From part 65 (part 64's open room, now lit like the game's): the mural's remaining detail
+  (x 1.13 relative to its contrast, mip 0 on both sides), red 2.6 % low / blue 2.1 % high there
+  (the sun as a point, the fog share 0.33 against 0.37), the disc's own mips in place of the box
+  filter, and whether the dolly's root keeps its light too (a capture without level scripts).
+  From part 64: DoF 2's offset texture, which is non-zero in 8980 over a middle
   rectangle (what draws it), and its second ring's alpha there.
 - From part 63 (part 62's two passes, now copied): DoF 2's ring offset from texture unit 3
   (part 64: non-zero in 8980); the marks of the viewer's other translucent draws (the game marks every

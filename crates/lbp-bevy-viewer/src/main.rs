@@ -3798,8 +3798,9 @@ fn animate(
 /// camera fog once per toggle or scene change. Off and never applied: touches nothing,
 /// so default captures are unchanged.
 /// P2l: the planets root and the shell root (not the tent), for turning each layer's light.
+/// D314: the planets root says whether it hangs under the world Thing (`planets_light_turn`).
 type LightRoots<'w, 's> = (
-    Query<'w, 's, &'static Transform, With<PodPlanetsRoot>>,
+    Query<'w, 's, (&'static Transform, Has<level_play::WorldThingRoot>), With<PodPlanetsRoot>>,
     Query<'w, 's, &'static Transform, (With<PodShellRoot>, Without<PodTentRoot>)>,
 );
 /// P3g: the sun's shadow-map edge. The game renders three 768x768 sun-shadow maps (Moon
@@ -3855,6 +3856,19 @@ fn sync_sun_shadow(
         sun_transform(l.toward_light),
     ));
 }
+/// D314: the turn the planets level's light takes. A root that hangs under the world Thing
+/// (`--level-scripts`, the script moving the world Thing each tick) leaves the light where
+/// it is: the game turns the level's geometry with the world Thing but keeps the sun
+/// (FragmentConstants sun position = the level's sun x 300000, unturned) in world space
+/// (FOUND, RenderDoc capture 8980, the open room's draws 2400 and 2416: the turned normals
+/// against the unturned sun give the game's N.L, the turned sun gave the viewer x1.07-1.09
+/// light). Other roots (the dolly) keep turning the light with them (P2l).
+fn planets_light_turn(root: Option<(&Transform, bool)>) -> Quat {
+    match root {
+        Some((t, false)) => t.rotation,
+        _ => Quat::IDENTITY,
+    }
+}
 fn sun_transform(toward_light: Vec3) -> Transform {
     let up = if toward_light.y.abs() > 0.99 {
         Vec3::Z
@@ -3876,7 +3890,7 @@ fn apply_lighting(
     // shell roots (re-applied when the dolly turns them).
     let first_turn = |t: Option<&Transform>| t.map_or(Quat::IDENTITY, |t| t.rotation);
     let (turn, shell_turn) = (
-        first_turn(roots.0.iter().next()),
+        planets_light_turn(roots.0.iter().next()),
         first_turn(roots.1.iter().next()),
     );
     let pod_t = puter.map_or(v.lighting.pod_t, |p| p.t);
@@ -4450,6 +4464,37 @@ mod tests {
         assert_eq!(rules.len(), 2);
     }
     use super::*;
+
+    /// D314: the planets root under the world Thing does not turn the light; the dolly's
+    /// root (no world Thing) still does, and no root leaves it unturned.
+    #[test]
+    fn d314_world_thing_root_keeps_the_sun_in_world_space() {
+        let turned =
+            Transform::from_rotation(Quat::from_xyzw(0.1638, -0.0345, -0.0057, 0.9859).normalize());
+        assert_eq!(planets_light_turn(Some((&turned, true))), Quat::IDENTITY);
+        assert_eq!(planets_light_turn(Some((&turned, false))), turned.rotation);
+        assert_eq!(planets_light_turn(None), Quat::IDENTITY);
+    }
+
+    /// D314 (RenderDoc capture 8980, the open room's mural, draw 2416): the room's world
+    /// normal (median of the box) against the game's sun gives N.L 0.79; the viewer's normal
+    /// there matches the game's, so the unturned sun lands within 0.03 of it, and the sun
+    /// turned with the root at tick 616 (19 deg) gave 0.94, the x1.07-1.09 light measured.
+    #[test]
+    fn d314_open_room_sun_term_matches_the_capture() {
+        let normal = Vec3::new(0.529, -0.224, 0.82).normalize();
+        let toward = Vec3::new(0.5505, 0.3909, 0.7377).normalize();
+        let turn = Quat::from_xyzw(0.1638, -0.0345, -0.0057, 0.9859).normalize();
+        let world = Transform::from_rotation(turn);
+        let kept = planets_light_turn(Some((&world, true))) * toward;
+        assert!(
+            (normal.dot(kept) - 0.79).abs() < 0.03,
+            "{}",
+            normal.dot(kept)
+        );
+        let old = planets_light_turn(Some((&world, false))) * toward;
+        assert!(normal.dot(old) > 0.9, "{}", normal.dot(old));
+    }
 
     /// CI never launches the viewer, so a Bevy B0001 query conflict in `apply_lighting`
     /// (P3g: the sun query overlapped the light-root queries) panicked every start-up.
