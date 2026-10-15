@@ -22,8 +22,11 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
   softer than the viewer's box filter but decide only 6 % of the box.
 - MEASURED (all post off, open room box, main -> point): |mean d| 5.7 -> 1.8, contrast x 1.10
   -> x 1.04, gradient 1.136 -> 1.068 (game 1.008). Closed Pod against 5247 (|mean d|, main /
-  point): room 3.6 / 4.7, globe 1.7 / 3.3, left glass 1.4 / 2.5, right 0.4 / 0.4, so the closed
-  Pod is further from the game than main. Da Vinci: 126 pixels differ by at most 5.
+  point, clean final output): room 3.8 / 4.9, globe 1.9 / 3.5, left glass 1.4 / 2.5, right 0.4 /
+  0.4. Term by term on the closed room (draw 2520) the point sun gives the game's fog share,
+  normal, sun direction and N.L (0.900 / 0.901; main 0.920); main's closer means are its turned
+  sun offsetting a 0.5 % shortfall elsewhere plus the post chain's darker room in both builds
+  (INFERRED). Da Vinci: 126 pixels at most 5, compiled-shader change, not the point path.
 
 ## Before: D313 the depth of field's ring against the game's own frame (2026-10-15)
 - Viewer (`docs/level-scripts.md` part 64): the ring taps' +y now points down the picture,

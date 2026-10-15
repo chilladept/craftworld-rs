@@ -7792,8 +7792,35 @@ chain (all post off) against 8980 before event 2706:
   room through the window 3.6 / 5.8 / 4.7, the globe 1.7 / 4.5 / 3.3, the left glass 1.4 / 3.9
   / 2.5, the right glass 0.4 / 4.7 / 0.4. The point brings the closed Pod back toward the game
   but not as close as main: main is nearer in three regions of four (equal in the fourth), so
-  the closed Pod does not confirm the fix. What else keeps it apart (the frame is the idle game,
-  not tick 600; its exposure or preset) is open.
+  the closed Pod does not confirm the fix by itself.
+- MEASURED (5247 term by term, `closedterms.py` / `closedL.py`; the room through the window is
+  draw 2520, the program of 8980's 2467, and the globe 1337; the viewer at 600 with the point
+  sun, all post off, read from a temporary debug build that wrote the pre-fog colour, the fog
+  share, the normal and the direction to the sun in a 2 x 2 pattern): on the room the fog share
+  is 0.556 / 0.549 (game / viewer), the normal (0.659, -0.092, 0.747) / (0.655, -0.090, 0.749),
+  the direction to the sun (0.523, 0.331, 0.785) / (0.522, 0.333, 0.788), N.L 0.901 / 0.900
+  (main's turned sun: 0.920). The light implied by the pre-fog colour and the viewer's unlit
+  texel is the geometric model's x 1.005 in the game and x 1.000 in the viewer (medians). On the
+  globe the normal differs by 5 degrees (n.y -0.215 / -0.153): the planet's own turn, a state
+  difference, not the light.
+- FOUND (replay artefact, part 64): a 5247 target read after other events carries the flat
+  (164, 104, 58) tiles (2,420 of the room's pixels, 17,520 behind the left glass); each target
+  above was read again in a fresh replay at its own event. The first room means of this part
+  (pre-fog x 1.06 to 1.10) were those tiles.
+- MEASURED (clean 5247 target after 2928, before the post chain, |mean d| main / point): the room
+  through the window 0.02 / 0.79 (|d| 2.03 / 1.89); behind the left glass 7.4 / 8.3 and the right
+  5.3 / 5.4 (registration 0.60 / 0.77, the shell's frame over them). After the post chain (clean
+  final output): the room 3.8 / 4.9, the globe 1.9 / 3.5, the left glass 1.4 / 2.5, the right
+  0.4 / 0.4.
+- INFERRED: the point sun gives the game's terms; main's closer means at 600 come from its
+  turned sun (N.L 2 % high) offsetting a 0.5 % shortfall elsewhere in the room's light (not in
+  the fog, the normal, the sun or N.L), and the post chain leaves both builds 3 to 5 levels
+  darker than the game on the room, which the final comparison carries. No further fix is
+  supported by these terms.
+- MEASURED (Da Vinci's 126 pixels): thin vertical runs at polygon edges (x 222-1043, y 111-415),
+  at most 5. A debug build that paints every fragment with the point on gives none there, and a
+  build without the point branch gives the same 126 pixels: the change of compiled shader (the
+  new uniform and private variable), not the point path. Left as is.
 
 ### Verification
 
