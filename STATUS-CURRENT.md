@@ -11,7 +11,19 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D303 the alpha of glowing materials (2026-10-15)
+## Latest: D304 the anti-aliasing job and depth of field on by default in the Pod (2026-10-15)
+- Viewer only (`docs/level-scripts.md` part 55). In the Pod picture (`--pod-camera`) on the
+  level-lighting route the EDGE MLAA job (D302) and the depth of field (D298) now run by default;
+  `--no-mlaa` / `--no-depth-of-field` turn them off. Other levels unchanged (DoF only under
+  `--depth-of-field`, the job never).
+- MEASURED (hidden window): the defaults equal the previous build with both flags, `--no-*`
+  equals the previous default, Da Vinci byte-equal. Closed Pod staircase RMS against the game:
+  floor line 0.349 -> 0.252 (game 0.136). Change-over at 614 against `open-t1`: room behind the
+  window gradient 4.07 -> 1.93 (game 1.20), viewport mean |d| 12.39 -> 11.72. MLAA after DoF
+  also filters the blurred room (whether the game does is INFERRED; the copy back is stale).
+- Tests `d304_*` (two).
+
+## Before: D303 the alpha of glowing materials (2026-10-15)
 - Viewer only (`docs/level-scripts.md` part 54). FOUND (RenderDoc frame 5247): the game's lit
   program with a constant glow g (port 4, added before the x4 and the square root) writes alpha
   tintcol.w / (4|g|^2 + 1): the lamp bulb's g = (0.66, 0.56, 0) gives 64, the stars' g = 1 gives
