@@ -64,7 +64,8 @@ More detail: [viewer usage](docs/viewer.md), [Bevy preview](docs/bevy-preview.md
 [update overlay](docs/update-overlay.md).
 
 Checks used by CI: `cargo fmt --all --check`, `cargo test --workspace`,
-`cargo clippy --workspace --all-targets -- -D warnings`.
+`cargo clippy --workspace --all-targets -- -D warnings`. To contribute, see
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Layout
 
@@ -91,5 +92,5 @@ are logged in [docs/readme-history.md](docs/readme-history.md).
   game code is copied into the product.
 - LittleBigPlanet is a trademark of Sony Interactive Entertainment. This project
   is not endorsed by or affiliated with Sony or Media Molecule.
-- Contributions follow [AGENTS.md](AGENTS.md); never submit game assets or
-  decompiled code.
+- Contributions follow [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md);
+  never submit game assets or decompiled code.

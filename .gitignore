@@ -6,6 +6,7 @@
 !/.github/
 !/.github/workflows/
 !/.github/workflows/*.yml
+!/.github/pull_request_template.md
 !/Launch Asset Explorer.cmd
 !/*.md
 !/Cargo.toml
