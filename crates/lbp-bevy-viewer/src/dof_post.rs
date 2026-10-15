@@ -88,9 +88,12 @@ pub const DOF_RAMP: f32 = 8.0;
 /// pixels). The y value is printed with five decimals; 1.6 / 360 is taken.
 pub const DOF_TAP_STEP: [f32; 2] = [0.0025, 1.6 / 360.];
 /// D298 FOUND (PS 14810 / 14815, fc3, fc5, fc7..fc11): the five tap directions, the corners
-/// of a regular pentagon (72 degrees apart); +y is up the image (MEASURED: the mirror of the
-/// replayed buffers matches only with y up, to within 0.6 of a level, against 13 with y
-/// down). Both passes use the same five.
+/// of a regular pentagon (72 degrees apart). Both passes use the same five. D313 (part 64):
+/// +y is down the picture (MEASURED on the replayed buffers read in their stored row order,
+/// whose first row is the top of the picture: all eight ring passes of 8348, 8980 and 14790,
+/// DoF 1's and DoF 2's, fit within 0.02 of a level with y down against 0.05 to 0.27 with y
+/// up; FOUND: every program holds the same five directions). D298's y up came from buffers
+/// read bottom row first (INFERRED: RenderDoc's saved images are upside down).
 pub const DOF_TAP_DIRS: [[f32; 2]; 5] = [
     [0., 1.],
     [-0.587_78, -0.809_02],
@@ -648,8 +651,8 @@ fn dof_source(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     return vec4<f32>(rgb * 0.25, gate);
 }
 // Passes 2 and 3: the centre and five taps on the pentagon at radius r (from the centre's
-// gate) x DOF_TAP_STEP, +y up the image; a tap counts when its gate is above the centre's
-// minus DOF_SAME_LAYER. Returns the mean colour and the centre's gate.
+// gate) x DOF_TAP_STEP, +y down the picture (D313, as uv); a tap counts when its gate is
+// above the centre's minus DOF_SAME_LAYER. Returns the mean colour and the centre's gate.
 fn ring(uv: vec2<f32>, scale: f32) -> vec4<f32> {
     let centre = textureSampleLevel(half_texture, linear_sampler, uv, 0.0);
     let r = saturate(DOF_RAMP * centre.a - (DOF_RAMP - 1.0));
@@ -657,7 +660,7 @@ fn ring(uv: vec2<f32>, scale: f32) -> vec4<f32> {
     var sum = centre.rgb;
     var count = 1.0;
     for (var k = 0; k < 5; k++) {
-        let d = dirs[k] * vec2<f32>(1.0, -1.0) * DOF_TAP_STEP * (r * scale);
+        let d = dirs[k] * DOF_TAP_STEP * (r * scale);
         let tap = textureSampleLevel(half_texture, linear_sampler, uv + d, 0.0);
         let keep = select(0.0, 1.0, tap.a > centre.a - DOF_SAME_LAYER);
         sum += tap.rgb * keep;
@@ -792,28 +795,7 @@ fn dof_cpu_form(
     w: usize,
     h: usize,
 ) -> Vec<[f32; 3]> {
-    type Img = (Vec<[f32; 4]>, usize, usize);
-    let bilinear = |img: &Img, u: f32, v: f32| -> [f32; 4] {
-        let (data, iw, ih) = img;
-        let (x, y) = (u * *iw as f32 - 0.5, v * *ih as f32 - 0.5);
-        let (x0, y0) = (x.floor(), y.floor());
-        let (fx, fy) = (x - x0, y - y0);
-        let at = |i: f32, j: f32| {
-            let i = (i.max(0.) as usize).min(iw - 1);
-            let j = (j.max(0.) as usize).min(ih - 1);
-            data[j * iw + i]
-        };
-        let (a, b, c, d) = (
-            at(x0, y0),
-            at(x0 + 1., y0),
-            at(x0, y0 + 1.),
-            at(x0 + 1., y0 + 1.),
-        );
-        std::array::from_fn(|k| {
-            (a[k] * (1. - fx) + b[k] * fx) * (1. - fy) + (c[k] * (1. - fx) + d[k] * fx) * fy
-        })
-    };
-    let byte = |v: f32| (v.clamp(0., 1.) * 255.).round() / 255.;
+    let bilinear = |img: &[[f32; 4]], u: f32, v: f32| bilinear_cpu(img, w / 2, h / 2, u, v);
     let (hw, hh) = (w / 2, h / 2);
     let mut half = vec![[0.; 4]; hw * hh];
     for j in 0..hh {
@@ -827,38 +809,17 @@ fn dof_cpu_form(
             half[j * hw + i] = c.map(byte);
         }
     }
-    let mut img: Img = (half, hw, hh);
+    let mut img = half;
     for pass in 0..DOF_RING_PASSES {
         let last = pass + 1 == DOF_RING_PASSES;
         let scale = if last { second_scale } else { 1. };
-        let mut out = vec![[0.; 4]; hw * hh];
-        for j in 0..hh {
-            for i in 0..hw {
-                let (u, v) = ((i as f32 + 0.5) / hw as f32, (j as f32 + 0.5) / hh as f32);
-                let centre = img.0[j * hw + i];
-                let r = radius(centre[3]) * scale;
-                let mut sum = [centre[0], centre[1], centre[2]];
-                let mut count = 1.;
-                for [dx, dy] in DOF_TAP_DIRS {
-                    let tap = bilinear(
-                        &img,
-                        u + dx * DOF_TAP_STEP[0] * r,
-                        v - dy * DOF_TAP_STEP[1] * r,
-                    );
-                    if tap[3] > centre[3] - DOF_SAME_LAYER {
-                        (0..3).for_each(|k| sum[k] += tap[k]);
-                        count += 1.;
-                    }
-                }
-                let a = if last && marked.is_some() {
-                    radius(centre[3])
-                } else {
-                    centre[3]
-                };
-                out[j * hw + i] = [sum[0] / count, sum[1] / count, sum[2] / count, a].map(byte);
+        let mut out = dof_ring_cpu(&img, hw, hh, scale);
+        if last && marked.is_some() {
+            for (o, c) in out.iter_mut().zip(&img) {
+                o[3] = byte(radius(c[3]));
             }
         }
-        img = (out, hw, hh);
+        img = out;
     }
     (0..w * h)
         .map(|p| {
@@ -888,6 +849,68 @@ fn dof_cpu_form(
             std::array::from_fn(|k| rgb[p][k] * (1. - b[3]) + b[k] * b[3])
         })
         .collect()
+}
+
+/// The 8-bit store of the half-size buffers.
+#[cfg(test)]
+fn byte(v: f32) -> f32 {
+    (v.clamp(0., 1.) * 255.).round() / 255.
+}
+
+/// A bilinear read of a row-major `iw` x `ih` image at uv (texel centres at +0.5, clamped
+/// to the edge).
+#[cfg(test)]
+fn bilinear_cpu(data: &[[f32; 4]], iw: usize, ih: usize, u: f32, v: f32) -> [f32; 4] {
+    let (x, y) = (u * iw as f32 - 0.5, v * ih as f32 - 0.5);
+    let (x0, y0) = (x.floor(), y.floor());
+    let (fx, fy) = (x - x0, y - y0);
+    let at = |i: f32, j: f32| {
+        let i = (i.max(0.) as usize).min(iw - 1);
+        let j = (j.max(0.) as usize).min(ih - 1);
+        data[j * iw + i]
+    };
+    let (a, b, c, d) = (
+        at(x0, y0),
+        at(x0 + 1., y0),
+        at(x0, y0 + 1.),
+        at(x0 + 1., y0 + 1.),
+    );
+    std::array::from_fn(|k| {
+        (a[k] * (1. - fx) + b[k] * fx) * (1. - fy) + (c[k] * (1. - fx) + d[k] * fx) * fy
+    })
+}
+
+/// D298 / D313: one ring over a half-size buffer (row-major, the first row the top of the
+/// picture): the centre and the five taps at `radius x scale x` [`DOF_TAP_STEP`], +y down the
+/// picture, counted when their gate is above the centre's minus [`DOF_SAME_LAYER`]; the mean
+/// colour and the centre's gate, stored in 8 bits.
+#[cfg(test)]
+fn dof_ring_cpu(img: &[[f32; 4]], hw: usize, hh: usize, scale: f32) -> Vec<[f32; 4]> {
+    let mut out = vec![[0.; 4]; hw * hh];
+    for j in 0..hh {
+        for i in 0..hw {
+            let (u, v) = ((i as f32 + 0.5) / hw as f32, (j as f32 + 0.5) / hh as f32);
+            let centre = img[j * hw + i];
+            let r = radius(centre[3]) * scale;
+            let mut sum = [centre[0], centre[1], centre[2]];
+            let mut count = 1.;
+            for [dx, dy] in DOF_TAP_DIRS {
+                let tap = bilinear_cpu(
+                    img,
+                    hw,
+                    hh,
+                    u + dx * DOF_TAP_STEP[0] * r,
+                    v + dy * DOF_TAP_STEP[1] * r,
+                );
+                if tap[3] > centre[3] - DOF_SAME_LAYER {
+                    (0..3).for_each(|k| sum[k] += tap[k]);
+                    count += 1.;
+                }
+            }
+            out[j * hw + i] = [sum[0] / count, sum[1] / count, sum[2] / count, centre[3]].map(byte);
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -1112,9 +1135,7 @@ mod tests {
                 assert!(source.contains("const DOF_SAME_LAYER: f32 = 0.01;"));
                 assert!(source.contains("vec2<f32>(-0.95106, 0.30901)"));
                 assert!(source.contains("tap.a > centre.a - DOF_SAME_LAYER"));
-                assert!(
-                    source.contains("dirs[k] * vec2<f32>(1.0, -1.0) * DOF_TAP_STEP * (r * scale)")
-                );
+                assert!(source.contains("let d = dirs[k] * DOF_TAP_STEP * (r * scale);"));
                 assert!(source.contains("if (ramp_at(p) <= 0.0)"));
                 assert!(source.contains("vec4<f32>(from_encoded(e), scene.a)"));
                 assert_eq!(source.contains("texture_depth_multisampled_2d"), msaa);
@@ -1351,6 +1372,41 @@ mod tests {
             }
         }
         assert!(outline > 0);
+    }
+
+    /// D313 MEASURED (part 64): +y of the taps points down the picture. On the game's
+    /// 640 x 360 buffer at radius 1, one bright texel at (320, 180) reaches the centres up and
+    /// to the side at (318, 179) and (322, 179) through the taps (+-0.951, +0.309) x 1.6
+    /// texels (bilinear weight 0.52 x 0.51, over the six counted samples), and no centre
+    /// below at (318, 181) or (322, 181); with y up it is the other way round.
+    #[test]
+    fn d313_ring_taps_point_down_the_picture() {
+        let (hw, hh) = (640, 360);
+        let mut half = vec![[0., 0., 0., 1.]; hw * hh];
+        half[180 * hw + 320] = [1.; 4];
+        let out = dof_ring_cpu(&half, hw, hh, 1.);
+        let at = |x: usize, y: usize| out[y * hw + x][0];
+        for x in [318, 322] {
+            assert!((at(x, 179) - 11. / 255.).abs() < 1e-6, "{x} {}", at(x, 179));
+            assert_eq!(at(x, 181), 0., "{x}");
+        }
+        // The gate is kept; the bright texel itself keeps a sixth (its taps all miss it).
+        assert_eq!(out[180 * hw + 320][3], 1.);
+        assert!(
+            (at(320, 180) - 1. / 6.).abs() < 1.5 / 255.,
+            "{}",
+            at(320, 180)
+        );
+    }
+
+    /// D313: the shader's taps and the CPU mirror's agree: +y of [`DOF_TAP_DIRS`] is +v (down
+    /// the picture), with no flip of the y axis.
+    #[test]
+    fn d313_shader_taps_without_a_y_flip() {
+        let source = preprocess(&shader_source(), &[]);
+        assert!(source.contains("let d = dirs[k] * DOF_TAP_STEP * (r * scale);"));
+        assert!(!source.contains("vec2<f32>(1.0, -1.0)"));
+        assert!(source.contains("+y down the picture"));
     }
 
     /// D312: the glass writes its depth while the depth of field runs, not otherwise.

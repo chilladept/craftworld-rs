@@ -11,7 +11,20 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D312 the depth of field in two passes (2026-10-15)
+## Latest: D313 the depth of field's ring against the game's own frame (2026-10-15)
+- Viewer (`docs/level-scripts.md` part 64): the ring taps' +y now points down the picture,
+  in both the shader and the CPU mirror (`dof_ring_cpu`).
+- MEASURED (8980, each pass run on the game's own input, `local-analysis/d313-blur/`): the
+  ring errors fall from 0.27 / 0.26 to 0.015 / 0.018 levels. All 8 ring passes (8348, 8980,
+  14790) fit with y down. Part 49's y up came from buffers read bottom row first, because
+  RenderDoc's saved images are upside down.
+- MEASURED: on the game's input, main's room gradient is already the game's (1.08 against
+  1.09). The stills are unchanged to 0.01 (open room 0.57 against 0.37), so the remaining
+  gap is upstream (INFERRED).
+- Also MEASURED: DoF 2's offset texture is non-zero in 8980, and replays of 2769 carry
+  orange artefact tiles.
+
+## Before: D312 the depth of field in two passes (2026-10-15)
 - Viewer (`docs/level-scripts.md` part 63): DoF 1 runs between the opaque and the transparent
   pass over the opaque scene (second ring at twice the step, alpha 8a - 7, beyond the plane);
   the glass writes its depth while the depth of field runs; DoF 2 (the post chain) composites
