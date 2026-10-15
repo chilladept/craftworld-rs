@@ -11,7 +11,18 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D315 two clocks in the change-over (2026-10-15)
+## Latest: D316 the planets zoom against the game's captures (2026-10-15)
+- Research (`docs/level-scripts.md` part 67), no code change; withdraws part 66's lead. MEASURED
+  (RenderDoc, six captures, `local-analysis/d316-zoom/`): the Earth draw's fog plane `vc[16]`
+  gives the game's blend s = 0.2160 / 0.4253 / 0.5748 / 0.8960 / 0.99275 at dissolve ticks 606 /
+  609 / 611 / 616 / 619, SmoothStep(0.05 n), the VM's exactly. Earth sphere fits match
+  `GetTransform` with the VM's s within 0.1 % in distance; the planets world turns by
+  2 x camera pitch change - 0.2 s about the eye (source not found).
+- MEASURED: the lead came from `th*.png` desktop grabs (0.83x the frame, 0.5-1.8 ticks early);
+  on the captured frames the Earth sits at viewer ticks 611.8-612.2 / 616.9-617.5. Open: the
+  viewer's Earth about 5 % small before rest (placement, INFERRED).
+
+## Before: D315 two clocks in the change-over (2026-10-15)
 - Research (`docs/level-scripts.md` part 66), no code change. FOUND (RenderDoc 8348 / 8980,
   `local-analysis/d315-dissolve/`): the pod's `vc[4]` alpha is 1 - v: 114/255 and 50/255, so
   v 0.55 / 0.80, ticks 611 / 616, the focus-range clock exactly. The Earth's radius puts the
