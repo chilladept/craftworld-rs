@@ -11,6 +11,7 @@
 //! the script per frame, is a later slice).
 //! Usage: `--pod-menu CLASS --snapshot SNAPSHOT --game-dir DIR [--ui-script-function NAME]
 //! [--qa-hide-ui] [--qa-capture local-analysis/NEW.png]`.
+use crate::game_font::GameFont;
 use crate::gooey_ui::{demo_capture, demo_capture_path, DemoCapture};
 use crate::ui_script::{run_script, DEFAULT_FUNCTION};
 use bevy::prelude::*;
@@ -739,8 +740,12 @@ pub struct ScriptMenuFrame {
 }
 
 impl ScriptMenuFrame {
-    /// The drawn menu of a level world, if its scripts have drawn one.
-    pub fn of(world: &lbp_runtime::LevelWorld) -> Option<Self> {
+    /// The drawn menu of a level world, if its scripts have drawn one; text measured in
+    /// the game's fonts where they are loaded (part 72).
+    pub fn of(
+        world: &lbp_runtime::LevelWorld,
+        fonts: Option<&lbp_runtime::GooeyFonts>,
+    ) -> Option<Self> {
         let menu = world.gooey.drawn_menu()?;
         // INFERRED: the frame fades in linearly over its transition time (frames) from
         // the frame it was first built on (`SetFrameTransitionTime(15, 15)`); MEASURED in
@@ -762,12 +767,135 @@ impl ScriptMenuFrame {
             .or(world.player_records.first())
             .map_or(lbp_script_vm::natives::DEFAULT_PLAYER_COLOUR, |r| r.colour);
         Some(Self {
-            placed: lbp_runtime::layout(menu.frame, menu.focus),
+            placed: lbp_runtime::layout_with(menu.frame, menu.focus, fonts),
             matrix: Mat4::from_cols_array(&menu.matrix),
             fade,
             colour: lbp_script_vm::natives::colour_vector(colour),
         })
     }
+}
+
+/// A decoded picture (RGBA, top mip).
+#[derive(Clone)]
+pub struct Picture {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
+/// D321 (part 72): what the scripted Pod's menu draws from the user's game data: the
+/// Gooey's fonts, the card's picture and the card's pins. Anything missing is drawn as
+/// before (the OS sans serif, flat colours).
+#[derive(Resource, Default)]
+pub struct MenuAssets {
+    pub fonts: std::collections::BTreeMap<lbp_runtime::GooeyFont, std::sync::Arc<GameFont>>,
+    /// The layout's measure of the loaded fonts.
+    pub gooey_fonts: lbp_runtime::GooeyFonts,
+    pub picture: Option<Picture>,
+    pub pins: Vec<Picture>,
+}
+
+/// The default picture of a player's card: `gamedata/texture_library/pod_computer/
+/// profile_default.tex`. FOUND (01.33): its GUID is in the engine's GUID table at
+/// 0xc2726c, next to the level picture's default (`level_default.tex`, 000029ba).
+/// MEASURED (part 72): the game frame's card picture is this texture (mean difference 8.0
+/// levels over the face against 41 for a flat colour), turned with the card. INFERRED: it
+/// stands for the player's own picture (the PSN avatar) when there is none, offline.
+pub const PROFILE_DEFAULT_PICTURE: u32 = 0x28d8;
+
+/// Loads [`MenuAssets`] for the scripted Pod: the fonts as loose files under the game
+/// directories, the card picture and the pins (`--pod-card-pins HEX,HEX,HEX`, pin
+/// texture GUIDs) through the catalog. Returns a line for the log.
+pub fn load_menu_assets(
+    game: &str,
+    source: &lbp_catalog::attachment::AttachedSource,
+    catalog: &lbp_catalog::Catalog,
+    control: &lbp_catalog::LoadControl,
+    pins: &[u32],
+) -> (MenuAssets, String) {
+    let (fonts, missing) = crate::game_font::load_fonts(game, catalog);
+    let gooey_fonts = lbp_runtime::GooeyFonts {
+        faces: fonts.iter().map(|(k, f)| (*k, f.advances())).collect(),
+    };
+    let picture = |guid: u32| {
+        lbp_preview::story::decode_icon(
+            source,
+            catalog,
+            lbp_preview::story::ResourceKey::Guid(guid),
+            control,
+        )
+        .map(|i| Picture {
+            width: i.width,
+            height: i.height,
+            rgba: i.rgba,
+        })
+        .map_err(|e| format!("{guid:08x}: {e}"))
+    };
+    let mut notes = missing;
+    let card = picture(PROFILE_DEFAULT_PICTURE)
+        .map_err(|e| notes.push(e))
+        .ok();
+    let pins: Vec<Picture> = pins
+        .iter()
+        .filter_map(|g| picture(*g).map_err(|e| notes.push(e)).ok())
+        .collect();
+    let line = format!(
+        "Pod menu assets: fonts {:?}; card picture {}; pins {}{}",
+        fonts.keys().collect::<Vec<_>>(),
+        if card.is_some() {
+            "profile_default"
+        } else {
+            "none"
+        },
+        pins.len(),
+        if notes.is_empty() {
+            String::new()
+        } else {
+            format!("; not loaded: {}", notes.join("; "))
+        }
+    );
+    (
+        MenuAssets {
+            fonts: fonts
+                .into_iter()
+                .map(|(k, f)| (k, std::sync::Arc::new(f)))
+                .collect(),
+            gooey_fonts,
+            picture: card,
+            pins,
+        },
+        line,
+    )
+}
+
+/// `--pod-card-pins HEX,HEX,HEX`: the pin textures the card shows (the player's profile,
+/// which the viewer does not read, chooses them in the game).
+pub fn card_pins_option(all: &[String]) -> Result<Vec<u32>, String> {
+    let Some(i) = all.iter().position(|a| a == "--pod-card-pins") else {
+        return Ok(Vec::new());
+    };
+    let list = all
+        .get(i + 1)
+        .ok_or("--pod-card-pins requires HEX,HEX,HEX")?;
+    list.split(',')
+        .filter(|g| !g.is_empty())
+        .take(3)
+        .map(|g| u32::from_str_radix(g.trim(), 16).map_err(|_| format!("--pod-card-pins: {g}")))
+        .collect()
+}
+
+fn image_of(width: u32, height: u32, rgba: Vec<u8>) -> Image {
+    Image::new(
+        bevy::render::render_resource::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        bevy::render::render_resource::TextureDimension::D2,
+        rgba,
+        bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+        bevy::asset::RenderAssetUsages::RENDER_WORLD,
+    )
 }
 
 #[derive(Component)]
@@ -785,6 +913,21 @@ pub(crate) struct ScriptMenuPart([f32; 3]);
 #[derive(Component)]
 pub(crate) struct ScriptMenuLabel(usize);
 
+/// A label drawn in the game's font: the item, its text and font, root-frame units a font
+/// pixel, and the image pixels a font pixel it was last rasterized at.
+#[derive(Component)]
+pub(crate) struct GameLabel {
+    item: usize,
+    text: String,
+    font: std::sync::Arc<GameFont>,
+    units_per_font_pixel: f32,
+    built: f32,
+}
+
+/// A picture of the card (the player's picture, a pin), faded with the menu.
+#[derive(Component)]
+pub(crate) struct ScriptMenuImage;
+
 /// The focused pill's colour: MEASURED on the game frame's Story pill (31 to 51, 204 to
 /// 211, 200 to 204), the third colour of the default player colour (entry 0 of the script
 /// class `PlayerColour`: 29, 220, 205). INFERRED: the focus takes that colour.
@@ -795,10 +938,22 @@ const PILL_ALPHA: f32 = 82. / 255.;
 const LABEL_ALPHA: f32 = 0.62;
 /// Text size against the pill's height (INFERRED by eye from the game frame's letters).
 const LABEL_SIZE: f32 = 0.56;
-/// PLACEHOLDER card: the white frame MEASURED on the game frame (209, 207, 208 at 0.88),
-/// the picture a flat colour (the mean of the game's picture of the player), the three
-/// round icons along its bottom edge in the game's colours.
-const CARD_FRAME: [f32; 4] = [209. / 255., 207. / 255., 208. / 255., 0.88];
+/// A game-font label is rasterized again when its size has changed by this share.
+const LABEL_RASTER_STEP: f32 = 0.02;
+/// The card: the white frame MEASURED on the game frame (216, 221, 226, opaque), turned
+/// clockwise by `CARD_TURN` (MEASURED: its edges 2.9 to 3.8 degrees, the picture's best
+/// match 2.5; what turns it is not found). Without the picture, a flat colour (the mean of
+/// the game's picture of the player); without pins (`--pod-card-pins`), three round
+/// PLACEHOLDER icons in the game's colours.
+const CARD_FRAME: [f32; 4] = [216. / 255., 221. / 255., 226. / 255., 1.];
+const CARD_TURN: f32 = 0.05;
+/// MEASURED on the game frame (part 72), in shares of the card: the picture's left, top,
+/// width and height (108 px of a 118 x 145 px card, square) ...
+const CARD_PICTURE_BOX: [f32; 4] = [4.2, 4.5, 91.5, 74.5];
+/// ... and the pins: their centres across and down, their width (41 px).
+const CARD_PIN_CENTRES: [f32; 3] = [18.5, 49.3, 80.];
+const CARD_PIN_DOWN: f32 = 86.;
+const CARD_PIN_WIDTH: f32 = 35.;
 const CARD_PICTURE: [f32; 3] = [132. / 255., 128. / 255., 105. / 255.];
 const CARD_ICONS: [[f32; 3]; 3] = [
     [161. / 255., 179. / 255., 132. / 255.],
@@ -811,7 +966,31 @@ fn rgba(c: [f32; 3], a: f32) -> Color {
 }
 
 /// Builds the menu's nodes for `menu` under a new root.
-fn spawn_script_menu(commands: &mut Commands, menu: &ScriptMenuFrame) {
+fn spawn_script_menu(
+    commands: &mut Commands,
+    menu: &ScriptMenuFrame,
+    assets: Option<&MenuAssets>,
+    images: &mut Assets<Image>,
+) {
+    let font_of = |style: i32| {
+        let (font, size) = lbp_runtime::text_style(style);
+        Some((
+            assets?.fonts.get(&font)?.clone(),
+            lbp_runtime::units_per_font_pixel(size),
+        ))
+    };
+    // The card's pictures, made once per build.
+    let card_picture = assets
+        .and_then(|a| a.picture.as_ref())
+        .map(|p| images.add(image_of(p.width, p.height, p.rgba.clone())));
+    let card_pins: Vec<Handle<Image>> = assets
+        .map(|a| {
+            a.pins
+                .iter()
+                .map(|p| images.add(image_of(p.width, p.height, p.rgba.clone())))
+                .collect()
+        })
+        .unwrap_or_default();
     let root = commands
         .spawn((
             Node {
@@ -825,6 +1004,47 @@ fn spawn_script_menu(commands: &mut Commands, menu: &ScriptMenuFrame) {
         .id();
     for (i, item) in menu.placed.iter().enumerate() {
         let node = match &item.kind {
+            lbp_runtime::PlacedKind::Button {
+                label,
+                style,
+                font_scale,
+                ..
+            }
+            | lbp_runtime::PlacedKind::Text {
+                text: label,
+                style,
+                font_scale,
+            } if font_of(*style).is_some() => {
+                let (font, units) = font_of(*style).expect("checked");
+                commands
+                    .spawn((
+                        Node {
+                            position_type: PositionType::Absolute,
+                            justify_content: JustifyContent::Center,
+                            align_items: AlignItems::Center,
+                            border_radius: BorderRadius::all(Val::Px(9999.)),
+                            ..default()
+                        },
+                        UiTransform::IDENTITY,
+                        BackgroundColor(Color::NONE),
+                        ScriptMenuNode(i),
+                        children![(
+                            Node {
+                                flex_shrink: 0.,
+                                ..default()
+                            },
+                            ImageNode::default(),
+                            GameLabel {
+                                item: i,
+                                text: label.clone(),
+                                font,
+                                units_per_font_pixel: units * font_scale,
+                                built: 0.,
+                            },
+                        )],
+                    ))
+                    .id()
+            }
             lbp_runtime::PlacedKind::Button { label, .. } => commands
                 .spawn((
                     Node {
@@ -851,25 +1071,10 @@ fn spawn_script_menu(commands: &mut Commands, menu: &ScriptMenuFrame) {
                 ))
                 .id(),
             lbp_runtime::PlacedKind::PlayerIcon => {
-                let icon = |n: usize| {
-                    (
-                        Node {
-                            position_type: PositionType::Absolute,
-                            left: Val::Percent(3.5 + 29. * n as f32),
-                            top: Val::Percent(74.),
-                            width: Val::Percent(27.),
-                            height: Val::Percent(22.),
-                            border_radius: BorderRadius::all(Val::Px(9999.)),
-                            ..default()
-                        },
-                        BackgroundColor(rgba(CARD_ICONS[n], 1.)),
-                        ScriptMenuPart(CARD_ICONS[n]),
-                    )
-                };
                 // Every part is placed in percent of the card itself (absolute), so the
-                // card keeps the size the projection gives it. Places by eye from the game
-                // frame's card.
-                commands
+                // card keeps the size the projection gives it; the pins are square, their
+                // height a share of the card's width (`aspect_ratio`).
+                let card = commands
                     .spawn((
                         Node {
                             position_type: PositionType::Absolute,
@@ -878,27 +1083,65 @@ fn spawn_script_menu(commands: &mut Commands, menu: &ScriptMenuFrame) {
                         UiTransform::IDENTITY,
                         BackgroundColor(Color::NONE),
                         ScriptMenuNode(i),
-                        children![
-                            (
-                                Node {
-                                    position_type: PositionType::Absolute,
-                                    left: Val::Percent(8.),
-                                    top: Val::Percent(5.),
-                                    width: Val::Percent(85.),
-                                    height: Val::Percent(71.),
-                                    ..default()
-                                },
-                                BackgroundColor(rgba(CARD_PICTURE, 1.)),
-                                ScriptMenuPart(CARD_PICTURE),
-                            ),
-                            icon(0),
-                            icon(1),
-                            icon(2),
-                        ],
                     ))
-                    .id()
+                    .id();
+                let [left, top, width, height] = CARD_PICTURE_BOX;
+                let picture_node = Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Percent(left),
+                    top: Val::Percent(top),
+                    width: Val::Percent(width),
+                    height: Val::Percent(height),
+                    ..default()
+                };
+                let picture = match &card_picture {
+                    Some(h) => commands
+                        .spawn((picture_node, ImageNode::new(h.clone()), ScriptMenuImage))
+                        .id(),
+                    None => commands
+                        .spawn((
+                            picture_node,
+                            BackgroundColor(rgba(CARD_PICTURE, 1.)),
+                            ScriptMenuPart(CARD_PICTURE),
+                        ))
+                        .id(),
+                };
+                commands.entity(card).add_child(picture);
+                for (n, x) in CARD_PIN_CENTRES.into_iter().enumerate() {
+                    let pin_node = Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Percent(x - CARD_PIN_WIDTH / 2.),
+                        top: Val::Percent(CARD_PIN_DOWN),
+                        width: Val::Percent(CARD_PIN_WIDTH),
+                        aspect_ratio: Some(1.),
+                        margin: UiRect::top(Val::Percent(-CARD_PIN_WIDTH / 2.)),
+                        border_radius: BorderRadius::all(Val::Px(9999.)),
+                        ..default()
+                    };
+                    let pin = match card_pins.get(n) {
+                        Some(h) => commands
+                            .spawn((
+                                Node {
+                                    border_radius: BorderRadius::ZERO,
+                                    ..pin_node
+                                },
+                                ImageNode::new(h.clone()),
+                                ScriptMenuImage,
+                            ))
+                            .id(),
+                        None => commands
+                            .spawn((
+                                pin_node,
+                                BackgroundColor(rgba(CARD_ICONS[n], 1.)),
+                                ScriptMenuPart(CARD_ICONS[n]),
+                            ))
+                            .id(),
+                    };
+                    commands.entity(card).add_child(pin);
+                }
+                card
             }
-            lbp_runtime::PlacedKind::Text(text) => commands
+            lbp_runtime::PlacedKind::Text { text, .. } => commands
                 .spawn((
                     Node {
                         position_type: PositionType::Absolute,
@@ -940,8 +1183,9 @@ fn menu_to_screen(clip_from_world: Mat4, world_from_menu: Mat4, p: Vec2, size: V
 /// is placed: every item at the place the menu's matrix, the level's display matrix and the
 /// camera give its centre, sized and turned by the same projection (the menu follows the
 /// planets world through the zoom), the pill colours of the game frame, faded in by the
-/// frame's transition. Text is the OS sans serif in bold, not the game's font; the card is
-/// a PLACEHOLDER (no picture of the player).
+/// frame's transition. D321: text in the game's font and the card with the player's
+/// picture and pins where [`MenuAssets`] has them (else the OS sans serif in bold and flat
+/// PLACEHOLDER colours).
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub(crate) fn paint_script_menu(
     mut commands: Commands,
@@ -961,6 +1205,12 @@ pub(crate) fn paint_script_menu(
     >,
     mut labels: Query<(&ScriptMenuLabel, &mut TextFont, &mut TextColor)>,
     mut parts: Query<(&ScriptMenuPart, &mut BackgroundColor), Without<ScriptMenuNode>>,
+    mut game_labels: Query<
+        (&mut GameLabel, &mut Node, &mut ImageNode),
+        (Without<ScriptMenuNode>, Without<ScriptMenuImage>),
+    >,
+    mut pictures: Query<&mut ImageNode, (With<ScriptMenuImage>, Without<GameLabel>)>,
+    (assets, mut images): (Option<Res<MenuAssets>>, ResMut<Assets<Image>>),
     mut built: Local<Option<usize>>,
 ) {
     let frame = menu.as_ref().and_then(|m| m.0.as_ref());
@@ -976,7 +1226,7 @@ pub(crate) fn paint_script_menu(
         for (e, _) in &roots {
             commands.entity(e).despawn();
         }
-        spawn_script_menu(&mut commands, frame);
+        spawn_script_menu(&mut commands, frame, assets.as_deref(), &mut images);
         *built = Some(frame.placed.len());
         return;
     }
@@ -991,6 +1241,11 @@ pub(crate) fn paint_script_menu(
     for (ScriptMenuPart(c), mut background) in &mut parts {
         *background = BackgroundColor(rgba(*c, fade));
     }
+    for mut image in &mut pictures {
+        image.color = Color::srgba(1., 1., 1., fade);
+    }
+    // Screen pixels a root-frame unit along each item's own x (for the game-font labels).
+    let mut px_per_unit = vec![None; frame.placed.len()];
     for (ScriptMenuNode(i), mut node, mut ui, mut background) in &mut nodes {
         let Some(item) = frame.placed.get(*i) else {
             continue;
@@ -1005,12 +1260,18 @@ pub(crate) fn paint_script_menu(
             node.display = Display::None;
             continue;
         }
+        px_per_unit[*i] = Some(dx.length());
         node.display = Display::Flex;
         node.left = Val::Px(at.x - w / 2.);
         node.top = Val::Px(at.y - h / 2.);
         node.width = Val::Px(w);
         node.height = Val::Px(h);
-        ui.rotation = Rot2::radians(item.angle + dx.y.atan2(dx.x));
+        let turn = if item.kind == lbp_runtime::PlacedKind::PlayerIcon {
+            CARD_TURN
+        } else {
+            0.
+        };
+        ui.rotation = Rot2::radians(item.angle + turn + dx.y.atan2(dx.x));
         *background = BackgroundColor(match &item.kind {
             lbp_runtime::PlacedKind::Button { focused: true, .. } => rgba(FOCUS_COLOUR, fade),
             lbp_runtime::PlacedKind::Button { .. } => {
@@ -1023,7 +1284,7 @@ pub(crate) fn paint_script_menu(
                 CARD_FRAME[2],
                 CARD_FRAME[3] * fade,
             ),
-            lbp_runtime::PlacedKind::Text(_) => Color::NONE,
+            lbp_runtime::PlacedKind::Text { .. } => Color::NONE,
         });
         for (ScriptMenuLabel(j), mut font, mut colour) in &mut labels {
             if j != i {
@@ -1041,11 +1302,58 @@ pub(crate) fn paint_script_menu(
             *colour = TextColor(Color::srgba(1., 1., 1., a * fade));
         }
     }
+    // Game-font labels: rasterized from the font's distance field at the size the
+    // projection gives (the style's units a font pixel, the focused pill's scale), again
+    // when that size changes; centred in the pill by their advance and cap height.
+    for (mut label, mut node, mut image) in &mut game_labels {
+        let Some(item) = frame.placed.get(label.item) else {
+            continue;
+        };
+        let Some(scale) = px_per_unit.get(label.item).copied().flatten() else {
+            continue;
+        };
+        let focused = matches!(
+            item.kind,
+            lbp_runtime::PlacedKind::Button { focused: true, .. }
+        );
+        let k = scale
+            * label.units_per_font_pixel
+            * if focused {
+                lbp_runtime::FOCUS_SCALE
+            } else {
+                1.
+            };
+        if (k / label.built - 1.).abs() > LABEL_RASTER_STEP || label.built == 0. {
+            label.built = k;
+            match label.font.raster(&label.text, k) {
+                Some(r) => {
+                    node.width = Val::Px(r.width as f32);
+                    node.height = Val::Px(r.height as f32);
+                    image.image = images.add(image_of(r.width, r.height, r.rgba()));
+                }
+                None => node.display = Display::None,
+            }
+        }
+        let a = if focused { 1. } else { LABEL_ALPHA };
+        image.color = Color::srgba(1., 1., 1., a * fade);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn d321_card_pins_option_reads_up_to_three_guids() {
+        let args = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(card_pins_option(&args(&["--x"])), Ok(Vec::new()));
+        assert_eq!(
+            card_pins_option(&args(&["--pod-card-pins", "1e755,1e75e,1e753,1"])),
+            Ok(vec![0x1e755, 0x1e75e, 0x1e753])
+        );
+        assert!(card_pins_option(&args(&["--pod-card-pins", "1e7g5"])).is_err());
+        assert!(card_pins_option(&args(&["--pod-card-pins"])).is_err());
+    }
 
     #[test]
     fn d319_menu_points_project_through_the_menu_matrix() {

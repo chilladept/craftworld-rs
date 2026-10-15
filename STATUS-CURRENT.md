@@ -11,7 +11,21 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D319 the Pod main menu drawn from the scripts (2026-10-15)
+## Latest: D321 the Pod main menu in the game's font, with the player's card (2026-10-15)
+- Runtime and viewer (`docs/level-scripts.md` part 72): FOUND (01.33) the Gooey's text style
+  table (style 1, the menu's buttons: font 1, size 32) and the font GUID table; font 1 is
+  Eigerdals Black (INFERRED from the enum names, MEASURED on the frame). The fonts are loose disc
+  files (`gamedata/fonts`, outside DATA.FARC), read from a game directory; glyphs are distance
+  fields. Text drawn from them at size / 16 units a font pixel, advances rounded up; pills
+  measured with the font (pad 52.6 fitted). Card: `profile_default.tex` (000028d8, FOUND in the
+  engine's GUID table, MEASURED as the frame's picture), the frame's colour and turn, and the
+  profile's pins given by `--pod-card-pins` (the frame's: night owl, pod time, early bird).
+- MEASURED (rt20_9601 / 8980): text spans Community 148.0 / 148.0, Recent Activity 202.0 /
+  200.5, Me 41.0 / 40.5, Story 107.3 / 111.1 px at 619 (game / viewer; D319 136.5 / 166.5 /
+  30.5 / 90.2); card box 127 x 155 against 126 x 153. Open: the viewer's labels and pills are
+  brighter (linear UI blending), the profile itself, the card's shadow.
+
+## Before: D319 the Pod main menu drawn from the scripts (2026-10-15)
 - Runtime and viewer (`docs/level-scripts.md` part 70): the main menu state's Gooey natives are
   answered (`World::ui_call`, `lbp-runtime` `gooey.rs`), so its own `UpdateUI` builds the frame
   tree (Story, Community, Recent Activity, Store, the player card, Me; focus on Story), and the

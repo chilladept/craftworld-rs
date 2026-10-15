@@ -17,6 +17,7 @@ lbp-script-vm.workspace = true
 lbp-ui-script.workspace = true
 lbp-level.workspace = true
 lbp-runtime.workspace = true
+lbp-resource.workspace = true
 lbp-sim.workspace = true
 
 [dev-dependencies]

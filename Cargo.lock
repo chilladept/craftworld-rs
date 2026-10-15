@@ -3410,6 +3410,7 @@ dependencies = [
  "lbp-level",
  "lbp-mesh",
  "lbp-preview",
+ "lbp-resource",
  "lbp-runtime",
  "lbp-script-vm",
  "lbp-sim",

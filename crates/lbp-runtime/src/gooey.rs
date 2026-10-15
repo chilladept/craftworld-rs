@@ -12,7 +12,7 @@
 use crate::{LevelScripts, LevelWorld, StepReport};
 use lbp_script_vm::natives::Bindings;
 use lbp_script_vm::{Value, Vm};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// The pod computer's script function the engine's per-frame draw function calls with one
 /// matrix ([`LevelScripts::pod_computer_draw`]).
@@ -657,9 +657,158 @@ pub enum PlacedKind {
         label: String,
         focused: bool,
         state: i32,
+        /// `Gooey.EGooeyTextStyle` and the font scale in force ([`text_style`]).
+        style: i32,
+        font_scale: f32,
     },
     PlayerIcon,
-    Text(String),
+    Text {
+        text: String,
+        style: i32,
+        font_scale: f32,
+    },
+}
+
+/// The Gooey's fonts, in the order of the script enum's names (`FONT_HELVETICA`,
+/// `FONT_HEAVY`, `FONT_CRIKEY_SQUAT`, `FONT_CRIKEY_TALL`, `FONT_ICON_PATCH`; the 01.33
+/// EBOOT's enum name table); INFERRED that this order is their values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum GooeyFont {
+    Helvetica,
+    Heavy,
+    CrikeySquat,
+    CrikeyTall,
+    IconPatch,
+}
+
+impl GooeyFont {
+    pub const ALL: [Self; 5] = [
+        Self::Helvetica,
+        Self::Heavy,
+        Self::CrikeySquat,
+        Self::CrikeyTall,
+        Self::IconPatch,
+    ];
+
+    pub fn from_index(i: u8) -> Option<Self> {
+        Self::ALL.get(usize::from(i)).copied()
+    }
+
+    /// The font file the engine loads for it: FOUND (01.33, the GUID table at 0xc26178:
+    /// 000189f0, 000189f1, 000203db, 00004144, 000305bc, after the Chinese table's four)
+    /// these five fonts; which file is which enum value is INFERRED from the names
+    /// (`FONT_HEAVY` the black weight of Eigerdals) and MEASURED for `FONT_HEAVY` (the
+    /// main menu's letters in the game frame are Eigerdals Black's, part 72).
+    pub fn map_path(self) -> &'static str {
+        match self {
+            Self::Helvetica => "gamedata/fonts/helveticaneueltstd-md.fnt",
+            Self::Heavy => "gamedata/fonts/eigerdalsbla.fnt",
+            Self::CrikeySquat => "gamedata/fonts/crikey_squat.fnt",
+            Self::CrikeyTall => "gamedata/fonts/crikey_tall.fnt",
+            Self::IconPatch => "gamedata/fonts/icon_patch_font.fnt",
+        }
+    }
+}
+
+/// FOUND (01.33, the table the Gooey's `GetFont` / `GetFontSize` natives read through
+/// 0x48a518 / 0x48a584, at 0xc25cec): each `EGooeyTextStyle` value's font (an index of
+/// [`GooeyFont`]) and size. A size is multiplied by a scale the engine keeps per Gooey
+/// (not read; INFERRED 1 here). The main menu's buttons pass style 1: font 1, size 32.
+pub const TEXT_STYLES: [(u8, f32); 26] = [
+    (1, 36.),
+    (1, 32.),
+    (1, 32.),
+    (1, 26.),
+    (1, 26.),
+    (2, 22.),
+    (0, 26.),
+    (1, 20.),
+    (1, 24.),
+    (1, 28.),
+    (1, 32.),
+    (1, 36.),
+    (1, 48.),
+    (1, 64.),
+    (2, 22.),
+    (2, 18.),
+    (3, 48.),
+    (2, 18.),
+    (3, 48.),
+    (2, 40.),
+    (2, 40.),
+    (2, 32.),
+    (2, 32.),
+    (2, 24.),
+    (2, 24.),
+    (0, 22.),
+];
+
+/// The size the engine gives a style outside the table (FOUND, 01.33: the constant the
+/// size function falls back on), with the table's first font.
+pub const DEFAULT_TEXT_SIZE: f32 = 16.;
+
+/// The font and size of a text style ([`TEXT_STYLES`]).
+pub fn text_style(style: i32) -> (GooeyFont, f32) {
+    usize::try_from(style)
+        .ok()
+        .and_then(|i| TEXT_STYLES.get(i))
+        .and_then(|&(f, size)| Some((GooeyFont::from_index(f)?, size)))
+        .unwrap_or((GooeyFont::Helvetica, DEFAULT_TEXT_SIZE))
+}
+
+/// Root-frame units per font pixel at a text size: INFERRED size / 16 (a font's glyphs
+/// are made for size 16). MEASURED (part 72, game frame `rt20_9601`): style 1 (size 32)
+/// draws Eigerdals Black at 1.96 to 2.11 units per font pixel (cap height and ink widths of
+/// Me, Store and Recent Activity mapped through the menu's matrix).
+pub fn units_per_font_pixel(size: f32) -> f32 {
+    size / DEFAULT_TEXT_SIZE
+}
+
+/// A loaded font's advances in whole font pixels by character. INFERRED: each advance
+/// (1/64 pixel in the font file) is rounded up to a whole pixel; MEASURED (part 72) that
+/// gives the game frame's ink widths of Recent, Activity, Store and Me within 2 units,
+/// where unrounded advances are 6 to 19 units short on the longer words.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FontAdvances {
+    by_char: HashMap<char, f32>,
+}
+
+impl FontAdvances {
+    /// From (UTF-16 code unit, advance in 1/64 pixel) pairs, as a font face's glyph
+    /// records give them.
+    pub fn new(glyphs: impl IntoIterator<Item = (u16, i16)>) -> Self {
+        let by_char = glyphs
+            .into_iter()
+            .filter_map(|(c, a)| Some((char::from_u32(u32::from(c))?, advance_pixels(a))))
+            .collect();
+        Self { by_char }
+    }
+
+    /// The advance of a text in font pixels; `None` when a character has no glyph.
+    pub fn width(&self, text: &str) -> Option<f32> {
+        text.chars().map(|c| self.by_char.get(&c).copied()).sum()
+    }
+}
+
+/// An advance in 1/64 font pixel, rounded up to whole pixels ([`FontAdvances`]).
+pub fn advance_pixels(advance: i16) -> f32 {
+    (f32::from(advance) / 64.).ceil()
+}
+
+/// The Gooey's loaded fonts (any may be missing; text in a missing font is measured by the
+/// fitted [`text_ems`] model instead).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct GooeyFonts {
+    pub faces: BTreeMap<GooeyFont, FontAdvances>,
+}
+
+impl GooeyFonts {
+    /// A text's width in root-frame units at a style and font scale.
+    pub fn text_width(&self, text: &str, style: i32, font_scale: f32) -> Option<f32> {
+        let (font, size) = text_style(style);
+        let width = self.faces.get(&font)?.width(text)?;
+        Some(width * units_per_font_pixel(size) * font_scale)
+    }
 }
 
 /// Gooey metrics in the root frame's units, fitted to the game frame's main menu (part 70;
@@ -668,6 +817,10 @@ pub enum PlacedKind {
 pub const BUTTON_EM: f32 = 56.3;
 /// ... with this much pill at the two ends together (the pill is as long as the node) ...
 pub const BUTTON_PAD: f32 = 58.9;
+/// ... or, measured with the game's font ([`GooeyFonts`]), this much (fitted, part 72: the
+/// game frame's pills less their texts' rounded advances at 2 units a font pixel, 49.0
+/// to 57.7 units over the five buttons).
+pub const BUTTON_PAD_FONT: f32 = 52.6;
 /// ... in a node this tall (a row: rows have no gap); the pill drawn in it is
 /// [`PILL_HEIGHT`] tall.
 pub const BUTTON_ROW: f32 = 103.6;
@@ -715,18 +868,28 @@ fn share(code: i32) -> f32 {
     }
 }
 
-/// The size an item asks for.
-fn measure(item: &GooeyItem) -> [f32; 2] {
+/// The size an item asks for; text measured in the game's font when it is loaded.
+fn measure(item: &GooeyItem, fonts: Option<&GooeyFonts>) -> [f32; 2] {
+    let font = |text: &str, style: i32, scale: f32| fonts?.text_width(text, style, scale);
     match item {
-        GooeyItem::Frame(f) => frame_size(f, None),
+        GooeyItem::Frame(f) => frame_size(f, None, fonts),
         GooeyItem::Button(b) => [
-            BUTTON_PAD + BUTTON_EM * b.font_scale * text_ems(&b.label),
+            font(&b.label, b.text_style, b.font_scale).map_or_else(
+                || BUTTON_PAD + BUTTON_EM * b.font_scale * text_ems(&b.label),
+                |w| BUTTON_PAD_FONT + w,
+            ),
             BUTTON_ROW,
         ],
         GooeyItem::PlayerIcon { .. } => PLAYER_ICON,
         GooeyItem::Text {
-            text, font_scale, ..
-        } => [BUTTON_EM * font_scale * text_ems(text), BUTTON_ROW],
+            text,
+            style,
+            font_scale,
+        } => [
+            font(text, *style, *font_scale)
+                .unwrap_or_else(|| BUTTON_EM * font_scale * text_ems(text)),
+            BUTTON_ROW,
+        ],
         _ => [0., 0.],
     }
 }
@@ -749,9 +912,9 @@ fn rows(f: &GooeyFrame) -> Vec<Vec<&GooeyItem>> {
 }
 
 /// The content size of a frame's children (columns side by side, else rows stacked).
-fn content(f: &GooeyFrame) -> [f32; 2] {
+fn content(f: &GooeyFrame, fonts: Option<&GooeyFonts>) -> [f32; 2] {
     if !f.columns.is_empty() {
-        let sizes: Vec<[f32; 2]> = f.children.iter().map(measure).collect();
+        let sizes: Vec<[f32; 2]> = f.children.iter().map(|c| measure(c, fonts)).collect();
         return [
             sizes.iter().map(|s| s[0]).sum(),
             sizes.iter().map(|s| s[1]).fold(0., f32::max),
@@ -761,7 +924,7 @@ fn content(f: &GooeyFrame) -> [f32; 2] {
     let mut w: f32 = 0.;
     let mut h = 0.;
     for r in &rows {
-        let sizes: Vec<[f32; 2]> = r.iter().map(|c| measure(c)).collect();
+        let sizes: Vec<[f32; 2]> = r.iter().map(|c| measure(c, fonts)).collect();
         w = w.max(sizes.iter().map(|s| s[0]).sum());
         h += sizes.iter().map(|s| s[1]).fold(0., f32::max);
     }
@@ -770,9 +933,9 @@ fn content(f: &GooeyFrame) -> [f32; 2] {
 
 /// A frame's size: `SetFrameSizing` per axis (above 0: that size; below 0: the space
 /// given, `fill`; 0 or none: the content and borders).
-fn frame_size(f: &GooeyFrame, fill: Option<[f32; 2]>) -> [f32; 2] {
+fn frame_size(f: &GooeyFrame, fill: Option<[f32; 2]>, fonts: Option<&GooeyFonts>) -> [f32; 2] {
     let b = borders(f);
-    let c = content(f);
+    let c = content(f, fonts);
     let fit = [c[0] + b[0] + b[2], c[1] + b[1] + b[3]];
     let s = f.sizing.unwrap_or([0., 0.]);
     let axis = |i: usize| {
@@ -787,11 +950,16 @@ fn frame_size(f: &GooeyFrame, fill: Option<[f32; 2]>) -> [f32; 2] {
     [axis(0), axis(1)]
 }
 
-fn place(item: &GooeyItem, r: Rect, angle_focus: (Option<i32>, &mut Vec<PlacedItem>)) {
-    let (focus, out) = angle_focus;
+fn place(
+    item: &GooeyItem,
+    r: Rect,
+    ctx: (Option<i32>, Option<&GooeyFonts>),
+    out: &mut Vec<PlacedItem>,
+) {
+    let focus = ctx.0;
     let centre = [r.x + r.w / 2., r.y + r.h / 2.];
     match item {
-        GooeyItem::Frame(f) => place_frame(f, r, focus, out),
+        GooeyItem::Frame(f) => place_frame(f, r, ctx, out),
         GooeyItem::Button(b) => {
             // The pill: as long as the node, [`PILL_HEIGHT`] tall, larger when focused.
             let focused = focus == Some(b.id);
@@ -802,6 +970,8 @@ fn place(item: &GooeyItem, r: Rect, angle_focus: (Option<i32>, &mut Vec<PlacedIt
                     label: b.label.clone(),
                     focused,
                     state: b.state,
+                    style: b.text_style,
+                    font_scale: b.font_scale,
                 },
                 centre,
                 size: [r.w * k, PILL_HEIGHT * k],
@@ -814,8 +984,16 @@ fn place(item: &GooeyItem, r: Rect, angle_focus: (Option<i32>, &mut Vec<PlacedIt
             size: PLAYER_CARD,
             angle: 0.,
         }),
-        GooeyItem::Text { text, .. } => out.push(PlacedItem {
-            kind: PlacedKind::Text(text.clone()),
+        GooeyItem::Text {
+            text,
+            style,
+            font_scale,
+        } => out.push(PlacedItem {
+            kind: PlacedKind::Text {
+                text: text.clone(),
+                style: *style,
+                font_scale: *font_scale,
+            },
             centre,
             size: [r.w, r.h],
             angle: 0.,
@@ -824,7 +1002,13 @@ fn place(item: &GooeyItem, r: Rect, angle_focus: (Option<i32>, &mut Vec<PlacedIt
     }
 }
 
-fn place_frame(f: &GooeyFrame, r: Rect, focus: Option<i32>, out: &mut Vec<PlacedItem>) {
+fn place_frame(
+    f: &GooeyFrame,
+    r: Rect,
+    ctx: (Option<i32>, Option<&GooeyFonts>),
+    out: &mut Vec<PlacedItem>,
+) {
+    let fonts = ctx.1;
     let b = borders(f);
     let inner = Rect {
         x: r.x + b[0],
@@ -837,7 +1021,7 @@ fn place_frame(f: &GooeyFrame, r: Rect, focus: Option<i32>, out: &mut Vec<Placed
         // Columns: a width of 0 is the child's own, a negative width a share of what the
         // others leave; each child goes in the next column, aligned by the column's code
         // across and by the frame's code down.
-        let sizes: Vec<[f32; 2]> = f.children.iter().map(measure).collect();
+        let sizes: Vec<[f32; 2]> = f.children.iter().map(|c| measure(c, fonts)).collect();
         let fixed: f32 = f
             .columns
             .iter()
@@ -871,7 +1055,7 @@ fn place_frame(f: &GooeyFrame, r: Rect, focus: Option<i32>, out: &mut Vec<Placed
                 w: s[0],
                 h: s[1],
             };
-            place(child, cell, (focus, out));
+            place(child, cell, ctx, out);
             x += cw;
         }
         return;
@@ -879,14 +1063,14 @@ fn place_frame(f: &GooeyFrame, r: Rect, focus: Option<i32>, out: &mut Vec<Placed
     // Rows: stacked down from the top of the content block, which the frame's codes align;
     // in a row the items go side by side, the row aligned across by the first code.
     let rows = rows(f);
-    let c = content(f);
+    let c = content(f, fonts);
     let mut y = inner.y + (inner.h - c[1]) * ay;
     for row in rows {
         let sizes: Vec<[f32; 2]> = row
             .iter()
             .map(|it| match it {
-                GooeyItem::Frame(fr) => frame_size(fr, Some([inner.w, inner.h])),
-                it => measure(it),
+                GooeyItem::Frame(fr) => frame_size(fr, Some([inner.w, inner.h]), fonts),
+                it => measure(it, fonts),
             })
             .collect();
         let rw: f32 = sizes.iter().map(|s| s[0]).sum();
@@ -899,7 +1083,7 @@ fn place_frame(f: &GooeyFrame, r: Rect, focus: Option<i32>, out: &mut Vec<Placed
                 w: s[0],
                 h: s[1],
             };
-            place(it, cell, (focus, out));
+            place(it, cell, ctx, out);
             x += s[0];
         }
         y += rh;
@@ -907,9 +1091,19 @@ fn place_frame(f: &GooeyFrame, r: Rect, focus: Option<i32>, out: &mut Vec<Placed
 }
 
 /// Places a menu's root frame and everything in it, in the root frame's units
-/// ([`PlacedItem`]); `focus` is the focused node's id.
+/// ([`PlacedItem`]); `focus` is the focused node's id. Text is measured by the fitted
+/// [`text_ems`] model ([`layout_with`] measures it in the game's fonts).
 pub fn layout(root: &GooeyFrame, focus: Option<i32>) -> Vec<PlacedItem> {
-    let size = frame_size(root, None);
+    layout_with(root, focus, None)
+}
+
+/// [`layout`] with text measured in the game's fonts where they are loaded (part 72).
+pub fn layout_with(
+    root: &GooeyFrame,
+    focus: Option<i32>,
+    fonts: Option<&GooeyFonts>,
+) -> Vec<PlacedItem> {
+    let size = frame_size(root, None, fonts);
     let mut out = Vec::new();
     place_frame(
         root,
@@ -919,7 +1113,7 @@ pub fn layout(root: &GooeyFrame, focus: Option<i32>) -> Vec<PlacedItem> {
             w: size[0],
             h: size[1],
         },
-        focus,
+        (focus, fonts),
         &mut out,
     );
     for item in &mut out {
@@ -1089,5 +1283,45 @@ mod tests {
         assert!(((story.centre[1] + store.centre[1]) / 2. - me.centre[1]).abs() < 0.01);
         assert_eq!(story.size[1], PILL_HEIGHT * FOCUS_SCALE);
         assert!((story.angle - 0.2).abs() < 1e-6 && me.angle == 0.);
+    }
+
+    #[test]
+    fn d321_text_styles_and_font_widths_size_the_pills() {
+        // The menu's buttons: style 1 is the heavy font at size 32, 2 units a font pixel;
+        // a style outside the table falls back to the first font at 16.
+        assert_eq!(text_style(1), (GooeyFont::Heavy, 32.));
+        assert_eq!(text_style(26), (GooeyFont::Helvetica, DEFAULT_TEXT_SIZE));
+        assert_eq!(text_style(-1), (GooeyFont::Helvetica, DEFAULT_TEXT_SIZE));
+        assert_eq!(units_per_font_pixel(32.), 2.);
+        // Advances round up to whole font pixels: 'M' 1663/64 -> 26, 'e' 900/64 -> 15.
+        let advances = FontAdvances::new([(u16::from(b'M'), 1663), (u16::from(b'e'), 900)]);
+        assert_eq!(advance_pixels(1663), 26.);
+        assert_eq!(advances.width("Me"), Some(41.));
+        assert_eq!(advances.width("Mx"), None);
+        let fonts = GooeyFonts {
+            faces: [(GooeyFont::Heavy, advances)].into_iter().collect(),
+        };
+        assert_eq!(fonts.text_width("Me", 1, 1.), Some(82.));
+        assert_eq!(fonts.text_width("Me", 1, 0.5), Some(41.));
+        assert_eq!(fonts.text_width("Me", 6, 1.), None);
+        // In the layout Me's pill is the pad and its text; the others (characters the
+        // font lacks here) keep the fitted model.
+        let mut w = LevelWorld::default();
+        menu_tree(&mut w);
+        let placed = layout_with(&w.gooey.frames[&(1, 1)], Some(6), Some(&fonts));
+        let size = |label: &str| {
+            placed
+                .iter()
+                .find(|p| matches!(&p.kind, PlacedKind::Button { label: l, .. } if l == label))
+                .expect(label)
+                .size
+        };
+        assert!((size("Me")[0] - (BUTTON_PAD_FONT + 82.)).abs() < 1e-3);
+        let fitted = layout(&w.gooey.frames[&(1, 1)], Some(6));
+        let store = fitted
+            .iter()
+            .find(|p| matches!(&p.kind, PlacedKind::Button { label, style: 1, .. } if label == "Store"))
+            .expect("Store");
+        assert_eq!(size("Store"), store.size);
     }
 }

@@ -1,6 +1,7 @@
 mod adapter;
 mod dof_post;
 mod dual;
+mod game_font;
 mod glow_post;
 mod gooey_ui;
 mod mlaa_post;
@@ -918,6 +919,7 @@ fn options_from(mut args: impl Iterator<Item = String>) -> Result<Viewer, String
             | "--level-scripts-hold-at"
             | "--level-scripts-in-use-at"
             | "--level-scripts-press-at"
+            | "--pod-card-pins"
             | "--play-sackboy-at"
             | "--popit-mode"
             | "--popit-page"

@@ -403,9 +403,17 @@ pub fn install(app: &mut App) -> Result<(), String> {
         })
         .transpose()?
         .unwrap_or_default();
+    // D321 (part 72): the scripted Pod's menu assets (fonts, card picture, pins).
+    let card_pins = crate::pod_menu::card_pins_option(&all)?;
     // The level reader recurses deeply: same worker stack as the level scene.
-    type Loaded = (Vm, LevelWorld, String, Option<(Vm, LevelWorld, String)>);
-    let (mut vm, mut world, header, shell) = std::thread::Builder::new()
+    type Loaded = (
+        Vm,
+        LevelWorld,
+        String,
+        Option<(Vm, LevelWorld, String)>,
+        Option<(crate::pod_menu::MenuAssets, String)>,
+    );
+    let (mut vm, mut world, header, shell, menu_assets) = std::thread::Builder::new()
         .stack_size(level_scene::LEVEL_STACK_BYTES)
         .spawn(move || -> Result<Loaded, String> {
             let control = LoadControl::default();
@@ -453,7 +461,10 @@ pub fn install(app: &mut App) -> Result<(), String> {
                     Ok::<_, String>((shell_vm, shell, identity))
                 })
                 .transpose()?;
-            Ok((vm, world, header, shell))
+            let menu_assets = shell.is_some().then(|| {
+                crate::pod_menu::load_menu_assets(&game, &source, &catalog, &control, &card_pins)
+            });
+            Ok((vm, world, header, shell, menu_assets))
         })
         .map_err(|e| format!("level scripts thread: {e}"))?
         .join()
@@ -472,6 +483,10 @@ pub fn install(app: &mut App) -> Result<(), String> {
         host.world.unconverted
     );
     println!("{header}");
+    let menu_assets = menu_assets.map(|(assets, line)| {
+        println!("{line}");
+        assets
+    });
     // Part 28: the shell level's world, set up the same way, and the session's start.
     let shell = shell.map(|(mut shell_vm, mut shell_world, identity)| {
         let built = shell_world.bind_objects(&mut shell_vm);
@@ -544,6 +559,7 @@ pub fn install(app: &mut App) -> Result<(), String> {
         dof_printed: None,
     })
     .insert_resource(crate::CaptureHold(hold_at.is_some()))
+    .insert_resource(menu_assets.unwrap_or_default())
     .insert_resource(Time::<Fixed>::from_hz(f64::from(TICK_HZ)))
     .init_resource::<crate::pod_menu::ScriptMenu>()
     .add_systems(
@@ -1156,8 +1172,13 @@ fn follow_level(
 
 /// D319 (part 70): the main menu the pod computer's scripts built and drew, handed to the
 /// viewer after each tick (`pod_menu::paint_script_menu` draws it); none before.
-fn follow_menu(play: NonSend<Play>, mut menu: ResMut<crate::pod_menu::ScriptMenu>) {
-    let now = crate::pod_menu::ScriptMenuFrame::of(&play.host.world);
+fn follow_menu(
+    play: NonSend<Play>,
+    assets: Res<crate::pod_menu::MenuAssets>,
+    mut menu: ResMut<crate::pod_menu::ScriptMenu>,
+) {
+    let fonts = (!assets.gooey_fonts.faces.is_empty()).then_some(&assets.gooey_fonts);
+    let now = crate::pod_menu::ScriptMenuFrame::of(&play.host.world, fonts);
     if menu.0 != now {
         if menu.0.is_none() && now.is_some() {
             println!(
