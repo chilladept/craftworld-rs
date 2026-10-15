@@ -1754,6 +1754,8 @@ struct Prepared {
     alpha_test: f32,
     /// P3h: unlit glow colour and its optional map (sRGB image, UV mode 2 = primary, 3 = UV1).
     glow: Option<GlowDraw>,
+    /// D309: the glow alpha's form in the material's own program (fog mix or not).
+    glow_alpha: lbp_preview::GlowAlphaForm,
     reflection: Option<ReflectionDraw>,
     /// D189: graph textures 1.. (texture 0 is `image`) and the encoded steps.
     graph: Option<(Vec<Image>, Vec<lbp_preview::FragmentStep>)>,
@@ -2144,6 +2146,7 @@ fn prepare_buckets(
         };
         // P3h: glow (output port 4) is a solid colour, or one baked map on the diffuse UVs or
         // on UV1 when that is free or holds the same coordinates (graph slot 4, so no graph).
+        let glow_alpha = surface.map_or(Default::default(), |s| s.glow_alpha);
         let glow = match surface.and_then(|s| s.glow.as_deref()) {
             Some(lbp_preview::MaterialAsset::Solid(g)) => {
                 let [r, gr, b, _] = g.selection.color.values();
@@ -2285,6 +2288,7 @@ fn prepare_buckets(
             spec_map,
             alpha_test,
             glow,
+            glow_alpha,
             reflection,
             graph,
             lightmap,
@@ -2358,7 +2362,7 @@ fn upload(
             &mut surface,
             color,
             map.map(|(image, mode)| (images.add(image), mode)),
-            dual::glow_alpha_fogged(p.material),
+            dual::glow_alpha_fogged(p.glow_alpha),
         );
     }
     if let Some(map) = p
@@ -4699,6 +4703,7 @@ mod tests {
             spec_map: None,
             alpha_test: 0.,
             glow: None,
+            glow_alpha: Default::default(),
             reflection: None,
             graph: None,
             lightmap: None,

@@ -382,43 +382,18 @@ pub fn enable_glow(
 /// D307: graph_info.w's bit for a glow whose alpha the fog leaves alone (the glow mode is
 /// the low four bits).
 pub const GLOW_ALPHA_UNFOGGED_BIT: u32 = 16;
-/// D307 FOUND (the 7,980 decoded gmat programs, variant 8, the alpha's last write): 524
-/// programs write the glow alpha as `tintcol.w x (a + f (1 - a))` with `a = 1 / (1 + 4
-/// |g|^2)` and `f = sat(TC3.z)` the fog (RCP, the fog MAD, MUL by tintcol), so the fog
-/// lifts the alpha towards 1 as it lerps the colour; these 23 write `tintcol.w / (1 + 4
-/// |g|^2)` (DIV by the sum, or `burn`'s RCP) and the fog leaves the alpha alone. Among them
-/// the lamp bulb and the stars of frame 5247 (part 54, the replay) and the checkpoint ring
-/// (`neon_lifebar`). Nothing in the material's stored graph or scalars tells the two apart
-/// (the same graph, flags and revision occur in both), so the list is by GUID.
-pub const GLOW_ALPHA_UNFOGGED: [u32; 23] = [
-    0x000175a3, // burn
-    0x0002c0b3, // cats_eyes_fi
-    0x00006a49, // cosmos_starc (the Pod's stars)
-    0x0005d405, // dcc_lanternpower
-    0x0001ea04, // evil_eye
-    0x00009888, // eye_01_base_colour
-    0x0002b27b, // killzone3_hazmat_to_metal
-    0x0002b283, // killzone3_rico_to_metal
-    0x0000d6cc, // light_bulb (the Pod's lamp bulb)
-    0x0000be15, // neon_lifebar (the checkpoint ring)
-    0x00018401, // proc_base_hologram
-    0x00024e3e, // toy_buzz_pack
-    0x00024e74, // toy_lounge_vcr
-    0x00025fb5, // toy_woodys_roundup
-    0x0002b365, // toy_zurg_badge_illum
-    0x0002ab42, // tron_abraxas_to
-    0x0002ab45, // tron_anon_he
-    0x0002894b, // tron_clu_hd
-    0x0002894c, // tron_clu_hd_disk
-    0x0002894d, // tron_clu_he_helmet
-    0x0002894f, // tron_clu_lg
-    0x00028950, // tron_clu_to
-    0x0001d1fd, // victoria_fire
-];
-/// D307: whether a glowing material's program mixes its alpha towards 1 by the fog: every
-/// program but [`GLOW_ALPHA_UNFOGGED`]'s (a material of unknown GUID takes the common form).
-pub fn glow_alpha_fogged(material: Option<u32>) -> bool {
-    material.is_none_or(|m| !GLOW_ALPHA_UNFOGGED.contains(&m))
+/// D307/D309: whether a glowing material's program mixes its alpha towards 1 by the fog.
+/// D307 FOUND (the decoded gmat programs, variant 8, the alpha's last write): the common
+/// program writes `tintcol.w x (a + f (1 - a))` with `a = 1 / (1 + 4 |g|^2)` and `f =
+/// sat(TC3.z)` the fog, so the fog lifts the alpha towards 1 as it lerps the colour; a few
+/// (the lamp bulb and the stars of frame 5247, the checkpoint ring `neon_lifebar`) write
+/// `tintcol.w / (1 + 4 |g|^2)` or the reciprocal alone and the fog leaves the alpha. Nothing
+/// in the stored graph or scalars tells them apart; D309 reads the form from the material's
+/// own program (`lbp_resource::material::glow_alpha_form`, through the preview's surface),
+/// which reproduces D307's 23 GUIDs exactly. A program of neither form (or not read) takes
+/// the common form.
+pub fn glow_alpha_fogged(form: lbp_preview::GlowAlphaForm) -> bool {
+    form != lbp_preview::GlowAlphaForm::Unfogged
 }
 /// P3i: reflection graph sampled at R.xy with LOD bias `blur` (docs/p3i-reflection.md).
 /// `images[k]` is graph texture k (at most 4, graph slots 0..=3), `steps` at most 31 rows
@@ -601,7 +576,7 @@ pub fn glow_alpha(g: [f32; 3]) -> f32 {
     glow_alpha_under_fog(g, 0., false)
 }
 /// D307 FOUND (mirrors the shader): the glow alpha with the fog's share `f` (0 to 1): `a +
-/// f (1 - a)` for the common program, `a` for [`GLOW_ALPHA_UNFOGGED`]'s.
+/// f (1 - a)` for the common program, `a` for an unfogged one ([`glow_alpha_fogged`]).
 #[cfg(test)]
 pub fn glow_alpha_under_fog(g: [f32; 3], f: f32, fogged: bool) -> f32 {
     let a = 1. / (1. + 4. * (g[0] * g[0] + g[1] * g[1] + g[2] * g[2]));
@@ -1392,8 +1367,8 @@ fn main_pass_post_lighting_processing(p: PbrInputStub, c: vec4<f32>) -> vec4<f32
         }
     }
     /// D307: the glow alpha under fog. The common program lifts it towards 1 by the fog's
-    /// share (`a + f (1 - a)`); the 23 listed programs (the bulb, the stars, the checkpoint
-    /// ring among them) keep `a`; without fog both are D303's.
+    /// share (`a + f (1 - a)`); an unfogged program (the bulb, the stars, the checkpoint
+    /// ring among them) keeps `a`; without fog both are D303's.
     #[test]
     fn d307_glow_alpha_under_fog() {
         let ring = [1.; 3];
@@ -1412,15 +1387,11 @@ fn main_pass_post_lighting_processing(p: PbrInputStub, c: vec4<f32>) -> vec4<f32
             assert!(v >= last - 1e-6 && v <= 1.);
             last = v;
         }
-        for m in [0x0000_d6cc, 0x0000_6a49, 0x0000_be15] {
-            assert!(!super::glow_alpha_fogged(Some(m)), "{m:08x}");
-        }
-        // proc_da_vinci_glow and an unknown material take the common form.
-        assert!(super::glow_alpha_fogged(Some(0x0001_45b9)));
-        assert!(super::glow_alpha_fogged(None));
-        let mut sorted = super::GLOW_ALPHA_UNFOGGED;
-        sorted.sort_unstable();
-        assert!(sorted.windows(2).all(|w| w[0] < w[1]), "no duplicates");
+        // D309: only the program's unfogged form keeps `a`; an unread program is common.
+        use lbp_preview::GlowAlphaForm;
+        assert!(!super::glow_alpha_fogged(GlowAlphaForm::Unfogged));
+        assert!(super::glow_alpha_fogged(GlowAlphaForm::Fogged));
+        assert!(super::glow_alpha_fogged(GlowAlphaForm::Unknown));
     }
     /// D307: the unfogged bit rides graph_info.w above the glow mode.
     #[test]

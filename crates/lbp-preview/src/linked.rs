@@ -1507,9 +1507,11 @@ pub(crate) fn load_material(
         // (COL0) feeds the glow as it feeds the diffuse, so the glow takes the same instance
         // colour (P3h left it out).
         // The blob lives in the expanded payload, not in the raw file bytes.
-        let shader_blob =
-            lbp_resource::material::shader_blob(&material_bytes, || control.check().is_err())
+        let (shader_blob, shader_ends) =
+            lbp_resource::material::shader_programs(&material_bytes, || control.check().is_err())
                 .unwrap_or_default();
+        // D309: the glow alpha's form (fogged or not) from the material's own program.
+        surface.glow_alpha = lbp_resource::material::glow_alpha_form(&shader_blob, &shader_ends);
         // D307: the stored AlphaTestLevel cuts out only where the program names it.
         if surface.alpha_test > 0. && !crate::surface::alpha_test_in_program(&shader_blob) {
             surface.alpha_test = 0.;

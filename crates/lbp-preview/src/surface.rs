@@ -87,6 +87,9 @@ pub struct Surface {
     /// P3h: what output port 4 (glow) evaluates to, loaded by the diffuse route with the glow
     /// graph standing in for port 0 (a solid colour or a baked texture), when wired.
     pub glow: Option<Box<crate::MaterialAsset>>,
+    /// D309: how the material's own program writes the glow alpha under fog
+    /// (`lbp_resource::material::glow_alpha_form`; `Unknown` when the program is not read).
+    pub glow_alpha: lbp_resource::material::GlowAlphaForm,
     /// Wired surface ports this preview does not draw, with the reason.
     pub skipped: Vec<String>,
 }
@@ -365,6 +368,7 @@ pub(crate) fn load(
         specular: routes.specular,
         spec_map: None,
         glow: None,
+        glow_alpha: Default::default(),
         reflection: None,
         skipped: routes.skipped,
         bump: None,

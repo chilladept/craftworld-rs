@@ -2,6 +2,8 @@
 //! Supported format/predicate evidence remains docs/textured-mesh.md.
 mod add;
 pub use add::DiffuseAdd;
+/// D309: the glow alpha's form, read from the material's program (`Surface::glow_alpha`).
+pub use lbp_resource::material::GlowAlphaForm;
 mod affine;
 mod alpha_mix;
 pub use alpha_mix::{AlphaDiffuseMix, TextureAlphaMix};

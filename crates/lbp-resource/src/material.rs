@@ -4,15 +4,18 @@
 //! MemoryInputStream::i32/f32/enumarray, Revisions::GFXMATERIAL_ALPHA_MODE.
 //! https://github.com/ennuo/toolkit/blob/d6a2ef80b5a09999f08f23a803b516096055e5c9/lib/cwlib/src/main/java/cwlib/resources/RGfxMaterial.java
 //! Branch-zero heads920–951 only. Layout, conflicts and coverage: docs/material-prefix.md.
-//! Optional graph/tail diagnostics are separate APIs; shader behavior remains unknown.
+//! Optional graph/tail diagnostics are separate APIs; of the compiled programs only the glow
+//! alpha's form is read ([`glow_alpha_form`], D309).
 use crate::binary::{check_cancel, Error};
 use serde::Serialize;
 mod graph;
+mod program;
 mod tail;
 pub use graph::{
     inspect_graph, AnimationMetadata, BoxMetadata, GraphInspection, GraphMetadata, WireMetadata,
     MAX_BOXES, MAX_WIRES,
 };
+pub use program::{glow_alpha_form, GlowAlphaForm, GLOW_ALPHA_VARIANT, MAX_INSTRUCTIONS};
 pub use tail::{
     inspect_tail, TailInspection, TailMetadata, MAX_PARAMETER_ANIMATIONS, MAX_TAIL_BYTES,
 };
@@ -125,16 +128,26 @@ pub fn inspect(bytes: &[u8], cancel: impl Fn() -> bool) -> Result<MaterialInspec
     decode_prefix(bytes, &cancel).map(|(metadata, _)| metadata)
 }
 /// The 10 compiled `CGB` shader programs' blob (header names included), from the expanded
-/// payload; opaque bytes for name scans only, never executed or decoded here.
+/// payload; bytes for name scans and [`glow_alpha_form`] only, never executed.
 pub fn shader_blob(bytes: &[u8], cancel: impl Fn() -> bool) -> Result<Vec<u8>, Error> {
+    shader_programs(bytes, cancel).map(|(blob, _)| blob)
+}
+/// [`shader_blob`] with the ten programs' end offsets into it (the shared instruction table
+/// follows the last end).
+pub fn shader_programs(
+    bytes: &[u8],
+    cancel: impl Fn() -> bool,
+) -> Result<(Vec<u8>, Vec<u32>), Error> {
     let (metadata, data) = decode_prefix(bytes, &cancel)?;
     let start = metadata.prefix.blob_start;
     let end = start
         .checked_add(metadata.prefix.blob_bytes)
         .ok_or(Error::Invalid("blob range"))?;
-    data.get(start..end)
+    let blob = data
+        .get(start..end)
         .map(<[u8]>::to_vec)
-        .ok_or(Error::Invalid("blob range"))
+        .ok_or(Error::Invalid("blob range"))?;
+    Ok((blob, metadata.prefix.shader_end_offsets))
 }
 fn decode_prefix(
     bytes: &[u8],
