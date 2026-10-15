@@ -7655,6 +7655,27 @@ byte).
   at 611 (d0500, ~612.3). The room behind the window 0.68 / 1.05 / 1.04 (`open-t1`, 614); the
   left glass 1.50 / 1.58 / 1.58. Viewport mean |d| is unchanged to 0.01 at every tick.
 
+
+### The room's sharpness, stage by stage
+
+Capture 8980 against the viewer at tick 616 (the same focus range), each game stage read in a
+fresh replay (a replay is clean only at the first event it is set to; later jumps leave the flat
+(164, 104, 58) tiles of above), each viewer stage isolated with its `--no-*` flags, the viewer's
+box registered by the warp and a cross-correlation (0.93 to 0.97). Gradient over the open room
+(scene x 47-207, y 442-559), game / viewer, all MEASURED (`local-analysis/d314-chain/`):
+
+- Scene before DoF 1: 1.008 / 1.136, mean colour (151, 135, 110) / (159, 142, 114).
+- After DoF 1: 0.315 / 0.368. The translucent loop, DoF 2 and the anti-aliasing job leave the
+  box unchanged on both sides.
+- After the final pass, in presented pixels: 0.482 / 0.544 (x 1.53 / x 1.48).
+
+So the gap is in the scene going in: the viewer's open room is about 13 % sharper (21 % over the
+mural), 4.5 % brighter at every percentile and has about 10 % more contrast; the extra detail is
+largest at 1 px (+13 %) and smaller at 4 px (+9 %), as a sharper mip would give (INFERRED). On the
+desk box (80 x 80 at (638, 505)) the viewer ends slightly softer than the game (1.48 / 1.54).
+The 0.37 of the sweep frame `d0600` is softer than the capture's 0.48 at the same range, so most
+of the 0.37 / 0.57 gap above is the two references' timing (INFERRED).
+
 ### Verification
 
 `lbp-bevy-viewer`, no game data:
@@ -7679,9 +7700,9 @@ Counts: +0 newly viewable / +0 newly Complete (viewer fidelity).
   off, part 62): a level frame with the patches off.
 - From part 53: the job's program beyond its edge test (its run search, the pattern rules, its
   length limit, INFERRED 40); MSAA in the Pod's other views.
-- From part 64: the room's remaining sharpness is upstream of the depth of field. Compare the
-  viewer's scene before DoF 1 with the game's 2705 buffer at tick 616, and the game's post
-  chain after it. Also: DoF 2's offset texture, which is non-zero in 8980 over a middle
+- From part 64: the open room's scene going in, about 13 % sharper (21 % on the mural) and 4.5 %
+  brighter than the game's at 616 (texture mip / LOD selection and the wall's lighting gain,
+  INFERRED). Also: DoF 2's offset texture, which is non-zero in 8980 over a middle
   rectangle (what draws it), and its second ring's alpha there.
 - From part 63 (part 62's two passes, now copied): DoF 2's ring offset from texture unit 3
   (part 64: non-zero in 8980); the marks of the viewer's other translucent draws (the game marks every
