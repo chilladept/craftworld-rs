@@ -11,7 +11,19 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D307 the glow's alpha under fog, glow maps and blended draws (2026-10-15)
+## Latest: D308 the checkpoint's ring colour and the planets zoom's frame (2026-10-15)
+- Viewer (`lbp-preview`) and research (`docs/level-scripts.md` part 59). FOUND (0x5aa9c): the
+  checkpoint update writes the ring Thing's whole colour word: RGB white in normal play, alpha
+  1 - 0.5 x, and x = 1 for an infinite checkpoint (+0x41, INFERRED instanceInfiniteSpawns), so
+  infinite rings are white. -1 / 0 counts mean "not yet given" (set on activation).
+- MEASURED (hidden window): Bravery's infinite checkpoints 1000, 1018, 1425 draw their rings white
+  (about 2.2k-2.5k px, mean ~8 -> ~249); the spawn door unchanged. Census: 458 of 1,314
+  checkpoints are infinite.
+- Planets zoom's last tick: the render reads the live value; the loop is lockstep (0..n steps
+  a frame, the pod computer's step once a frame); INFERRED a no-step frame at the push. Open:
+  a memory read of the steps that frame (game +0x1fc).
+
+## Before: D307 the glow's alpha under fog, glow maps and blended draws (2026-10-15)
 - Viewer and `lbp-preview` / `lbp-level` (`docs/level-scripts.md` part 58). FOUND (the decoded
   programs): 524 glowing programs lift their alpha towards 1 by the fog, 23 (the Pod's bulb and
   stars, `neon_lifebar`) do not (`dual::GLOW_ALPHA_UNFOGGED`, by GUID); the thing colour feeds the

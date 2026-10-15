@@ -120,11 +120,15 @@ pub fn editor_color_tint(argb: u32) -> crate::DiffuseTint {
 /// holds spawns and some are left, and 0 otherwise. The ring's lifebar material (gmat
 /// `neon_lifebar`) samples its texture at UV1 minus that alpha (the graph's thing-colour
 /// alpha on sampler port 2), so a full checkpoint (alpha 0.5) shows the white half of the
-/// texture and an empty one (alpha 1) the black half. INFERRED: the level's stored counts
-/// are the start of play, the update has converged, the byte is truncated, and the colour's
-/// RGB stays the stored editorColor (the update's colour vector is not read).
+/// texture and an empty one (alpha 1) the black half. D308 FOUND (same update): an infinite
+/// checkpoint (`instanceInfiniteSpawns`, INFERRED from its use as "can activate without
+/// spawns left") targets `x` = 1, so its ring is white. INFERRED: the level's stored counts
+/// are the start of play, the update has converged, and the active checkpoint's out-of-lives
+/// pulse (red, `x` = 1) is not drawn.
 pub fn checkpoint_light_alpha(c: &lbp_level::parts::Checkpoint) -> f32 {
-    let x = if c.max_spawns_left > 0 && c.spawns_left != 0 {
+    let x = if c.infinite_spawns {
+        1.
+    } else if c.max_spawns_left > 0 && c.spawns_left != 0 {
         (c.spawns_left as f32 / c.max_spawns_left as f32).clamp(0., 1.)
     } else {
         0.
@@ -142,12 +146,14 @@ pub fn checkpoint_lights(things: &[ThingRecord]) -> HashMap<usize, &lbp_level::p
         .collect()
 }
 /// D307: the editorColor a Thing's render mesh is drawn with: a checkpoint's alpha byte is
-/// [`checkpoint_light_alpha`]; every other Thing keeps its stored colour.
+/// [`checkpoint_light_alpha`]; every other Thing keeps its stored colour. D308 FOUND (0x5aa9c
+/// packs the whole word, base colour 0xfc2d0): in normal play the RGB is white, whatever the
+/// stored colour (team and player-colour modes are not modelled); the byte is truncated.
 pub fn checkpoint_editor_color(argb: u32, c: Option<&lbp_level::parts::Checkpoint>) -> u32 {
     match c {
         Some(c) => {
             let byte = (checkpoint_light_alpha(c) * 255.) as u32 & 0xff;
-            argb & 0x00ff_ffff | byte << 24
+            0x00ff_ffff | byte << 24
         }
         None => argb,
     }
@@ -4235,6 +4241,25 @@ mod tests {
         assert!(editor_color_tint(0x1234_5678).validate().is_ok());
     }
 
+    /// D308: an infinite checkpoint's ring is white (x = 1, alpha 0.5) whatever its counts,
+    /// and every checkpoint's RGB is white in normal play.
+    #[test]
+    fn d308_infinite_checkpoint_ring_white() {
+        use lbp_level::parts::Checkpoint;
+        let c = |left, max, inf| Checkpoint {
+            spawns_left: left,
+            max_spawns_left: max,
+            infinite_spawns: inf,
+        };
+        assert_eq!(checkpoint_light_alpha(&c(-1, 0, true)), 0.5);
+        assert_eq!(checkpoint_light_alpha(&c(0, 3, true)), 0.5);
+        assert_eq!(checkpoint_light_alpha(&c(-1, 0, false)), 1.);
+        assert_eq!(
+            checkpoint_editor_color(0xff00_0000, Some(&c(-1, 0, true))),
+            0x7fff_ffff
+        );
+    }
+
     /// D307: a checkpoint's ring alpha, `1 - 0.5 x` with `x` the share of spawns left:
     /// full 0.5 (byte 127, the white half of the lifebar texture), empty or without a
     /// count 1 (the black half); the colour's RGB stays the stored editorColor.
@@ -4257,7 +4282,7 @@ mod tests {
         );
         assert_eq!(
             checkpoint_editor_color(0xff12_3456, Some(&c(0, 1))),
-            0xff12_3456
+            0xffff_ffff
         );
         assert_eq!(checkpoint_editor_color(0x8012_3456, None), 0x8012_3456);
         // The ring's UV1 u lies in 0.0017..0.4921 (mesh 00007a06, primitive 4); the
