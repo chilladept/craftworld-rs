@@ -1142,11 +1142,13 @@ pub(crate) fn place_on_second_monitor(
 }
 fn setup(mut commands: Commands) {
     // D298: the depth of field reads the depth buffer, so it is made readable under the flag.
+    // D312: and copied between the opaque and the transparent pass (`dof_post.rs`).
     let mut camera = Camera3d::default();
     if dof_post::enabled() {
         camera.depth_texture_usages =
             (bevy::render::render_resource::TextureUsages::RENDER_ATTACHMENT
-                | bevy::render::render_resource::TextureUsages::TEXTURE_BINDING)
+                | bevy::render::render_resource::TextureUsages::TEXTURE_BINDING
+                | bevy::render::render_resource::TextureUsages::COPY_SRC)
                 .into();
     }
     let mut main = commands.spawn((

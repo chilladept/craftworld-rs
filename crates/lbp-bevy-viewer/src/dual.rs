@@ -210,6 +210,15 @@ impl MaterialExtension for SecondTexture {
         {
             blend.alpha = glass_alpha_blend();
         }
+        // D312 (part 62 FOUND, frame 8348 draw 3041; 5247's 3033): the game draws the glass
+        // in its translucent list with depth writes on (LessEqual), after its first depth of
+        // field and before its second, which reads that depth (`dof_post.rs`). Copied while
+        // the depth of field runs; elsewhere the glass keeps Bevy's transparent default.
+        if glass_writes_depth(crate::dof_post::enabled()) {
+            if let Some(depth) = descriptor.depth_stencil.as_mut() {
+                depth.depth_write_enabled = Some(true);
+            }
+        }
         if !DUAL_SOURCE.load(Ordering::Relaxed) {
             return Ok(());
         }
@@ -230,6 +239,11 @@ impl MaterialExtension for SecondTexture {
         fragment.shader_defs.push("GLASS_DUAL_SOURCE".into());
         Ok(())
     }
+}
+/// D312: whether the glass writes its depth: while the depth of field runs (the game's glass
+/// writes depth, FOUND part 62; its second depth of field reads it).
+pub fn glass_writes_depth(depth_of_field: bool) -> bool {
+    depth_of_field
 }
 /// D307 FOUND (frames 5247 and 14790, the blend state of every enabled blend): the glass
 /// (5247's 3033 and 2732) blends its alpha as Zero + One, so the scene keeps the alpha

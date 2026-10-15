@@ -11,7 +11,16 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D311 the post chain's patches and the dissolving glass's depth of field (2026-10-15)
+## Latest: D312 the depth of field in two passes (2026-10-15)
+- Viewer (`docs/level-scripts.md` part 63): DoF 1 runs between the opaque and the transparent
+  pass over the opaque scene; the glass writes its depth while the depth of field runs; DoF 2
+  (the post chain) composites the pixels whose depth changed after the opaque pass without the
+  plane test. Behind `dof_route`; without it byte-equal to main.
+- MEASURED (hidden window): the change-over's left glass gradient 1.21 -> 1.60 (game `open-t1`
+  1.50), the open room 0.64 -> 0.57 (game 0.37), viewport |d| 11.72 -> 11.55; the band at 615
+  1.08 -> 1.78 (game 0.34; the viewer's glass still there). Closed Pod and Da Vinci unchanged.
+
+## Before: D311 the post chain's patches and the dissolving glass's depth of field (2026-10-15)
 - Research only (`docs/level-scripts.md` part 62). FOUND: lane A's RPCS3 had LBP2 patches on since
   2026-10-09 ("Disable MLAA" clears 0xdb8208, "Disable Motion Blur" stubs the DoF function 0x32897c),
   which removed the post chain from part 61's frames; now off for good.

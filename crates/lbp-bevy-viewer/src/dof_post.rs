@@ -15,13 +15,36 @@
 //! 3. Full size: where the scene's depth is beyond the range's start, the blurred image
 //!    (bilinear) is blended over the scene by its alpha `r`; the scene's alpha is kept.
 //!
+//! D312 (part 63): the game runs these steps twice a frame (FOUND, part 62, frames 8348,
+//! 8980 and 5247). DoF 1 runs between its opaque and translucent loops, without the stencil:
+//! the same source, rings and one composite over the opaque scene where it lies beyond the
+//! plane. The translucent surfaces are then drawn over it (the glass writing its depth,
+//! `dual.rs`, and every translucent draw marking the stencil bit 0x80). DoF 2 is the post-chain
+//! form (part 57): on the marked pixels the composite runs without the plane test (so on the
+//! glass, whose own depth gives a radius of 0, nothing changes), on the others where the scene
+//! lies beyond the plane. The viewer's marked pixels are those whose depth changed between a
+//! copy of the depth taken after the opaque pass and the final depth.
+//!
+//! Where DoF 1 runs in the viewer: the main camera has no HDR and `Tonemapping::None`, so its
+//! main texture after the opaque pass already holds the encoded colours the post chain sees
+//! (the same `Rgba8UnormSrgb` / `Rgba8Unorm` target, nothing between it and the post pass but
+//! the transparent pass); DoF 1 reads it as DoF 2 does (`post_process_write`, the same
+//! encoded-space mix rather than the game's hardware SrcAlpha blend, which on an sRGB target
+//! would mix in linear light). Under MSAA its composite is written into the multisampled
+//! texture (every sample) and resolved, so the transparent pass, which loads the samples,
+//! draws over the blurred scene.
+//!
 //! The range is the scripts' `Cam.SetDOFAndFog` start and end (level units along the
 //! view), the same call whose third value is the fog bias. On the level-lighting route
 //! only: by default in the Pod picture (`--pod-camera`, D304; `--no-depth-of-field` turns it
 //! off), elsewhere under `--depth-of-field`; and only while the scripts have passed a usable
 //! range.
 use bevy::{
-    core_pipeline::{tonemapping::tonemapping, Core3d, Core3dSystems, FullscreenShader},
+    core_pipeline::{
+        core_3d::{main_opaque_pass_3d, main_transparent_pass_3d},
+        tonemapping::tonemapping,
+        Core3d, Core3dSystems, FullscreenShader,
+    },
     prelude::*,
     render::{
         extract_component::{ExtractComponent, ExtractComponentPlugin},
@@ -32,10 +55,10 @@ use bevy::{
             },
             AddressMode, BindGroupEntries, BindGroupLayoutDescriptor, BindGroupLayoutEntries,
             Buffer, BufferInitDescriptor, BufferUsages, CachedRenderPipelineId, ColorTargetState,
-            ColorWrites, Extent3d, FilterMode, FragmentState, Operations, PipelineCache,
-            RenderPassColorAttachment, RenderPassDescriptor, RenderPipelineDescriptor, Sampler,
-            SamplerBindingType, SamplerDescriptor, ShaderStages, TextureDescriptor,
-            TextureDimension, TextureFormat, TextureSampleType, TextureUsages,
+            ColorWrites, Extent3d, FilterMode, FragmentState, MultisampleState, Operations,
+            PipelineCache, RenderPassColorAttachment, RenderPassDescriptor,
+            RenderPipelineDescriptor, Sampler, SamplerBindingType, SamplerDescriptor, ShaderStages,
+            TextureDescriptor, TextureDimension, TextureFormat, TextureSampleType, TextureUsages,
         },
         renderer::{RenderContext, RenderDevice, ViewQuery},
         sync_component::SyncComponent,
@@ -193,11 +216,22 @@ impl Plugin for DofPostPlugin {
             .add_systems(Render, prepare_dof.in_set(RenderSystems::PrepareResources))
             .add_systems(
                 Core3d,
-                depth_of_field
-                    .in_set(Core3dSystems::PostProcess)
-                    .after(tonemapping)
-                    .before(crate::glow_post::edge_glow)
-                    .before(crate::mlaa_post::mlaa),
+                (
+                    // D312: DoF 1 between the opaque and the transparent pass, after a copy
+                    // of the depth the opaque pass left (DoF 2 tells the translucent pixels
+                    // by it).
+                    (copy_opaque_depth, depth_of_field_opaque)
+                        .chain()
+                        .in_set(Core3dSystems::MainPass)
+                        .after(main_opaque_pass_3d)
+                        .before(main_transparent_pass_3d),
+                    // D298 / D312: DoF 2, the post-chain form.
+                    depth_of_field
+                        .in_set(Core3dSystems::PostProcess)
+                        .after(tonemapping)
+                        .before(crate::glow_post::edge_glow)
+                        .before(crate::mlaa_post::mlaa),
+                ),
             );
     }
 }
@@ -207,15 +241,19 @@ struct DofPipelines {
     /// Keyed by whether the depth buffer is multisampled.
     layouts: [BindGroupLayoutDescriptor; 2],
     sampler: Sampler,
-    ids: HashMap<(TextureFormat, bool, &'static str), CachedRenderPipelineId>,
+    /// Keyed by the output format, the output's sample count, whether the depth buffer is
+    /// multisampled, and the entry point.
+    ids: HashMap<(TextureFormat, u32, bool, &'static str), CachedRenderPipelineId>,
     vertex: bevy::render::render_resource::VertexState,
 }
 
 fn layout(multisampled: bool) -> BindGroupLayoutDescriptor {
-    let depth = if multisampled {
-        texture_depth_2d_multisampled()
-    } else {
-        texture_depth_2d()
+    let depth = || {
+        if multisampled {
+            texture_depth_2d_multisampled()
+        } else {
+            texture_depth_2d()
+        }
     };
     BindGroupLayoutDescriptor::new(
         if multisampled {
@@ -228,9 +266,11 @@ fn layout(multisampled: bool) -> BindGroupLayoutDescriptor {
             (
                 texture_2d(TextureSampleType::Float { filterable: true }),
                 sampler(SamplerBindingType::Filtering),
-                depth,
+                depth(),
                 uniform_buffer_sized(false, NonZeroU64::new(16)),
                 texture_2d(TextureSampleType::Float { filterable: true }),
+                // D312: the depth after the opaque pass, to tell the translucent pixels.
+                depth(),
             ),
         ),
     )
@@ -257,21 +297,28 @@ fn init_pipelines(
     });
 }
 
-/// The entry points in the order they run; the ring runs [`DOF_RING_PASSES`] times.
-const ENTRIES: [&str; 4] = [
+/// The entry points: the source, the ring twice ([`DOF_RING_PASSES`]), then DoF 1's composite
+/// (the plane test only) or DoF 2's (D312: the marked pixels without it).
+const ENTRIES: [&str; 5] = [
     "dof_source",
     "dof_ring_gate",
     "dof_ring_radius",
     "dof_composite",
+    "dof_composite_marked",
 ];
+/// D312: DoF 1's composite and DoF 2's in [`ENTRIES`].
+const COMPOSITE_1: usize = 3;
+const COMPOSITE_2: usize = 4;
 
 #[derive(Component)]
 struct DofView {
     a: CachedTexture,
     b: CachedTexture,
+    /// D312: the depth buffer as the opaque pass left it.
+    opaque_depth: CachedTexture,
     range: Buffer,
     multisampled: bool,
-    pipelines: [CachedRenderPipelineId; 4],
+    pipelines: [CachedRenderPipelineId; 5],
 }
 
 fn prepare_dof(
@@ -296,45 +343,53 @@ fn prepare_dof(
         if !depth
             .texture
             .usage()
-            .contains(TextureUsages::TEXTURE_BINDING)
+            .contains(TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_SRC)
         {
             warn_once!("D298: depth of field skipped: the depth buffer cannot be read");
             commands.entity(entity).remove::<DofView>();
             continue;
         }
-        let multisampled = depth.texture.sample_count() > 1;
+        let samples = depth.texture.sample_count();
+        let multisampled = samples > 1;
+        // D312: DoF 1's composite is drawn into the main pass's (multisampled) texture.
+        let main_samples = target
+            .sampled_main_texture()
+            .map_or(1, |texture| texture.sample_count());
         let p = &mut *pipelines;
         let pipelines = ENTRIES.map(|entry| {
-            let out = if matches!(entry, "dof_composite") {
-                format
-            } else {
-                HALF_FORMAT
+            let (out, count) = match entry {
+                "dof_composite" => (format, main_samples),
+                "dof_composite_marked" => (format, 1),
+                _ => (HALF_FORMAT, 1),
             };
-            *p.ids.entry((out, multisampled, entry)).or_insert_with(|| {
-                let mut shader_defs = Vec::new();
-                if srgb {
-                    shader_defs.push("SRGB_TARGET".into());
-                }
-                if multisampled {
-                    shader_defs.push("DEPTH_MSAA".into());
-                }
-                cache.queue_render_pipeline(RenderPipelineDescriptor {
-                    label: Some(format!("d298_{entry}").into()),
-                    layout: vec![p.layouts[usize::from(multisampled)].clone()],
-                    vertex: p.vertex.clone(),
-                    fragment: Some(FragmentState {
-                        shader: SHADER,
-                        shader_defs,
-                        entry_point: Some(entry.into()),
-                        targets: vec![Some(ColorTargetState {
-                            format: out,
-                            blend: None,
-                            write_mask: ColorWrites::ALL,
-                        })],
-                    }),
-                    ..default()
+            *p.ids
+                .entry((out, count, multisampled, entry))
+                .or_insert_with(|| {
+                    let mut shader_defs = Vec::new();
+                    if srgb {
+                        shader_defs.push("SRGB_TARGET".into());
+                    }
+                    if multisampled {
+                        shader_defs.push("DEPTH_MSAA".into());
+                    }
+                    cache.queue_render_pipeline(RenderPipelineDescriptor {
+                        label: Some(format!("d298_{entry}").into()),
+                        layout: vec![p.layouts[usize::from(multisampled)].clone()],
+                        vertex: p.vertex.clone(),
+                        fragment: Some(FragmentState {
+                            shader: SHADER,
+                            shader_defs,
+                            entry_point: Some(entry.into()),
+                            targets: vec![Some(ColorTargetState {
+                                format: out,
+                                blend: None,
+                                write_mask: ColorWrites::ALL,
+                            })],
+                        }),
+                        multisample: MultisampleState { count, ..default() },
+                        ..default()
+                    })
                 })
-            })
         });
         let size = target.main_texture().size();
         let mut half = |label: &'static str| {
@@ -357,6 +412,22 @@ fn prepare_dof(
             )
         };
         let (a, b) = (half("d298_dof_a"), half("d298_dof_b"));
+        let opaque_depth = textures.get(
+            &device,
+            TextureDescriptor {
+                label: Some("d312_dof_opaque_depth"),
+                size: depth.texture.size(),
+                mip_level_count: 1,
+                sample_count: samples,
+                dimension: TextureDimension::D2,
+                format: depth.texture.format(),
+                // (A multisampled texture must also be a render attachment.)
+                usage: TextureUsages::COPY_DST
+                    | TextureUsages::TEXTURE_BINDING
+                    | TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            },
+        );
         let words = [range.c, range.k, 0., 0.];
         let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
         let range = device.create_buffer_with_data(&BufferInitDescriptor {
@@ -367,6 +438,7 @@ fn prepare_dof(
         commands.entity(entity).insert(DofView {
             a,
             b,
+            opaque_depth,
             range,
             multisampled,
             pipelines,
@@ -374,17 +446,58 @@ fn prepare_dof(
     }
 }
 
-/// D298: source (scene -> a), ring with the gate kept (a -> b), ring writing the radius
-/// (b -> a), composite (scene and a -> the main texture).
+/// D312: between the opaque and the transparent pass, a copy of the depth buffer: where a
+/// translucent draw (the glass) then writes its depth, DoF 2 treats the pixel as the game's
+/// stencil-marked one.
+fn copy_opaque_depth(view: ViewQuery<(&ViewDepthTexture, &DofView)>, mut ctx: RenderContext) {
+    let (depth, dof) = view.into_inner();
+    if depth.texture.size() != dof.opaque_depth.texture.size() {
+        return;
+    }
+    ctx.command_encoder().copy_texture_to_texture(
+        depth.texture.as_image_copy(),
+        dof.opaque_depth.texture.as_image_copy(),
+        depth.texture.size(),
+    );
+}
+
+/// D312: DoF 1, between the opaque and the transparent pass: the four steps over the opaque
+/// scene, composited where it lies beyond the plane (no stencil, FOUND part 62).
+fn depth_of_field_opaque(
+    view: ViewQuery<(&ViewTarget, &ViewDepthTexture, &DofView)>,
+    pipelines: Res<DofPipelines>,
+    cache: Res<PipelineCache>,
+    ctx: RenderContext,
+) {
+    let (target, depth, dof) = view.into_inner();
+    run_passes((target, depth, dof), &pipelines, &cache, ctx, COMPOSITE_1);
+}
+
+/// D298 / D312: DoF 2, in the post chain: the four steps over the whole scene, composited on
+/// the translucent (marked) pixels without the plane test and on the others beyond it.
 fn depth_of_field(
     view: ViewQuery<(&ViewTarget, &ViewDepthTexture, &DofView)>,
     pipelines: Res<DofPipelines>,
     cache: Res<PipelineCache>,
-    mut ctx: RenderContext,
+    ctx: RenderContext,
 ) {
     let (target, depth, dof) = view.into_inner();
+    run_passes((target, depth, dof), &pipelines, &cache, ctx, COMPOSITE_2);
+}
+
+/// D298: source (scene -> a), ring with the gate kept (a -> b), ring writing the radius
+/// (b -> a), composite (scene and a -> the main texture) with the entry `composite` of
+/// [`ENTRIES`]. D312: DoF 1's composite ([`COMPOSITE_1`]) goes through the main pass's
+/// multisampled texture when there is one.
+fn run_passes(
+    (target, depth, dof): (&ViewTarget, &ViewDepthTexture, &DofView),
+    pipelines: &DofPipelines,
+    cache: &PipelineCache,
+    mut ctx: RenderContext,
+    composite: usize,
+) {
     let mut ready = Vec::with_capacity(4);
-    for id in dof.pipelines {
+    for id in [0, 1, 2, composite].map(|k| dof.pipelines[k]) {
         let Some(pipeline) = cache.get_render_pipeline(id) else {
             return;
         };
@@ -392,6 +505,8 @@ fn depth_of_field(
     }
     let device = ctx.render_device().clone();
     let layout = cache.get_bind_group_layout(&pipelines.layouts[usize::from(dof.multisampled)]);
+    let main_pass = composite == COMPOSITE_1;
+    let sampled = target.sampled_main_texture_view().filter(|_| main_pass);
     let post = target.post_process_write();
     let (a, b) = (&dof.a.default_view, &dof.b.default_view);
     // (pipeline, the half-size input, the output); the scene is bound in every pass.
@@ -403,7 +518,7 @@ fn depth_of_field(
     ];
     debug_assert_eq!(DOF_RING_PASSES, 2);
     let encoder = ctx.command_encoder();
-    for (pipeline, input, out) in steps {
+    for (k, (pipeline, input, out)) in steps.into_iter().enumerate() {
         let bind_group = device.create_bind_group(
             "d298_dof",
             &layout,
@@ -413,14 +528,25 @@ fn depth_of_field(
                 depth.view(),
                 dof.range.as_entire_binding(),
                 input,
+                &dof.opaque_depth.default_view,
             )),
         );
+        // DoF 1's composite under MSAA: every sample of the main pass's texture, resolved
+        // into the new main texture (the transparent pass loads the samples).
+        let (view, resolve_target) = match sampled {
+            Some(msaa) if k == 3 => (msaa, Some(out)),
+            _ => (out, None),
+        };
         let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
-            label: Some("d298_depth_of_field"),
+            label: Some(if main_pass {
+                "d312_depth_of_field_1"
+            } else {
+                "d298_depth_of_field"
+            }),
             color_attachments: &[Some(RenderPassColorAttachment {
-                view: out,
+                view,
                 depth_slice: None,
-                resolve_target: None,
+                resolve_target: resolve_target.map(|v| &**v),
                 ops: Operations::default(),
             })],
             depth_stencil_attachment: None,
@@ -459,6 +585,12 @@ const BODY: &str = r#"
 // (c, k, 0, 0): the ramp is c - k x depth, 0 at the range's start and 1 at its end.
 @group(0) @binding(3) var<uniform> range: vec4<f32>;
 @group(0) @binding(4) var half_texture: texture_2d<f32>;
+// D312: the depth buffer after the opaque pass (before the translucent draws).
+#ifdef DEPTH_MSAA
+@group(0) @binding(5) var opaque_depth: texture_depth_multisampled_2d;
+#else
+@group(0) @binding(5) var opaque_depth: texture_depth_2d;
+#endif
 struct FullscreenVertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) uv: vec2<f32>,
@@ -534,7 +666,8 @@ fn dof_ring_radius(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     return vec4<f32>(c.rgb, saturate(DOF_RAMP * c.a - (DOF_RAMP - 1.0)));
 }
 // Pass 4, full size: beyond the range's start the blurred image (bilinear from half size)
-// over the scene by its radius; the scene's alpha is kept.
+// over the scene by its radius; the scene's alpha is kept. D312: DoF 1's composite (between
+// the opaque and the transparent pass).
 @fragment
 fn dof_composite(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let p = vec2<i32>(floor(in.position.xy));
@@ -546,6 +679,28 @@ fn dof_composite(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let e = mix(to_encoded(scene.rgb), blurred.rgb, blurred.a);
     return vec4<f32>(from_encoded(e), scene.a);
 }
+// D312: a pixel a translucent draw (the glass) wrote: the game's stencil bit 0x80.
+fn translucent_at(p: vec2<i32>) -> bool {
+    return textureLoad(depth_texture, p, 0) != textureLoad(opaque_depth, p, 0);
+}
+// D312: DoF 2's composite (part 57's post-chain form): on the translucent pixels without the
+// plane test (the game's EQUAL 0x80 composite; no change where the radius is 0), on the others
+// beyond the range's start (its NOTEQUAL one).
+@fragment
+fn dof_composite_marked(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
+    let p = vec2<i32>(floor(in.position.xy));
+    let scene = textureLoad(scene_texture, p, 0);
+    let marked = translucent_at(p);
+    if (!marked && ramp_at(p) <= 0.0) {
+        return scene;
+    }
+    let blurred = textureSampleLevel(half_texture, linear_sampler, in.uv, 0.0);
+    if (marked && blurred.a <= 0.0) {
+        return scene;
+    }
+    let e = mix(to_encoded(scene.rgb), blurred.rgb, blurred.a);
+    return vec4<f32>(from_encoded(e), scene.a);
+}
 "#;
 
 /// D298: a CPU mirror of the four passes on a scene of encoded colours and ramps
@@ -554,6 +709,54 @@ fn dof_composite(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
 /// ramp is above 0). Returns the encoded colours.
 #[cfg(test)]
 pub fn dof_cpu(rgb: &[[f32; 3]], ramp: &[f32], w: usize, h: usize) -> Vec<[f32; 3]> {
+    dof_cpu_marked(rgb, ramp, &vec![false; w * h], w, h)
+}
+
+/// D312: one translucent surface's pixel over the opaque scene: its colour, its coverage
+/// (the scene below is mixed towards the colour by it) and its own ramp (it writes its depth).
+#[cfg(test)]
+#[derive(Clone, Copy)]
+pub struct Translucent {
+    pub rgb: [f32; 3],
+    pub cover: f32,
+    pub ramp: f32,
+}
+
+/// D312: a CPU mirror of the game's two passes: DoF 1 ([`dof_cpu`]) over the opaque scene,
+/// then the translucent surfaces drawn over it (each writing its ramp and marking its pixels),
+/// then DoF 2 ([`dof_cpu_marked`]) over the whole scene with those marks.
+#[cfg(test)]
+pub fn dof_two_pass_cpu(
+    rgb: &[[f32; 3]],
+    ramp: &[f32],
+    translucent: &[Option<Translucent>],
+    w: usize,
+    h: usize,
+) -> Vec<[f32; 3]> {
+    let first = dof_cpu(rgb, ramp, w, h);
+    let mut scene = first.clone();
+    let mut depth = ramp.to_vec();
+    let mut marked = vec![false; w * h];
+    for (p, t) in translucent.iter().enumerate() {
+        if let Some(t) = t {
+            scene[p] = std::array::from_fn(|k| first[p][k] * (1. - t.cover) + t.rgb[k] * t.cover);
+            depth[p] = t.ramp;
+            marked[p] = true;
+        }
+    }
+    dof_cpu_marked(&scene, &depth, &marked, w, h)
+}
+
+/// D312: [`dof_cpu`] with the translucent pixels (the game's stencil bit 0x80) composited
+/// without the plane test, and left as they are where the radius read back is 0 (DoF 2).
+#[cfg(test)]
+pub fn dof_cpu_marked(
+    rgb: &[[f32; 3]],
+    ramp: &[f32],
+    marked: &[bool],
+    w: usize,
+    h: usize,
+) -> Vec<[f32; 3]> {
     type Img = (Vec<[f32; 4]>, usize, usize);
     let bilinear = |img: &Img, u: f32, v: f32| -> [f32; 4] {
         let (data, iw, ih) = img;
@@ -622,7 +825,7 @@ pub fn dof_cpu(rgb: &[[f32; 3]], ramp: &[f32], w: usize, h: usize) -> Vec<[f32; 
     }
     (0..w * h)
         .map(|p| {
-            if ramp[p] <= 0. {
+            if !marked[p] && ramp[p] <= 0. {
                 return rgb[p];
             }
             let (u, v) = (
@@ -630,6 +833,9 @@ pub fn dof_cpu(rgb: &[[f32; 3]], ramp: &[f32], w: usize, h: usize) -> Vec<[f32; 
                 ((p / w) as f32 + 0.5) / h as f32,
             );
             let b = bilinear(&img, u, v);
+            if marked[p] && b[3] <= 0. {
+                return rgb[p];
+            }
             std::array::from_fn(|k| rgb[p][k] * (1. - b[3]) + b[k] * b[3])
         })
         .collect()
@@ -895,6 +1101,146 @@ mod tests {
         assert!(DepthOfField::extract_component((&DepthOfField::default(), &lens)).is_none());
         let ortho = Projection::Orthographic(OrthographicProjection::default_3d());
         assert!(DepthOfField::extract_component((&dof, &ortho)).is_none());
+    }
+
+    /// D312 (part 62 FOUND): the glass drawn between the two passes. A near glass panel with
+    /// a fine pattern (writing its depth, marked) over a far room: the room around it and
+    /// under it is blurred by DoF 1, the panel's own pattern stays exactly as drawn (DoF 2
+    /// finds a radius of 0 on it). The one post-chain pass (D298) blurs the pattern with the
+    /// room; part 57's stencil form alone (D306) keeps both sharp.
+    #[test]
+    fn d312_glass_sharp_over_a_blurred_room() {
+        let (w, h) = (32, 32);
+        let room = checker(w, h);
+        let ramp = vec![2.; w * h];
+        let panel = |x: usize, y: usize| (8..24).contains(&x) && (8..24).contains(&y);
+        let glass: Vec<Option<Translucent>> = (0..w * h)
+            .map(|p| {
+                let (x, y) = (p % w, p / w);
+                panel(x, y).then(|| Translucent {
+                    rgb: if x % 2 == 0 { [1.; 3] } else { [0.; 3] },
+                    cover: 0.5,
+                    ramp: -3.,
+                })
+            })
+            .collect();
+        let over = |base: &[[f32; 3]]| -> Vec<[f32; 3]> {
+            (0..w * h)
+                .map(|p| match glass[p] {
+                    Some(t) => {
+                        std::array::from_fn(|k| base[p][k] * (1. - t.cover) + t.rgb[k] * t.cover)
+                    }
+                    None => base[p],
+                })
+                .collect()
+        };
+        let two = dof_two_pass_cpu(&room, &ramp, &glass, w, h);
+        // The room alone through DoF 1, then the glass over it as drawn.
+        let want = over(&dof_cpu(&room, &ramp, w, h));
+        let inner = |x: usize, y: usize| (10..22).contains(&x) && (10..22).contains(&y);
+        for y in 0..h {
+            for x in 0..w {
+                let p = y * w + x;
+                if inner(x, y) {
+                    assert_eq!(two[p], want[p], "{x} {y}");
+                }
+            }
+        }
+        // The room beside the panel is blurred (rows 0..6 hold no glass).
+        let base = gradient(&room, w, h, 1..6);
+        assert!(gradient(&two, w, h, 1..6) < 0.5 * base);
+        // The pattern on the panel: per-row gradient over its inner columns.
+        let panel_gradient = |img: &[[f32; 3]]| {
+            let mut sum = 0.;
+            for y in 10..22 {
+                for x in 10..21 {
+                    sum += (img[y * w + x + 1][0] - img[y * w + x][0]).abs();
+                }
+            }
+            sum / (12. * 11.)
+        };
+        let drawn = over(&room);
+        // D298: one pass after the glass, which writes no depth: the pattern is blurred.
+        let one = dof_cpu(&drawn, &ramp, w, h);
+        // D306: the stencil form alone: the room under the panel stays sharp.
+        let marked: Vec<bool> = glass.iter().map(Option::is_some).collect();
+        let mut panel_ramp = ramp.clone();
+        for (p, g) in glass.iter().enumerate() {
+            if let Some(t) = g {
+                panel_ramp[p] = t.ramp;
+            }
+        }
+        let stencil = dof_cpu_marked(&drawn, &panel_ramp, &marked, w, h);
+        let (g_two, g_one) = (panel_gradient(&two), panel_gradient(&one));
+        assert!(g_two > 1.5 * g_one, "{g_two} {g_one}");
+        for y in 10..22 {
+            for x in 10..22 {
+                assert_eq!(stencil[y * w + x], drawn[y * w + x], "{x} {y}");
+            }
+        }
+        assert_ne!(two, stencil);
+    }
+
+    /// D312: with nothing beyond the start, the two passes leave the opaque scene and the
+    /// glass over it exactly as drawn (the closed Pod, part 49).
+    #[test]
+    fn d312_nothing_in_range_unchanged() {
+        let (w, h) = (16, 16);
+        let room = checker(w, h);
+        let glass: Vec<Option<Translucent>> = (0..w * h)
+            .map(|p| {
+                (p % w < 8).then_some(Translucent {
+                    rgb: [0.9, 0.1, 0.4],
+                    cover: 0.3,
+                    ramp: -5.,
+                })
+            })
+            .collect();
+        let out = dof_two_pass_cpu(&room, &vec![-1.; w * h], &glass, w, h);
+        for p in 0..w * h {
+            let want = match glass[p] {
+                Some(t) => std::array::from_fn(|k| room[p][k] * 0.7 + t.rgb[k] * 0.3),
+                None => room[p],
+            };
+            assert_eq!(out[p], want, "{p}");
+        }
+        // Without translucent surfaces DoF 2 repeats DoF 1 over its own result.
+        let none = vec![None; w * h];
+        let ramp = vec![2.; w * h];
+        let once = dof_cpu(&room, &ramp, w, h);
+        assert_eq!(
+            dof_two_pass_cpu(&room, &ramp, &none, w, h),
+            dof_cpu(&once, &ramp, w, h)
+        );
+    }
+
+    /// D312: DoF 2's composite reads the depth after the opaque pass and composites the pixels
+    /// whose depth changed since then without the plane test; DoF 1's keeps the plane test.
+    #[test]
+    fn d312_composite_shaders() {
+        let raw = shader_source();
+        for msaa in [true, false] {
+            let defs: Vec<&str> = if msaa { vec!["DEPTH_MSAA"] } else { vec![] };
+            let source = preprocess(&raw, &defs);
+            assert!(source.contains("@group(0) @binding(5) var opaque_depth"));
+            assert!(source
+                .contains("textureLoad(depth_texture, p, 0) != textureLoad(opaque_depth, p, 0)"));
+            assert!(source.contains("if (!marked && ramp_at(p) <= 0.0)"));
+            assert!(source.contains("if (marked && blurred.a <= 0.0)"));
+            assert_eq!(
+                source.matches("texture_depth_multisampled_2d").count(),
+                if msaa { 2 } else { 0 }
+            );
+        }
+        assert_eq!(ENTRIES[COMPOSITE_1], "dof_composite");
+        assert_eq!(ENTRIES[COMPOSITE_2], "dof_composite_marked");
+    }
+
+    /// D312: the glass writes its depth while the depth of field runs, not otherwise.
+    #[test]
+    fn d312_glass_writes_depth_with_the_dof() {
+        assert!(crate::dual::glass_writes_depth(true));
+        assert!(!crate::dual::glass_writes_depth(false));
     }
 
     /// D304: on by default in the Pod picture on the level-lighting route, off by default in
