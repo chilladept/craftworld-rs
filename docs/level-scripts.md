@@ -7768,6 +7768,13 @@ chain (all post off) against 8980 before event 2706:
 - Closed Pod at 600: 418,467 pixels change by more than 2 (mean |d| 1.64; the room and the
   planets x 0.955 / 0.973 / 0.994, the root is already turned there). Da Vinci (0001e786)
   byte-equal to main.
+- FOUND (capture 5247, the Pod closed; room draws 2453 / 2469): the same sun, (222886.6,
+  160167.5, 298581.3), unturned, and the same constants, while the room's normals are turned
+  10.3 degrees from 8980's (the viewer's root: 9.5 degrees at 600, 19.3 at 616). MEASURED against
+  5247's final output (`closed.py`): the change moves away from the game, the room through the
+  window |mean d| 3.6 -> 5.8, the left glass 1.4 -> 3.9, the right glass 0.4 -> 4.7. Over the
+  room's vertices N.L is 0.876 with the game's point sun, 0.846 now (direction, unturned) and
+  0.896 on main (turned): the remaining error there is the sun as a direction (INFERRED).
 
 ### Verification
 
@@ -7794,7 +7801,7 @@ Counts: +0 newly viewable / +0 newly Complete (viewer fidelity).
   length limit, INFERRED 40); MSAA in the Pod's other views.
 - From part 65 (part 64's open room, now lit like the game's): the mural's remaining detail
   (x 1.13 relative to its contrast, mip 0 on both sides), red 2.6 % low / blue 2.1 % high there
-  (the sun as a point, the fog share 0.33 against 0.37), the disc's own mips in place of the box
+  (the sun as a point, which the closed Pod needs too; the fog share 0.33 against 0.37), the disc's own mips in place of the box
   filter, and whether the dolly's root keeps its light too (a capture without level scripts).
   From part 64: DoF 2's offset texture, which is non-zero in 8980 over a middle
   rectangle (what draws it), and its second ring's alpha there.
