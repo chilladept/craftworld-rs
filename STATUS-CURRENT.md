@@ -21,6 +21,15 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - MEASURED: the runtime's World Thing matrix is the game's at all six captures; part 67's extra
   turn about the eye came from RPCS3's clip y flip. Open: the point once an entry is selected.
 
+## Before: D317 the Pod Earth drawn per bone under the scripts (2026-10-15)
+- Viewer (`docs/level-scripts.md` part 68): in the scripted Pod the Earth (pod_planets Thing 1,
+  boneThings [1, 2, 3]) is drawn per bone and the per-bone copy is on the Thing map, so it follows
+  the scripts; per-bone placement is on by default there (`--no-per-bone-placement` turns it off).
+- MEASURED (limb fits on captured frames 6082 / 8348 / 8980 / 9601 against stills): the gap was
+  the Earth's shape, not its size (part 67's 5 % came from a model curve): widths equal, the
+  viewer's height over width 1.06-1.12 against the game's 0.91-0.96, now 0.93-0.96; centres
+  within 2 to 5 px.
+
 ## Before: D316 the planets zoom against the game's captures (2026-10-15)
 - Research (`docs/level-scripts.md` part 67), no code change; withdraws part 66's lead. MEASURED
   (RenderDoc, six captures, `local-analysis/d316-zoom/`): the Earth draw's fog plane `vc[16]`
