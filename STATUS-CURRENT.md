@@ -11,7 +11,14 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D309 the glow alpha's fog form read from the material's program (2026-10-15)
+## Latest: D310 steps per frame at the Pod push and a game sweep of the change-over (2026-10-15)
+- Research only (`docs/level-scripts.md` part 61). MEASURED (RPCS3 memory, three pushes): every
+  frame runs one step; "in use" turns on at the frame-start pump, so the VM's order is the game's.
+- MEASURED: ten game frames through the change-over match the viewer with zoom and dissolve on
+  the same tick at every offset; part 52's one-tick lead is not reproduced. The sweep had no post
+  chain (no DoF or vignette), so part 57's dissolving-glass question stays open.
+
+## Before: D309 the glow alpha's fog form read from the material's program (2026-10-15)
 - Parsing (`lbp-resource` material program decoder) and viewer (`docs/level-scripts.md` part 60).
   The glow alpha's fog form is classified from each gmat's compiled program (variant 8, the last
   H0.w write) instead of D307's GUID list, which is removed.
