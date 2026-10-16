@@ -538,6 +538,9 @@ pub struct LevelSettings {
     pub backdrop_mesh: Option<Descriptor>,
 }
 
+/// D332: palette steps per unit of fog tint (01.33 TOC constant 8.0 in 0xac6c0, FOUND).
+pub const FOG_TINT_STEPS: f32 = 8.;
+
 /// P2l: presets kept per PLevelSettings (levels seen store one).
 pub const MAX_KEPT_PRESETS: usize = 16;
 
@@ -616,6 +619,31 @@ impl LevelSettings {
             }
         }
         (s, at)
+    }
+    /// D332: the fog colour under PWorld `fogTint` (01.33 0xac6c0, FOUND). The dial runs
+    /// over a ring of the level's own (blended, darkened) fog colour followed by `palette`
+    /// (`FogColours_0..14` of `game_constants.con`, or `PodFogColours_0..6` in the Pod):
+    /// `x = 8 tint`, entries `trunc(x)` and the next (both mod the ring's length), blended
+    /// by the fraction, all four lanes. Tint is clamped to 0..2, 0..1 in the Pod
+    /// (`pod`); 0 or below keeps the colour. With 15 colours, tint k/8 is colour k - 1
+    /// and 2 comes back to the level's own; an empty palette keeps the colour.
+    pub fn tinted_fog(fog: [f32; 4], tint: f32, palette: &[[f32; 4]], pod: bool) -> [f32; 4] {
+        if !(tint.is_finite() && tint > 0.) || palette.is_empty() {
+            return fog;
+        }
+        let tint = tint.min(if pod { 1. } else { 2. });
+        let ring = palette.len() + 1;
+        let at = |i: usize| if i == 0 { fog } else { palette[i - 1] };
+        let x = FOG_TINT_STEPS * tint;
+        let i = (x as usize) % ring;
+        let (a, b, f) = (at(i), at((i + 1) % ring), x - x.floor());
+        std::array::from_fn(|k| a[k] + (b[k] - a[k]) * f)
+    }
+    /// D332: these settings with the fog colour under `tint` ([`Self::tinted_fog`]); the
+    /// game tints after the preset blend and the darkness ([`Self::at_lighting`]).
+    pub fn with_fog_tint(mut self, tint: f32, palette: &[[f32; 4]], pod: bool) -> Self {
+        self.fog_color = Self::tinted_fog(self.fog_color, tint, palette, pod);
+        self
     }
     /// The world Thing's (PWorld holder) settings, else the first Thing carrying the
     /// part, with that Thing's index. Several holders are not merged.

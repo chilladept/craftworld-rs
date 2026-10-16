@@ -69,6 +69,12 @@ impl SettingsInForce {
     pub fn light(&self) -> [f32; 2] {
         [self.lighting[0], self.lighting[4]]
     }
+
+    /// D332: (lighting, darkness, fog tint), the values the level's light is built from
+    /// once the fog tint is applied (`LevelSettings::tinted_fog`).
+    pub fn light_and_fog_tint(&self) -> [f32; 3] {
+        [self.lighting[0], self.lighting[4], self.lighting[3]]
+    }
 }
 
 impl WorldState {
@@ -123,22 +129,23 @@ impl GlobalSettingsReport {
 /// 60 steps this way, one per tick. PLACEHOLDER for the viewer, not a game value.
 pub const RELIGHT_STEP: f32 = 0.002;
 
-/// Follows the (lighting, darkness) pair in force for a display that rebuilds its light
-/// only when the pair has moved enough ([`RELIGHT_STEP`]), and once more when it has come
-/// to rest, so the last shown pair is the one in force.
+/// Follows the (lighting, darkness) pair in force (or, D332, any `N` values such as
+/// [`SettingsInForce::light_and_fog_tint`]) for a display that rebuilds its light only
+/// when they have moved enough ([`RELIGHT_STEP`]), and once more when they have come to
+/// rest, so the last shown values are the ones in force.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct LightFollower {
+pub struct LightFollower<const N: usize = 2> {
     /// The pair the display shows.
-    pub shown: [f32; 2],
+    pub shown: [f32; N],
     /// The pair at the last [`Self::update`].
-    last: [f32; 2],
+    last: [f32; N],
     /// Times [`Self::update`] asked for a new light.
     pub relights: u64,
 }
 
-impl LightFollower {
+impl<const N: usize> LightFollower<N> {
     /// A display that shows `shown` now (the pair its light was built from at load).
-    pub fn new(shown: [f32; 2]) -> Self {
+    pub fn new(shown: [f32; N]) -> Self {
         LightFollower {
             shown,
             last: shown,
@@ -149,11 +156,11 @@ impl LightFollower {
     /// Call once per tick with the pair in force ([`SettingsInForce::light`]). Gives the
     /// pair to build a new light from, or nothing when the shown one will do. A pair with
     /// a value that is not finite is never shown.
-    pub fn update(&mut self, now: [f32; 2]) -> Option<[f32; 2]> {
+    pub fn update(&mut self, now: [f32; N]) -> Option<[f32; N]> {
         if now.iter().any(|v| !v.is_finite()) {
             return None;
         }
-        let far = |a: [f32; 2], b: [f32; 2]| (0..2).any(|i| (a[i] - b[i]).abs() > RELIGHT_STEP);
+        let far = |a: [f32; N], b: [f32; N]| (0..N).any(|i| (a[i] - b[i]).abs() > RELIGHT_STEP);
         let at_rest = now == self.last && now != self.shown;
         self.last = now;
         if !(far(now, self.shown) || at_rest) {

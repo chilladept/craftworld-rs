@@ -450,15 +450,20 @@ pub struct LevelRelight {
     pub presets: Vec<LevelSettings>,
     pub centre: Vec3,
     pub scale: f32,
-    /// PWorld (lighting, darkness) the shown light was built from at load.
-    pub stored: [f32; 2],
+    /// PWorld (lighting, darkness, fog tint) the shown light was built from at load.
+    pub stored: [f32; 3],
+    /// D332: the fog tint's palette for this level (empty when not read: no tint).
+    pub fog_palette: Vec<[f32; 4]>,
+    /// D332: the level is the Pod's (its palette, tint up to 1).
+    pub pod: bool,
 }
 
 impl LevelRelight {
-    /// The level's light at that PWorld lighting and darkness.
-    pub fn light(&self, lighting: f32, darkness: f32) -> PreviewLight {
+    /// The level's light at that PWorld lighting, darkness and fog tint.
+    pub fn light(&self, lighting: f32, darkness: f32, fog_tint: f32) -> PreviewLight {
         let (settings, _) =
             LevelSettings::at_lighting(&self.main, &self.presets, lighting, darkness);
+        let settings = settings.with_fog_tint(fog_tint, &self.fog_palette, self.pod);
         PreviewLight::from_settings(&settings, self.centre, self.scale)
     }
 }

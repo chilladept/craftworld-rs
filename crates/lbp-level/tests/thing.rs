@@ -769,3 +769,37 @@ fn level_lighting_blends_presets_by_world_lighting_and_darkness() {
     assert_eq!((m.sun_color, pos), (main.sun_color, None));
     assert_eq!(m.exposure, 4.5);
 }
+
+#[test]
+fn d332_fog_tint_runs_over_the_level_colour_then_the_palette() {
+    use lbp_level::parts::LevelSettings;
+    let own = [0.2, 0.4, 0.6, 1.];
+    let palette: Vec<[f32; 4]> = (1..=15).map(|i| [i as f32, 0., 0., 1.]).collect();
+    let tint = |t: f32| LevelSettings::tinted_fog(own, t, &palette, false);
+    // 0 (and below, and not a number) keeps the level's own colour.
+    assert_eq!(tint(0.), own);
+    assert_eq!(tint(-1.), own);
+    assert_eq!(tint(f32::NAN), own);
+    // k/8 is palette colour k - 1; between two steps, their blend.
+    assert_eq!(tint(1. / 8.), palette[0]);
+    assert_eq!(tint(15. / 8.), palette[14]);
+    let half = tint(0.5 / 8.);
+    assert!((half[0] - 0.6).abs() < 1e-6 && (half[1] - 0.2).abs() < 1e-6);
+    assert!((tint(1.5 / 8.)[0] - 1.5).abs() < 1e-5);
+    // Past the last colour it blends back to the level's own; 2 and above is that colour.
+    assert!((tint(15.5 / 8.)[0] - 7.6).abs() < 1e-5);
+    assert_eq!(tint(2.), own);
+    assert_eq!(tint(9.), own);
+    // The Pod's ring of 7: tint 1 is its own colour again, and the top of the range.
+    let pod = &palette[..7];
+    assert_eq!(LevelSettings::tinted_fog(own, 7. / 8., pod, true), pod[6]);
+    assert_eq!(LevelSettings::tinted_fog(own, 1., pod, true), own);
+    assert_eq!(LevelSettings::tinted_fog(own, 1.5, pod, true), own);
+    // No palette read: no tint.
+    assert_eq!(LevelSettings::tinted_fog(own, 0.5, &[], false), own);
+    let s = LevelSettings {
+        fog_color: own,
+        ..LevelSettings::default()
+    };
+    assert_eq!(s.with_fog_tint(0.25, &palette, false).fog_color, palette[1]);
+}

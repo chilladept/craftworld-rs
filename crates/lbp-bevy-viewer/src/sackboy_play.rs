@@ -1531,8 +1531,8 @@ mod tests {
     fn input_script_steps() {
         let s = parse_script("r:40, rj:12,-:30,bl:1").unwrap();
         assert_eq!(s.len(), 4);
-        assert_eq!((s[0].0.x, s[0].1), (1., 40));
-        assert!(s[1].0.jump && s[1].0.x == 1.);
+        assert_eq!((s[0].0.x, s[0].1), (lbp_sim::sackboy::STICK_FULL_RIGHT, 40));
+        assert!(s[1].0.jump && s[1].0.x == lbp_sim::sackboy::STICK_FULL_RIGHT);
         assert_eq!(s[2].0, Input::default());
         assert!(s[3].0.back && s[3].0.x == -1.);
         assert!(parse_script("x:3").is_err());

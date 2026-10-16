@@ -100,12 +100,49 @@ record at 5.77 within 1e-3 (`d331_record_matches_the_live_constants`). The level
 game does not look like the viewer's at the same place (a scrap shell over an orange planet,
 against the viewer's toy shop); that is the level's scene, not this grade.
 
+## D332: fog tint
+
+### What the game does (FOUND, 01.33)
+
+- The light-block function (0xac6c0) blends the stored presets at the target lighting (P3m)
+  and takes the block's fog colour (offset 0x10; the block's field order, from the field
+  visitor 0xb3f0b0: SunColor, FogColor, RimColor, RimColor2, AmbientColor, SunPosition, then
+  the floats). Darkness scales its rgb by 1 - darkness, alpha kept (lane mask 0xc3bf60).
+- Fog tint T > 0 then replaces it from a ring: entry 0 is that colour, entries 1..N the
+  palette `FogColours_0..14` (N = 15) of `gamedata/data/game_constants.con` (GUID 52107, a
+  text file; visitor 0xaa0198), or `PodFogColours_0..6` (N = 7) when the level is the Pod's
+  (`pod_planets.bin`, GUID 102363; 0xd0e80). `x = 8 T`, `i = trunc(x) mod (N + 1)`, the next
+  entry `j = (i + 1) mod (N + 1)`, `c = P[i] + (P[j] - P[i]) x frac(x)`, all four lanes. T is
+  clamped to 0..2 (0..1 in the Pod): T = k/8 is palette colour k - 1, T = 2 is the level's own
+  colour again.
+- The shown colour then eases to the new one over the lighting group's transition
+  (0xac31c..0xac330); it is the fog colour constant and the frame's clear colour.
+
+### What changed
+
+`LevelSettings::tinted_fog` / `with_fog_tint` (`lbp-level`), applied after `at_lighting`;
+`fog_tint.rs` reads the palettes with the level; the level's light at load and on every
+relight (`LevelRelight::light`, the follower now follows lighting, darkness and fog tint).
+
+### Not modelled
+
+- The ease of the shown colour over the transition: the viewer relights in steps
+  (`RELIGHT_STEP`) at the values in force, which already follow the blend.
+- Darkness on the other colours: 0xac200 scales SunColor, RimColor, RimColor2 and
+  AmbientColor by 1 - darkness on all four lanes and does not scale the exposure, while
+  `at_lighting` scales the exposure (P3m, fitted to the Bravery Test live read). Not changed
+  here; to settle with a live read of the block.
+
+### Verification
+
+`cargo test -p lbp-level` (`d332_fog_tint_runs_over_the_level_colour_then_the_palette`),
+`-p lbp-bevy-viewer` (`d332_palettes_read_in_order_and_stop_at_a_gap`), clippy.
+
 ## Research for the next PRs (not applied yet)
 
-- Darkness and fog tint: the light-block function (0xac6c0) blends the stored presets at the
-  lighting value (the P3m rule), then scales one colour of the blended block by 1 - darkness
-  (masked lanes) and, for fog tint above 0, replaces it with a blend between that colour and a
-  palette of 15 (or 7) colours at fog tint x a constant. Which field that colour is (block
-  offset 0x10) is not settled yet.
-- Fog: stored with the others on the settings Thing (0xacc7c); its use in the renderer was not
-  read yet.
+- Fog (FOUND): with F the eased fog setting in -1..1, `FogNear += F (0 - FogNear)` and
+  `FogFar += F (1000 - FogFar)` after the preset blend (0xac200, for every preset count), then
+  the script bias (`Cam.SetDOFAndFog` third value) is added to both (0x34fc48); no fog when
+  far <= near; the vertex fog factor is `(view depth - near) / (far - near)` (0x317bac).
+- Water (partly read): the tint picks from a 9-colour list at 8 x tint, murkiness x 0.7 goes
+  in the same vector's w (shader parameter 0x4da2db17); water level and waves not read.

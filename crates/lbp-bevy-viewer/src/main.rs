@@ -2,6 +2,7 @@ mod adapter;
 mod colour_grade;
 mod dof_post;
 mod dual;
+mod fog_tint;
 mod game_font;
 mod glow_post;
 mod gooey_ui;
@@ -106,6 +107,9 @@ struct LevelLoaded {
     dissolve_mask: Option<Result<lbp_texture::Texture, String>>,
     /// D284: pod_mask, the card materials' second mask, decoded with it.
     pod_mask: Option<Result<lbp_texture::Texture, String>>,
+    /// D332: the fog tint's palettes (`fog_tint`), and whether the level is the Pod's.
+    fog_palettes: Result<fog_tint::FogPalettes, String>,
+    pod_level: bool,
 }
 /// D278: the mask of the Pod tent's dissolve (`pod_dissolve::TRANSITION_MASK`) as an
 /// image, with a word on how the load went; there while the shell layer has a script
@@ -474,6 +478,7 @@ impl Viewer {
                             let guid = pod_dissolve::POD_MASK;
                             decode_texture(&catalog, &source, guid, &worker)
                         });
+                        let fog_palettes = fog_tint::load_palettes(&source, &catalog, &worker);
                         Ok(LevelLoaded {
                             scene,
                             identity,
@@ -481,6 +486,8 @@ impl Viewer {
                             shell_feet,
                             dissolve_mask,
                             pod_mask,
+                            fog_palettes,
+                            pod_level: level_guid == Some(fog_tint::POD_LEVEL_GUID),
                         })
                     });
                     let load_clip = |guid: &str| {
@@ -1314,6 +1321,7 @@ fn load(
                 _ => None,
             };
             let mut followed = None;
+            let pod_level = level.pod_level;
             // P2m: --lbp-lighting uses preset 0 unless told otherwise (D201: the main
             // block holds defaults in pod_planets; preset 0 matches RPCS3 far better).
             let preset = match (v.level.lighting_main, v.level.lighting_preset) {
@@ -1351,12 +1359,31 @@ fn load(
                 // `lighting`, dimmed by `darkness`; the main block is not what it uses.
                 // D267: the blocks are kept, so `--level-scripts` can light the level
                 // again when a script changes those two values.
-                let [lighting, _, _, _, darkness] = level.scene.world_lighting.unwrap_or_default();
+                // D332: and the fog colour tinted by `fogTint` over the constants' palette.
+                let [lighting, _, _, fog_tint, darkness] =
+                    level.scene.world_lighting.unwrap_or_default();
+                let palette = match &level.fog_palettes {
+                    Ok(p) => p.for_level(level.pod_level).to_vec(),
+                    Err(e) => {
+                        println!(
+                            "Fog tint: palettes not read ({e}); the fog colour stays untinted"
+                        );
+                        Vec::new()
+                    }
+                };
                 followed = level.scene.settings.map(|main| {
                     let presets = level.scene.settings_presets.clone();
-                    (main, presets, [lighting, darkness])
+                    (
+                        main,
+                        presets,
+                        [lighting, darkness, fog_tint],
+                        palette.clone(),
+                    )
                 });
-                println!("{}", use_world_lighting(&mut level.scene));
+                println!(
+                    "{}",
+                    use_world_lighting(&mut level.scene, &palette, pod_level)
+                );
             }
             let plan = plan_level(&level.scene, v.level.focus, v.level.pod)?;
             let light_frame = plan.light_frame;
@@ -1393,18 +1420,17 @@ fn load(
             if let Some(things) = things {
                 commands.insert_resource(things);
             }
-            v.lighting.level =
-                followed
-                    .zip(light_frame)
-                    .map(
-                        |((main, presets, stored), (centre, scale))| lighting::LevelRelight {
-                            main,
-                            presets,
-                            centre,
-                            scale,
-                            stored,
-                        },
-                    );
+            v.lighting.level = followed.zip(light_frame).map(
+                |((main, presets, stored, fog_palette), (centre, scale))| lighting::LevelRelight {
+                    main,
+                    presets,
+                    centre,
+                    scale,
+                    stored,
+                    fog_palette,
+                    pod: pod_level,
+                },
+            );
             if game {
                 // P2k: the planets level hangs under the World transform.
                 let t0 = v.level.t0.unwrap_or(0.);
@@ -2608,14 +2634,22 @@ fn use_lighting_preset(scene: &mut LevelScene, n: usize) -> String {
 /// P3m: lights the level from its stored presets blended by PWorld `lighting` and dimmed
 /// by `darkness` (`LevelSettings::at_lighting`; live reads of tutorial_23 and Bravery
 /// Test). Without presets the main block stays (darkness applies).
-fn use_world_lighting(scene: &mut LevelScene) -> String {
+fn use_world_lighting(scene: &mut LevelScene, fog_palette: &[[f32; 4]], pod: bool) -> String {
     let Some(main) = scene.settings else {
         return "Lighting: no level settings read".into();
     };
-    let [lighting, _, _, _, darkness] = scene.world_lighting.unwrap_or_default();
+    let [lighting, _, _, fog_tint, darkness] = scene.world_lighting.unwrap_or_default();
     let (settings, at) =
         level_scene::LevelSettings::at_lighting(&main, &scene.settings_presets, lighting, darkness);
+    let settings = settings.with_fog_tint(fog_tint, fog_palette, pod);
     scene.settings = Some(settings);
+    if fog_tint > 0. {
+        let c = settings.fog_color;
+        println!(
+            "Fog tint {fog_tint:.3}: fog colour ({:.3}, {:.3}, {:.3}, {:.3}) over {} palette colours (D332)",
+            c[0], c[1], c[2], c[3], fog_palette.len()
+        );
+    }
     match at {
         Some(at) => format!(
             "Lighting: {} stored presets blended at position {at:.2} (PWorld lighting {lighting:.2}, darkness {darkness:.2})",
