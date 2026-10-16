@@ -12,7 +12,7 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
 ## Latest: D324 the Pod main menu comes in and the focused pill grows as the game's (2026-10-16)
-- Viewer (`docs/level-scripts.md` part 75): FOUND (RenderDoc 7295 / 7927 / 8348, ticks 606 / 609 /
+- Viewer (`docs/level-scripts/part-75.md`): FOUND (RenderDoc 7295 / 7927 / 8348, ticks 606 / 609 /
   611) while the menu comes in it is drawn into a target of its own and laid over the scene by one
   draw (PS 3483): the pixel and seven ring taps averaged, times alpha (age + 1) / 15 (101 / 152 /
   186 of 255), ring radius 16 x 0.618 x (1 - alpha) px; the menu's own draws keep full alphas. The
