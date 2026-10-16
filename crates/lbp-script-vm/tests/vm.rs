@@ -780,6 +780,104 @@ fn new_object_runs_inherited_init_and_finds_superclass_by_learned_guid() {
     assert_eq!(vm.field(o, "x"), Some(&Value::Int(7)));
 }
 
+/// D326: a factory native (`Host::native_object_class`) answers a new script object whose
+/// `.init__` and then `.ctor__` ran before the caller goes on.
+#[test]
+fn factory_native_makes_a_script_object() {
+    struct Factory(u32);
+    impl Host for Factory {
+        fn call_native(&mut self, class: &str, f: &str, _: &[Value]) -> Result<Value, String> {
+            Err(format!("{class}.{f} is not a plain native here"))
+        }
+        fn get_member(
+            &mut self,
+            _: MemberKind,
+            _: &Value,
+            _: &str,
+            _: &str,
+        ) -> Result<Value, String> {
+            Err("no members".into())
+        }
+        fn set_member(
+            &mut self,
+            _: MemberKind,
+            _: &Value,
+            _: &str,
+            _: &str,
+            _: Value,
+        ) -> Result<(), String> {
+            Err("no members".into())
+        }
+        fn native_object_class(&mut self, class: &str, f: &str) -> Option<&'static str> {
+            self.0 += 1;
+            (class, f).eq(&("Maker", "Create__")).then_some("Made")
+        }
+    }
+    // Made: .init__ sets x = 7, then .ctor__ sets x = 9 (so 9 shows both ran, in order).
+    let mut b = Builder::new();
+    let int_ty = b.ty(INT, "int", None, 0);
+    let x = b.field(int_ty, "x", true);
+    let made = b.build(
+        "Made",
+        None,
+        vec![
+            func(
+                ".init__",
+                &[0],
+                vec![hi(0x03, 4, 7), i(0xb4, INT, 4, 0, x), i(0xa5, 0, 0, 0, 0)],
+            ),
+            func(
+                ".ctor__",
+                &[0],
+                vec![
+                    i(0xb3, INT, 4, 0, x), // r4 = this.x (7 once .init__ ran)
+                    hi(0x03, 8, 2),
+                    i(0x2a, INT, 4, 4, 8), // r4 = r4 + 2 (ADDi)
+                    i(0xb4, INT, 4, 0, x),
+                    i(0xa5, 0, 0, 0, 0),
+                ],
+            ),
+        ],
+    );
+    let mut b = Builder::new();
+    let me = b.ty(OBJ, "Maker", None, 0);
+    let int_ty = b.ty(INT, "int", None, 0);
+    let x = b.field(int_ty, "x", false);
+    let create = b.fref(me, "Create__");
+    let maker = b.build(
+        "Maker",
+        None,
+        vec![
+            Func {
+                name: "Create__",
+                native: true,
+                args: vec![],
+                stack: 0,
+                code: vec![],
+            },
+            func(
+                "Run",
+                &[],
+                vec![
+                    i(0xa4, OBJ, 4, create, 0), // r4 = Maker.Create()
+                    i(0xb3, INT, 8, 4, x),      // r8 = r4.x
+                    i(0xa5, INT, 0, 8, 0),      // RETURN r8
+                ],
+            ),
+        ],
+    );
+    let mut vm = Vm::default();
+    vm.load(made, None);
+    let m = vm.load(maker, None);
+    let mut host = Factory(0);
+    let mut budget = 100;
+    assert_eq!(
+        vm.call(&mut host, m, "Run", &[], &mut budget),
+        Ok(Value::Int(9))
+    );
+    assert_eq!(host.0, 1);
+}
+
 /// A test-script shape end to end: a class with a GUID-only superclass that has
 /// `.init__`, a native `Test.Check` declared on the class, and a non-static test function
 /// run on a constructed instance with `this` in register 0. Checks must reach the world.

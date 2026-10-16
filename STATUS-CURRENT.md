@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D325
+# Current state (overwrite each milestone) — after D326
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -11,16 +11,16 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D325 the Pod main menu answers the pad (2026-10-16)
-- Runtime (`docs/level-scripts/part-76.md`): the menu's scripts get the pad's focus moves, choose
-  (the focused button answers 256 once) and back (the root's `EndFrameInput(512)` answers 512
-  once). FOUND (listings): the menu is rebuilt only when `PodComputer.NeedUpdateUI` is true, which
-  ors in `Gooey.NeedsUpdate`; that now answers true while input waits, so a key acts on its own
-  tick (before: builds every ~31 ticks). Session: down moves Story -> Community -> Recent Activity;
-  back pops the menu and the pod computer closes on that tick; choose on Story pushes
-  `PodStateSearch`, which faults on unbound SearchDetails / Planets natives (next).
-- Viewer: arrows / D-pad move the focus, Backspace is the menu's back, Enter chooses under
-  `--pod-menu-choose`; the focused pill's spring restarts on a move (INFERRED).
+## Latest: D326 Story's search state runs (2026-10-16)
+- Runtime (`docs/level-scripts/part-77.md`): a factory native can make a script object
+  (`Host::native_object_class`: fields, `.init__`, `.ctor__`); `SearchDetails.CreateStoryLevels__`
+  makes a `SearchDetailsStoryLevels` and `Planet.GetCurResult__` an empty `SearchResultHandle`
+  (INFERRED: nothing under the cursor yet). FOUND (listings): `Gooey.FontScale` is script code over
+  `Get/SetStylesheetScalingFactor`, now bound; `IsCJK` is true for language 0, so
+  `System.GetLanguageID__` answers English (1). Session: choose on Story at 640 runs
+  `PodStateSearch` without faults and builds the Story title bubble ("STORY", x2.5).
+- Next: the search results, focus planet, browse modes and paging natives (default answers now).
+- D325 (part 76): the menu answers the pad's focus moves, choose and back on the key's tick.
 
 ## Measured counts (distinct catalog GUID; Complete = manual, all textures + geometry)
 - Mesh census 01.33 (4,261 GUIDs, after D188-D190): 4,259 viewable, 4,239 all-diffuse by

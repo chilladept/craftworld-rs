@@ -225,6 +225,11 @@ impl GooeyState {
         self.font_scale.unwrap_or(1.)
     }
 
+    /// `Gooey.SetStylesheetScalingFactor` (the `FontScale` property's setter).
+    pub(crate) fn set_font_scale(&mut self, scale: f32) {
+        self.font_scale = Some(scale);
+    }
+
     fn push(&mut self, item: GooeyItem) {
         match self.open.last_mut() {
             Some(f) if f.children.len() < MAX_GOOEY_ITEMS => f.children.push(item),
@@ -627,16 +632,10 @@ impl LevelWorld {
                 g.colours_player = Some(int(a(0)));
                 Value::Void
             }
-            "get.FontScale" => Value::Float(g.font_scale()),
-            "set.FontScale" => {
-                g.font_scale = Some(num(a(0)));
-                Value::Void
-            }
-            _ if mangled == ".get.FontScale__" => Value::Float(g.font_scale()),
-            _ if mangled == ".set.FontScale__f" => {
-                g.font_scale = Some(num(a(0)));
-                Value::Void
-            }
+            // D326 FOUND (the 01.33 listings): the script property `Gooey.FontScale` has
+            // code that calls `GetStylesheetScalingFactor__` / `SetStylesheetScalingFactor__f`
+            // (the setter is a table native and reaches `engine_call`).
+            "GetStylesheetScalingFactor" => Value::Float(g.font_scale()),
             // The player's colour the Gooey took (`SetColoursFromPlayer`), as a colour
             // vector; the first record's without one.
             "GetPrimaryColour" => {
@@ -689,6 +688,10 @@ impl LevelWorld {
             ("HUD", "GetScreenEdgeCrop__") => Value::Float(0.),
             ("HUD", "SDF_INFO__iii") => Value::Vec4([0.; 4]),
             ("Audio", "RequestVoiceOverMovePack__Q7StringAbbb") => Value::Bool(false),
+            // D326: English (the PS3's CELL_SYSUTIL_LANG_ENGLISH_US, 1). FOUND (the 01.33
+            // listings, `IsCJK__`): 0 is one of the CJK languages, so the unbound default
+            // drew the Story title at the CJK font scale (x1.5, not x2.5).
+            ("System", "GetLanguageID__") => Value::Int(1),
             _ => return None,
         })
     }

@@ -80,6 +80,7 @@ One file per part in `docs/level-scripts/`. A new part goes in its own
 - [Part 74: the planets' coronas, the pins' shadows, the card and the focused pill as the game draws them (2026-10-15, D323)](level-scripts/part-74.md)
 - [Part 75: the Pod main menu comes in, and the focused pill grows, as the game's (2026-10-16, D324)](level-scripts/part-75.md)
 - [Part 76: the Pod main menu answers the pad (2026-10-16, D325)](level-scripts/part-76.md)
+- [Part 77: Story's search state runs (2026-10-16, D326)](level-scripts/part-77.md)
 
 ## Next
 

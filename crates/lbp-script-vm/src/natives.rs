@@ -3269,7 +3269,7 @@ pub const UI_CLASSES: [&str; 2] = ["Gooey", "Callout"];
 /// D319: natives of other classes the pod computer's per-frame step and its main menu ask
 /// (part 46 found 28 kinds of them unbound in the planets level), also answered by
 /// [`World::ui_call`].
-pub const UI_NATIVES: [(&str, &str); 24] = [
+pub const UI_NATIVES: [(&str, &str); 25] = [
     ("Planets", "CheckOverlayNeedsUpdate__"),
     ("PodComputer", "GetPodComputerUserPlayerNumber__"),
     (
@@ -3297,6 +3297,7 @@ pub const UI_NATIVES: [(&str, &str); 24] = [
     ("HUD", "SDF_INFO__iii"),
     ("Audio", "RequestVoiceOverMovePack__Q7StringAbbb"),
     ("Start_Menu", "GetFriendStatus__Q13PodFriendData"),
+    ("System", "GetLanguageID__"),
 ];
 
 #[cfg(test)]
