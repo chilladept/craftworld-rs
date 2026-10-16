@@ -744,6 +744,9 @@ pub struct ScriptMenuFrame {
     /// has not moved since the frame was first built: the focused pill's spring and slab go
     /// by it. INFERRED (not captured): a newly focused pill springs from 1 as the first does.
     pub focus_age: f32,
+    /// D329: `PWorld.Frame` when the drawn frame was first built: another frame (Story
+    /// after the main menu) has another, and its items are spawned again.
+    pub built_at: Option<i32>,
 }
 
 impl ScriptMenuFrame {
@@ -787,6 +790,7 @@ impl ScriptMenuFrame {
             colour: lbp_script_vm::natives::colour_vector(colour),
             age,
             focus_age,
+            built_at: menu.first_built,
         })
     }
 }
@@ -1708,7 +1712,7 @@ pub(crate) fn paint_script_menu(
     >,
     mut pictures: Query<&mut ImageNode, (With<ScriptMenuImage>, Without<GameLabel>)>,
     (assets, mut images): (Option<Res<MenuAssets>>, ResMut<Assets<Image>>),
-    mut built: Local<Option<usize>>,
+    mut built: Local<Option<(Option<i32>, usize)>>,
     (mut layer, mut layer_state): (
         Option<ResMut<crate::glow_post::MenuLayer>>,
         Local<LayerState>,
@@ -1743,12 +1747,13 @@ pub(crate) fn paint_script_menu(
         }
         return;
     };
-    if *built != Some(frame.placed.len()) {
+    let key = (frame.built_at, frame.placed.len());
+    if *built != Some(key) {
         for (e, _) in &roots {
             commands.entity(e).despawn();
         }
         spawn_script_menu(&mut commands, frame, assets.as_deref(), &mut images);
-        *built = Some(frame.placed.len());
+        *built = Some(key);
         return;
     }
     for (_, mut v) in &mut roots {

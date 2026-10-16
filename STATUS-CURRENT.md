@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D328
+# Current state (overwrite each milestone) — after D329
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -16,7 +16,11 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
   `lbp2story_slots.slt` in list order, levels linked under their groups (FOUND, 0x40f120); the
   result, handle and Earth cursor natives answer (`gooey.rs` `story_result_query`). INFERRED:
   every lock state 0, default result group 22. Session: unbound calls 2 -> 1, no error message.
-- Next: draw the Story frame in the viewer and lift the `--pod-menu-choose` gate.
+- D329 viewer (part 80): choosing is always on (`--pod-menu-choose` gone; QA flag
+  `--level-scripts-choose-at N`), the viewer reads the story slots and draws the Story frame
+  ("STORY" title, tick 641).
+- Next: draw the Story results on Earth (the planet's cursor and badges); compare the title with a
+  game frame.
 - D327 (part 78): Story focuses Earth (search state natives, planets view 6).
 - D326 (part 77): Story's search state runs (factory natives, Story title bubble).
 

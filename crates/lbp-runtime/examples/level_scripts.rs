@@ -3029,17 +3029,8 @@ fn story_slots(
     source: &AttachedSource,
     control: &LoadControl,
 ) -> Result<Vec<lbp_runtime::SearchSlot>, String> {
-    let key = lbp_preview::resolve(catalog, Some(0x162ec), None)?;
-    let bytes = lbp_preview::level_scene::read_resource(source, &key, control, 16 << 20)?;
-    let report = lbp_level::slots::read(&bytes, lbp_level::Limits::default(), &|| false)
-        .map_err(|e| e.to_string())?;
-    match report.result {
-        Ok(lbp_level::slots::UiData::SlotList(list)) => {
-            Ok(lbp_runtime::SearchSlot::from_list(&list))
-        }
-        Ok(_) => Err("lbp2story_slots.slt is not a slot list".into()),
-        Err(e) => Err(format!("lbp2story_slots.slt: {e:?}")),
-    }
+    let list = lbp_preview::story::read_story_slot_list(source, catalog, control)?;
+    Ok(lbp_runtime::SearchSlot::from_list(&list))
 }
 
 /// D327: what the pod's search state told the planets and the pod computer.

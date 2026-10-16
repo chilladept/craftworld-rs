@@ -104,9 +104,9 @@ struct Play {
     dissolve_edge_printed: bool,
     /// D298: the depth-of-field range last printed (level units).
     dof_printed: Option<[f32; 2]>,
-    /// D325 `--pod-menu-choose` (QA): Enter chooses the focused entry of the scripts' menu.
-    /// Off by default: Story's state faults on natives not bound yet.
-    menu_choose: bool,
+    /// D329 `--level-scripts-choose-at N` (QA): the focused entry of the scripts' menu is
+    /// chosen on tick N (as `level_scripts --menu=N:choose`); none once that is done.
+    choose_at: Option<u64>,
 }
 
 /// The script world of the Pod's shell layer (part 28): the second level of the
@@ -392,7 +392,7 @@ pub fn install(app: &mut App) -> Result<(), String> {
     let hold_at = tick_option(&all, "--level-scripts-hold-at")?;
     let in_use_at = tick_option(&all, "--level-scripts-in-use-at")?;
     let press_at = tick_option(&all, "--level-scripts-press-at")?;
-    let menu_choose = all.iter().any(|a| a == "--pod-menu-choose");
+    let choose_at = tick_option(&all, "--level-scripts-choose-at")?;
     if press_at.is_some() && shell_guid.is_none() {
         println!(
             "--level-scripts-press-at is not used without the Pod's shell layer (--pod-camera N --pod-shell HEX): the engage press is read by the shell level's script"
@@ -444,6 +444,12 @@ pub fn install(app: &mut App) -> Result<(), String> {
                 Ok::<_, String>((LevelWorld::from_things(&report.things), identity))
             };
             let (mut world, identity) = read_world(guid, path.as_deref())?;
+            // D328: the Story search's results are the story slot list's slots. A list
+            // that cannot be read leaves the search with no results.
+            match lbp_preview::story::read_story_slot_list(&source, &catalog, &control) {
+                Ok(list) => world.story_slots = lbp_runtime::SearchSlot::from_list(&list),
+                Err(e) => println!("Story slots not read: {e}"),
+            }
             // The English tables, patch first, as the `level_scripts` example loads them
             // (INFERRED that these are the tables loaded while a level plays). A table
             // that cannot be read is left out: the scripts then give their own text for
@@ -564,7 +570,7 @@ pub fn install(app: &mut App) -> Result<(), String> {
         dissolve_printed: false,
         dissolve_edge_printed: false,
         dof_printed: None,
-        menu_choose,
+        choose_at,
     })
     .insert_resource(crate::CaptureHold(hold_at.is_some()))
     .insert_resource(menu_assets.unwrap_or_default())
@@ -758,7 +764,8 @@ fn puter_key(p: &mut Play, key: PuterKey) {
 
 /// D325: the arrows and the D-pad move the focus of the scripts' drawn menu while the pod
 /// computer is in use (`GooeyState::move_focus`, the layout measured in the game's fonts);
-/// under `--pod-menu-choose` Enter or Cross chooses the focused entry. The menu is built
+/// Enter or Cross chooses the focused entry (D329: Story runs without faults since part
+/// 79, so choosing is no longer behind a flag). The menu is built
 /// again on the next tick (the Gooey then needs an update).
 fn menu_keys(
     mut play: NonSendMut<Play>,
@@ -794,7 +801,7 @@ fn menu_keys(
     }
     let choose =
         keys.any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter]) || pad(GamepadButton::South);
-    if choose && p.menu_choose {
+    if choose {
         world.gooey.input.choose = true;
         println!(
             "Menu choose after tick {ticks}: the focused button answers 256 on the next build"
@@ -852,6 +859,14 @@ fn step(
         println!(
             "Pod computer at tick {}: in use true, from --level-scripts-in-use-at (stand-in for the player engaging it)",
             p.scripts.ticks
+        );
+    }
+    // D329, `--level-scripts-choose-at N`: the focused menu entry is chosen on tick N.
+    if press_now(&mut p.choose_at, p.scripts.ticks + 1) {
+        p.host.world.gooey.input.choose = true;
+        println!(
+            "Menu choose on tick {}, from --level-scripts-choose-at",
+            p.scripts.ticks + 1
         );
     }
     // Part 30: the session's Sackboy and pad. He is put on the pod computer's trigger
@@ -1372,9 +1387,11 @@ fn follow_menu(
     let fonts = (!assets.gooey_fonts.faces.is_empty()).then_some(&assets.gooey_fonts);
     let now = crate::pod_menu::ScriptMenuFrame::of(&play.host.world, fonts);
     if menu.0 != now {
-        if menu.0.is_none() && now.is_some() {
+        // D329: a line for each frame drawn (the main menu, then Story's).
+        let built = |m: &Option<crate::pod_menu::ScriptMenuFrame>| m.as_ref().map(|m| m.built_at);
+        if now.is_some() && built(&menu.0) != built(&now) {
             println!(
-                "Main menu at tick {}: built by the pod computer's scripts and drawn by their matrix ({} items)",
+                "Menu frame at tick {}: built by the pod computer's scripts and drawn by their matrix ({} items)",
                 play.scripts.ticks,
                 now.as_ref().map_or(0, |m| m.placed.len())
             );

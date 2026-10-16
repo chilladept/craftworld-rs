@@ -486,6 +486,23 @@ pub fn load_strings(
 }
 
 /// Reads every magic-confirmed slot list, the English tables and the slot icons.
+/// D328: the story slot list `gamedata/data/lbp2story_slots.slt` (GUID 000162ec), the
+/// list the pod's Story search makes its results from.
+pub fn read_story_slot_list(
+    source: &AttachedSource,
+    catalog: &Catalog,
+    control: &LoadControl,
+) -> Result<SlotList, String> {
+    let key = crate::resolve(catalog, Some(0x162ec), None)?;
+    let bytes = read_resource(source, &key, control, 16 << 20)?;
+    let report = slots::read(&bytes, Limits::default(), &|| false).map_err(|e| e.to_string())?;
+    match report.result {
+        Ok(UiData::SlotList(list)) => Ok(list),
+        Ok(_) => Err("lbp2story_slots.slt is not a slot list".into()),
+        Err(e) => Err(format!("lbp2story_slots.slt: {e:?}")),
+    }
+}
+
 pub fn load_story(
     source: &AttachedSource,
     catalog: &Catalog,
