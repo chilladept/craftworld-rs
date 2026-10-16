@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Where did the context go? Summarise Claude Code transcripts for this project.
 
-Usage: python -I scripts/ctx_audit.py [--last N] [--dir PROJECT_TRANSCRIPT_DIR]
+Usage: python -I scripts/ctx_audit.py [--last N] [--dir PROJECT_TRANSCRIPT_DIR] [--session ID_PREFIX]
 
 Prints (capped, ~60 lines): per-session baseline/peak/turns, and the context growth
 attributed to each tool-result class. Token numbers for results are estimates
@@ -31,8 +31,23 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--last", type=int, default=20)
     ap.add_argument("--dir", default=None)
+    ap.add_argument("--session", help="id prefix (scratchpad folder name): print its current context only")
     a = ap.parse_args()
-    d = a.dir or os.path.expanduser("~/.claude/projects/C--Users-chill-Documents-Projects-LBP2-Rust-Rewrite")
+    home = os.path.expanduser("~")
+    folder = "".join(c if c.isalnum() else "-" for c in os.path.join(home, "Documents", "Projects", "LBP2 Rust Rewrite"))
+    d = a.dir or os.path.join(home, ".claude", "projects", folder)
+    if a.session:
+        f = max(glob.glob(os.path.join(d, a.session + "*.jsonl")), key=os.path.getmtime)
+        ids, cur = set(), 0
+        for line in open(f, encoding="utf8"):
+            if '"usage"' not in line:
+                continue
+            m = json.loads(line).get("message") or {}
+            u = m.get("usage") or {}
+            ids.add(m.get("id"))
+            cur = sum(u.get(k) or 0 for k in ("cache_read_input_tokens", "input_tokens", "cache_creation_input_tokens")) or cur
+        print(f"{a.session}: {len(ids)} calls, context {cur // 1000}k (plan handoff at 150k, stop near 170k)")
+        return
     files = sorted(glob.glob(d + "/*.jsonl"), key=os.path.getmtime)[-a.last:]
     grow, cnt = collections.Counter(), collections.Counter()
     print("session  turns  first   peak   cache-read-sum(M)")
