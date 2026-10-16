@@ -751,12 +751,15 @@ fn level_lighting_blends_presets_by_world_lighting_and_darkness() {
     assert!((s.exposure - 2.4).abs() < 1e-6);
     assert!((s.baked_ao_bias - 0.4).abs() < 1e-6);
     assert!((s.fog_near - 240.).abs() < 1e-3);
-    // Darkness scales the exposure and the fog colour, nothing else.
+    // D335: darkness scales the sun, ambient and rim colours (all lanes) and the fog's
+    // RGB, not the exposure.
     let (d, _) = at(0.6, 0.25);
-    assert!((d.exposure - s.exposure * 0.75).abs() < 1e-6);
+    assert_eq!(d.exposure, s.exposure);
+    assert_eq!(d.sun_color, s.sun_color.map(|v| v * 0.75));
+    assert_eq!(d.ambient_color, s.ambient_color.map(|v| v * 0.75));
+    assert_eq!(d.rim_color2, s.rim_color2.map(|v| v * 0.75));
     assert!((d.fog_color[0] - s.fog_color[0] * 0.75).abs() < 1e-6);
     assert_eq!(d.fog_color[3], 1.);
-    assert_eq!(d.sun_color, s.sun_color);
     // Out of range or non-finite lighting clamps; one preset is that preset.
     assert_eq!(at(7., 0.).1, Some(2.));
     assert_eq!(at(f32::NAN, 0.).1, Some(0.));
@@ -766,8 +769,8 @@ fn level_lighting_blends_presets_by_world_lighting_and_darkness() {
     );
     // No presets: the main block, with darkness still applied.
     let (m, pos) = LevelSettings::at_lighting(&main, &[], 0.5, 0.5);
-    assert_eq!((m.sun_color, pos), (main.sun_color, None));
-    assert_eq!(m.exposure, 4.5);
+    assert_eq!((m.sun_color, pos), (main.sun_color.map(|v| v * 0.5), None));
+    assert_eq!(m.exposure, 9.);
 }
 
 #[test]

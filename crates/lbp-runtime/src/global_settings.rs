@@ -63,8 +63,8 @@ impl SettingsInForce {
 
     /// The two values of the lighting group a display can use today: (lighting,
     /// darkness), the arguments of `LevelSettings::at_lighting` in `lbp-level` (P3m: the
-    /// stored presets spread over lighting 0..1, darkness dimming exposure and fog
-    /// colour). The other three (colour correction, fog, fog tint) have no settled
+    /// stored presets spread over lighting 0..1, darkness dimming the sun, ambient, rim
+    /// and fog colours, D335). The other three (colour correction, fog, fog tint) have no settled
     /// mapping: see the part 18 "Not modelled" list.
     pub fn light(&self) -> [f32; 2] {
         [self.lighting[0], self.lighting[4]]

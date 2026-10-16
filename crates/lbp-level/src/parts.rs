@@ -589,13 +589,14 @@ impl LevelSettings {
 
     /// P3m: the lighting the game applies to a level. `presets` are spread evenly over
     /// PWorld `lighting` 0..1 (position `lighting x (n - 1)`, blended between the two
-    /// neighbours); PWorld `darkness` scales the exposure and the fog colour by
-    /// `1 - darkness`. Without presets `main` is used (darkness still applies).
-    /// Returns the settings and the preset position (`None` for the main block).
-    /// CONFIRMED_FROM_LOCAL_DATA on live reads of tutorial_23 (lighting 1.0 = preset 2,
-    /// darkness 0) and Bravery Test (lighting 0.6, darkness 0.19: 80% preset 1 + 20% preset 2,
-    /// exposure 1.0417 x 0.81 = 0.8437, fog x 0.81); spacing for 4 or more presets is
-    /// INFERRED from that rule, and so is the fog/exposure split of `darkness`.
+    /// neighbours); D335: PWorld `darkness` scales the sun, ambient and both rim colours
+    /// (all four lanes, 01.33 0xac200) and the fog colour's RGB (0xac6c0) by
+    /// `1 - darkness`, and leaves the exposure alone (FOUND). Without presets `main` is
+    /// used (darkness still applies). Returns the settings and the preset position (`None`
+    /// for the main block). CONFIRMED_FROM_LOCAL_DATA on live reads of tutorial_23
+    /// (lighting 1.0 = preset 2, darkness 0) and Bravery Test (lighting 0.6, darkness 0.19:
+    /// 80% preset 1 + 20% preset 2, every colour x exposure product x 0.81); spacing for 4
+    /// or more presets is INFERRED from that rule.
     pub fn at_lighting(
         main: &Self,
         presets: &[Self],
@@ -618,7 +619,14 @@ impl LevelSettings {
         };
         if darkness.is_finite() && darkness > 0. {
             let k = (1. - darkness).clamp(0., 1.);
-            s.exposure *= k;
+            for c in [
+                &mut s.sun_color,
+                &mut s.ambient_color,
+                &mut s.rim_color,
+                &mut s.rim_color2,
+            ] {
+                *c = c.map(|v| v * k);
+            }
             for c in &mut s.fog_color[..3] {
                 *c *= k;
             }

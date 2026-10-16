@@ -128,10 +128,7 @@ relight (`LevelRelight::light`, the follower now follows lighting, darkness and 
 
 - The ease of the shown colour over the transition: the viewer relights in steps
   (`RELIGHT_STEP`) at the values in force, which already follow the blend.
-- Darkness on the other colours: 0xac200 scales SunColor, RimColor, RimColor2 and
-  AmbientColor by 1 - darkness on all four lanes and does not scale the exposure, while
-  `at_lighting` scales the exposure (P3m, fitted to the Bravery Test live read). Not changed
-  here; to settle with a live read of the block.
+- Darkness on the other colours: settled in D335 below.
 
 ### Verification
 
@@ -198,3 +195,32 @@ and under `--level-scripts` moves and recolours it with the values in force.
 ### Verification
 
 `cargo test -p lbp-runtime d334`, `cargo test -p lbp-bevy-viewer d334`, clippy.
+
+## D335: darkness dims the colours, not the exposure
+
+### What the game does (FOUND, 01.33)
+
+- 0xac200: with darkness D above 0, SunColor, RimColor, RimColor2 and AmbientColor are
+  multiplied by 1 - D on all four lanes (LAB_000ac50c). The exposure is copied from the
+  blended preset unscaled. The fog colour's RGB is dimmed by 1 - D in 0xac6c0 (alpha kept).
+
+### What changed
+
+- `LevelSettings::at_lighting` dims the sun, ambient and both rim colours (all lanes) and
+  the fog RGB by 1 - darkness and leaves the exposure alone. It used to dim the exposure
+  instead.
+
+### Not modelled
+
+- D itself is a blend of two stored values by a transition fraction in the game; the
+  viewer takes PWorld `darkness` as the value in force.
+- Bravery Test's live sun RGB is 0.96 of the predicted value on all three lanes (both the
+  old and new rule predict the same there); not explained.
+
+### Verification
+
+- The Bravery Test live block (lighting 0.6, darkness 0.19) stores only colour x exposure
+  products; every ambient, rim, rim2 and sun.w lane and the fog RGB come out at x0.810 of
+  the undarkened blend, which the new rule gives as well as the old. Exposure used on its
+  own (not packed with a colour) now differs from before.
+- `level_lighting_blends_presets_by_world_lighting_and_darkness` (lbp-level tests).
