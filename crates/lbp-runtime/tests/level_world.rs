@@ -5695,19 +5695,21 @@ fn story_results_list_every_slot_and_link_levels_to_their_group() {
 #[test]
 fn d331_story_turns_earth_to_the_default_group() {
     use lbp_runtime::{SearchSlot, EARTH_RADIUS};
-    let mut world = LevelWorld::default();
-    world.story_slots = vec![
-        SearchSlot {
-            id: (1, 5),
-            group: Some((4, 27)),
-            location: [1., 0., 0., 0.],
-        },
-        SearchSlot {
-            id: (4, 27),
-            group: None,
-            location: [0., 0.6, 0.8, 0.],
-        },
-    ];
+    let mut world = LevelWorld {
+        story_slots: vec![
+            SearchSlot {
+                id: (1, 5),
+                group: Some((4, 27)),
+                location: [1., 0., 0., 0.],
+            },
+            SearchSlot {
+                id: (4, 27),
+                group: None,
+                location: [0., 0.6, 0.8, 0.],
+            },
+        ],
+        ..LevelWorld::default()
+    };
     world.pod.search.default_result = Some(1);
     assert_eq!(world.story_planet_point(), None);
     world.pod.search.selected_planet = Some(1);
