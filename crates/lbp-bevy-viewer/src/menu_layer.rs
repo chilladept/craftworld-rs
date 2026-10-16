@@ -10,6 +10,7 @@
 //! layer's transmittance) and the sum of the alphas. The final pass composes the layer
 //! (`glow_post`, `MENU_LAYER`).
 use bevy::math::Vec2;
+use std::f32::consts::FRAC_1_SQRT_2;
 use std::sync::Arc;
 
 /// The outline of a primitive: a rectangle, or a capsule (a rectangle with fully rounded
@@ -147,6 +148,19 @@ impl MenuImage {
 
 /// The pin shadow's tap weights: centre, side, corner (PS 3441's constants).
 pub const SHADOW_WEIGHTS: [f32; 3] = [0.1592, 0.0965, 0.0586];
+
+/// D324: the seven ring taps of the transition's draw (PS 3483's constants 2 to 8, unit
+/// directions; the eighth tap is the pixel itself). y is down the picture here as in the
+/// texture's rows.
+pub const TRANSITION_TAPS: [[f32; 2]; 7] = [
+    [0.993712, 0.111964],
+    [0.532032, 0.846724],
+    [-0.330279, 0.943883],
+    [-0.943883, 0.330279],
+    [-0.846724, -0.532032],
+    [-0.111964, -0.993712],
+    [FRAC_1_SQRT_2, -FRAC_1_SQRT_2],
+];
 
 /// D323: a planet's corona (part 74): a square of `half` x 2 corona units a side facing the
 /// eye, `pull` corona units behind the planet's place, drawn with the texture `image`
@@ -334,6 +348,82 @@ impl MenuCanvas {
         }
     }
 
+    /// D324 (PS 3483): lays `menu` (the menu drawn in a target of its own) over the layer as
+    /// one draw while the frame comes in: per pixel the menu's colour and its alpha sum
+    /// (saturated, the target's 8 bits) read at the pixel and at the seven
+    /// [`TRANSITION_TAPS`] `radius` pixels away, the eight averaged, times `alpha`, then
+    /// composed over (One, OneMinusSrcAlpha) with the alpha added.
+    pub fn compose_transition(&mut self, menu: &MenuCanvas, alpha: f32, radius: f32) {
+        let (w, h) = (self.width.min(menu.width), self.height.min(menu.height));
+        // Only where the ring reaches something the menu drew.
+        let (mut x0, mut y0, mut x1, mut y1) = (w, h, 0, 0);
+        for y in 0..h {
+            for x in 0..w {
+                if menu.sum[y * menu.width + x] > 0. {
+                    (x0, y0) = (x0.min(x), y0.min(y));
+                    (x1, y1) = (x1.max(x + 1), y1.max(y + 1));
+                }
+            }
+        }
+        if x0 >= x1 {
+            return;
+        }
+        let pad = radius.max(0.).ceil() as usize + 1;
+        let (x0, y0) = (x0.saturating_sub(pad), y0.saturating_sub(pad));
+        let (x1, y1) = ((x1 + pad).min(w), (y1 + pad).min(h));
+        let texel = |x: isize, y: isize| -> [f32; 4] {
+            if x < 0 || y < 0 || x >= menu.width as isize || y >= menu.height as isize {
+                return [0.; 4];
+            }
+            let i = y as usize * menu.width + x as usize;
+            let o = menu.over[i];
+            [o[0], o[1], o[2], menu.sum[i].clamp(0., 1.)]
+        };
+        // Bilinear between texel centres (the game's sampler), outside the target clear.
+        let sample = |u: f32, v: f32| -> [f32; 4] {
+            let (fx, fy) = (u - 0.5, v - 0.5);
+            let (i, j) = (fx.floor(), fy.floor());
+            let (tx, ty) = (fx - i, fy - j);
+            let (i, j) = (i as isize, j as isize);
+            let (a, b, c, d) = (
+                texel(i, j),
+                texel(i + 1, j),
+                texel(i, j + 1),
+                texel(i + 1, j + 1),
+            );
+            let mut out = [0.; 4];
+            for k in 0..4 {
+                let top = a[k] * (1. - tx) + b[k] * tx;
+                let bottom = c[k] * (1. - tx) + d[k] * tx;
+                out[k] = top * (1. - ty) + bottom * ty;
+            }
+            out
+        };
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let (u, v) = (x as f32 + 0.5, y as f32 + 0.5);
+                let mut acc = sample(u, v);
+                for [dx, dy] in TRANSITION_TAPS {
+                    let t = sample(u + dx * radius, v + dy * radius);
+                    for k in 0..4 {
+                        acc[k] += t[k];
+                    }
+                }
+                let src = acc.map(|c| c / 8. * alpha);
+                if src[3] <= 0. && src[0] <= 0. && src[1] <= 0. && src[2] <= 0. {
+                    continue;
+                }
+                let i = y * self.width + x;
+                let dst = &mut self.over[i];
+                for ch in 0..3 {
+                    dst[ch] = src[ch] + (1. - src[3]) * dst[ch];
+                }
+                dst[3] = src[3] + (1. - src[3]) * dst[3];
+                self.sum[i] += src[3];
+            }
+        }
+    }
+
     /// The layer as 8-bit textures: RGBA (colour, 1 - transmittance) and the alpha sum
     /// (saturated, as the game's 8-bit target).
     pub fn bytes(&self) -> (Vec<u8>, Vec<u8>) {
@@ -503,6 +593,40 @@ mod tests {
 
     /// D323: a pin's shadow is its alpha over the nine taps' weights (1 inside, 0 far
     /// outside); an atlas cell is cropped texel for texel.
+    /// D324: the transition's draw: with no ring and full alpha the menu lands as drawn
+    /// (alpha saturated); at half alpha it is half; a one-pixel dot spreads over the ring.
+    #[test]
+    fn d324_transition_composes_the_menu_as_one() {
+        let pill = [150. / 255., 221. / 255., 60. / 255., 82. / 255.];
+        let mut menu = MenuCanvas::new(16, 8);
+        menu.draw(&prim(pill));
+        let i = 4 * 16 + 8;
+        let mut whole = MenuCanvas::new(16, 8);
+        whole.compose_transition(&menu, 1., 0.);
+        for k in 0..4 {
+            assert!((whole.over[i][k] - menu.over[i][k]).abs() < 1e-6);
+        }
+        assert!((whole.sum[i] - 82. / 255.).abs() < 1e-6);
+        let mut half = MenuCanvas::new(16, 8);
+        half.compose_transition(&menu, 0.5, 0.);
+        assert!((half.over[i][0] - menu.over[i][0] / 2.).abs() < 1e-6);
+        assert!((half.sum[i] - 41. / 255.).abs() < 1e-6);
+        // A dot at (20, 20) seen from the ring's taps 4 pixels out.
+        let mut dot = MenuCanvas::new(41, 41);
+        let k = 20 * 41 + 20;
+        dot.over[k] = [1., 1., 1., 1.];
+        dot.sum[k] = 1.;
+        let mut out = MenuCanvas::new(41, 41);
+        out.compose_transition(&dot, 1., 4.);
+        assert!((out.sum[k] - 1. / 8.).abs() < 1e-6);
+        // The pixel whose first tap lands on the dot.
+        let [dx, dy] = TRANSITION_TAPS[0];
+        let (x, y) = (20.5 - dx * 4., 20.5 - dy * 4.);
+        let near = out.sum[y as usize * 41 + x as usize];
+        assert!(near > 0. && near < 1. / 8., "{near}");
+        assert_eq!(out.sum[0], 0.);
+    }
+
     #[test]
     fn d323_shadow_and_atlas_cell() {
         let mut rgba = vec![0u8; 16 * 16 * 4];

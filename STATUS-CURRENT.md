@@ -11,7 +11,19 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D323 the planets' coronas, the pins' shadows, the card and the focused pill (2026-10-15)
+## Latest: D324 the Pod main menu comes in and the focused pill grows as the game's (2026-10-16)
+- Viewer (`docs/level-scripts.md` part 75): FOUND (RenderDoc 7295 / 7927 / 8348, ticks 606 / 609 /
+  611) while the menu comes in it is drawn into a target of its own and laid over the scene by one
+  draw (PS 3483): the pixel and seven ring taps averaged, times alpha (age + 1) / 15 (101 / 152 /
+  186 of 255), ring radius 16 x 0.618 x (1 - alpha) px; the menu's own draws keep full alphas. The
+  model reproduces the game's composite within 0.3 levels at 606. MEASURED: the focused pill's
+  scale over the others 1.468 / 1.571 / 1.574 / 1.511 / 1.491 at 606 to 619, a damped spring to 1.5
+  (decay 0.1869, 0.2830 rad a frame, within 0.003); its slab is not drawn at 606 / 609 (INFERRED:
+  from the spring's peak, age 9.04).
+- MEASURED against the game's final output in the menu's region (mean abs, levels): 606 23.2 ->
+  11.1, 609 25.1 -> 15.2, 611 17.3 -> 9.6; 616 / 619 unchanged (17.8 / 12.9 -> 17.9 / 12.8).
+
+## Before: D323 the planets' coronas, the pins' shadows, the card and the focused pill (2026-10-15)
 - Viewer (`docs/level-scripts.md` part 74): FOUND (RenderDoc 6082 to 9601) the two additive draws
   before the menu are the planets' coronas, in every capture from tick 600 (closed Pod, no menu):
   a square facing the eye, +-1.6 units, 0.5 behind the planet, `earth_corona.tex` (00006993) x

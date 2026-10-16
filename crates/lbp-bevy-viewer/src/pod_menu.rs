@@ -750,15 +750,16 @@ impl ScriptMenuFrame {
         fonts: Option<&lbp_runtime::GooeyFonts>,
     ) -> Option<Self> {
         let menu = world.gooey.drawn_menu()?;
-        // INFERRED: the frame fades in linearly over its transition time (frames) from
-        // the frame it was first built on (`SetFrameTransitionTime(15, 15)`); MEASURED in
-        // the game's alpha at 606 / 609 / 611 / 616: 0.32 / 0.60 / 0.73 / 1.
+        // D324 FOUND (RenderDoc 7295 / 7927 / 8348, ticks 606 / 609 / 611, PS 3483): the
+        // frame comes in over its transition time (`SetFrameTransitionTime(15, 15)`) as one
+        // layer at alpha 101 / 152 / 186 of 255, (age + 1) / 15 at ages 5 / 8 / 10 within a
+        // level (the frame's first draw counts one); 1 from age 14 on.
         let time = menu.frame.transition.map_or(0., |t| t[0]);
         let age = menu
             .first_built
             .map_or(f32::MAX, |b| (world.pworld.frame - b) as f32);
         let fade = if time > 0. {
-            (age / time).clamp(0., 1.)
+            ((age + 1.) / time).clamp(0., 1.)
         } else {
             1.
         };
@@ -1043,6 +1044,48 @@ const FOCUS_LAYER_STEPS: [(f32, [f32; 3]); 3] = [
     (15., [2.234, 1.408, 44.524]),
     (18., [0.878, 0.167, 17.672]),
 ];
+
+/// D324 MEASURED (RenderDoc 7295 / 7927 / 8348 / 8980 / 9601, ticks 606 / 609 / 611 / 616 /
+/// 619, ages 5 / 8 / 10 / 15 / 18): the focused pill's matrix scale over the other pills' is
+/// 1.468 / 1.571 / 1.574 / 1.511 / 1.491, a damped spring from 1 at the frame's first draw
+/// to 1.5: `1.5 - 0.5 e^(-d age) cos(f age)` with d 0.1869, f 0.2830 a frame fits every
+/// capture within 0.003 (INFERRED: the rule; Gooey's own code was not read).
+const FOCUS_SPRING_REST: f32 = 1.5;
+const FOCUS_SPRING_DECAY: f32 = 0.1869;
+const FOCUS_SPRING_FREQ: f32 = 0.2830;
+
+/// The focused pill's scale over an unfocused one's at a frame age ([`FOCUS_SPRING_REST`]).
+fn focus_spring(age: f32) -> f32 {
+    let age = age.max(0.);
+    FOCUS_SPRING_REST
+        - (FOCUS_SPRING_REST - 1.)
+            * (-FOCUS_SPRING_DECAY * age).exp()
+            * (FOCUS_SPRING_FREQ * age).cos()
+}
+
+/// The focused pill's size at a frame age as a share of its size at rest (the layout's
+/// [`lbp_runtime::FOCUS_SCALE`], measured on the game's frame at rest).
+fn focus_grow(age: f32) -> f32 {
+    focus_spring(age) / FOCUS_SPRING_REST
+}
+
+/// D324 FOUND: the eight layers of the focused pill (PS 3455) are not drawn at ages 5 and 8
+/// and are at 10, 15 and 18. INFERRED: they are drawn once the spring has passed its peak,
+/// at age (pi - atan(d / f)) / f, 9.04.
+fn focus_slab_shown(age: f32) -> bool {
+    let peak = (std::f32::consts::PI - (FOCUS_SPRING_DECAY / FOCUS_SPRING_FREQ).atan())
+        / FOCUS_SPRING_FREQ;
+    age >= peak
+}
+
+/// D324 FOUND (PS 3483, the last draw of frames 7295 / 7927 / 8348, absent from 8980 on):
+/// while the frame comes in the menu is drawn into a target of its own, then laid over the
+/// scene as one: the target read at the pixel and at seven taps on a ring (the shader's
+/// unit directions), the eight averaged and multiplied by the frame's alpha, blended One,
+/// OneMinusSrcAlpha. The ring's radius is 16 texels times the vertex colour's red, which is
+/// 0.618 of its blue, and the blue is 1 - the alpha (95 / 153, 63 / 102, 42 / 68 of 255):
+/// 9.9 (1 - alpha) pixels of the 1280-wide picture.
+const TRANSITION_BLUR_PX: f32 = 16. * 0.618;
 
 /// The step between the focused pill's layers at a frame age ([`FOCUS_LAYER_STEPS`]).
 fn focus_layer_step(age: f32) -> Vec3 {
@@ -1477,6 +1520,10 @@ pub(crate) struct LayerState {
     last: Vec<MenuPrim>,
     /// D323: the coronas drawn last.
     last_coronas: Vec<CoronaPrim>,
+    /// D324: the transition drawn last (alpha, ring radius in pixels) and the menu's own
+    /// target while the frame comes in.
+    last_transition: (f32, f32),
+    transition_canvas: Option<MenuCanvas>,
     pictures: Option<LayerPictures>,
 }
 
@@ -1539,6 +1586,7 @@ fn layer_texture(
 
 /// D322: draws `prims` into the layer when they or the window size changed, uploads it
 /// and turns it on for the final pass.
+#[allow(clippy::too_many_arguments)]
 fn update_layer(
     commands: &mut Commands,
     layer: Option<Mut<crate::glow_post::MenuLayer>>,
@@ -1547,6 +1595,7 @@ fn update_layer(
     (width, height): (usize, usize),
     prims: Vec<MenuPrim>,
     coronas: &[CoronaPrim],
+    transition: (f32, f32),
 ) {
     use bevy::render::render_resource::TextureFormat;
     let resized = state
@@ -1556,6 +1605,7 @@ fn update_layer(
     if !resized
         && prims == state.last
         && coronas == state.last_coronas.as_slice()
+        && transition == state.last_transition
         && layer.as_ref().is_some_and(|l| l.on)
     {
         return;
@@ -1569,11 +1619,29 @@ fn update_layer(
     for c in coronas {
         canvas.draw_corona(c);
     }
-    for p in &prims {
-        canvas.draw(p);
+    let (alpha, radius) = transition;
+    if alpha < 1. && !prims.is_empty() {
+        // D324: while the frame comes in, the menu in its own target, then laid over as one.
+        let menu = state
+            .transition_canvas
+            .get_or_insert_with(|| MenuCanvas::new(width, height));
+        if (menu.width, menu.height) != (width, height) {
+            *menu = MenuCanvas::new(width, height);
+        }
+        menu.clear();
+        for p in &prims {
+            menu.draw(p);
+        }
+        canvas.compose_transition(menu, alpha, radius);
+    } else {
+        state.transition_canvas = None;
+        for p in &prims {
+            canvas.draw(p);
+        }
     }
     state.last = prims;
     state.last_coronas = coronas.to_vec();
+    state.last_transition = transition;
     let (colour, alpha) = canvas.bytes();
     let (w, h) = (width as u32, height as u32);
     match layer {
@@ -1657,6 +1725,7 @@ pub(crate) fn paint_script_menu(
                 size,
                 Vec::new(),
                 &coronas.0,
+                (1., 0.),
             );
         } else if let Some(l) = layer.as_mut().filter(|l| l.on) {
             l.on = false;
@@ -1678,11 +1747,13 @@ pub(crate) fn paint_script_menu(
     let clip_from_world =
         projection.get_clip_from_view() * transform.to_matrix().inverse() * display.0;
     let world_from_menu = frame.matrix;
-    let fade = frame.fade;
     // D322: with the final pass the menu is drawn as the game draws it, into a layer the pass
     // composes (premultiplied over in encoded values, alpha added); the UI nodes then only
     // place things (and draw the OS-font labels when the game's font is missing).
     let layer_route = crate::glow_post::final_pass_on();
+    // D324: on the layer every draw keeps its own alpha and the frame comes in as one
+    // ([`TRANSITION_BLUR_PX`]); the UI nodes fade each item.
+    let fade = if layer_route { 1. } else { frame.fade };
     let scale = window.scale_factor();
     let mut prims: Vec<Vec<MenuPrim>> = vec![Vec::new(); frame.placed.len()];
     let mut placed_at: Vec<Option<(Vec2, f32)>> = vec![None; frame.placed.len()];
@@ -1711,7 +1782,15 @@ pub(crate) fn paint_script_menu(
         let along = menu_to_screen(clip_from_world, world_from_menu, c + Vec2::X, size);
         let down = menu_to_screen(clip_from_world, world_from_menu, c + Vec2::Y, size);
         let (dx, dy) = ((along - at).truncate(), (down - at).truncate());
-        let (w, h) = (item.size[0] * dx.length(), item.size[1] * dy.length());
+        // D324: the focused pill grows in on its spring.
+        let grow = match item.kind {
+            lbp_runtime::PlacedKind::Button { focused: true, .. } => focus_grow(frame.age),
+            _ => 1.,
+        };
+        let (w, h) = (
+            item.size[0] * dx.length() * grow,
+            item.size[1] * dy.length() * grow,
+        );
         if at.z <= 0. || !w.is_finite() || !h.is_finite() {
             node.display = Display::None;
             continue;
@@ -1785,7 +1864,8 @@ pub(crate) fn paint_script_menu(
             if matches!(
                 item.kind,
                 lbp_runtime::PlacedKind::Button { focused: true, .. }
-            ) {
+            ) && focus_slab_shown(frame.age)
+            {
                 // D323: the focused pill's eight layers, the deepest first, each a step
                 // back along the menu's z (the projection moves and shrinks it) and a little
                 // along the pill's own axes; the last at the pill.
@@ -1905,7 +1985,7 @@ pub(crate) fn paint_script_menu(
                 lbp_runtime::PlacedKind::Button { focused: true, .. }
             );
             let a = if focused { 1. } else { LABEL_ALPHA };
-            *colour = TextColor(Color::srgba(1., 1., 1., a * fade));
+            *colour = TextColor(Color::srgba(1., 1., 1., a * frame.fade));
         }
     }
     // Game-font labels: rasterized from the font's distance field at the size the
@@ -1925,7 +2005,7 @@ pub(crate) fn paint_script_menu(
         let k = px_scale
             * label.units_per_font_pixel
             * if focused {
-                lbp_runtime::FOCUS_SCALE
+                lbp_runtime::FOCUS_SCALE * focus_grow(frame.age)
             } else {
                 1.
             }
@@ -1981,6 +2061,10 @@ pub(crate) fn paint_script_menu(
             size,
             prims.into_iter().flatten().collect(),
             &coronas.0,
+            (
+                frame.fade,
+                TRANSITION_BLUR_PX * (1. - frame.fade) * size.0 as f32 / 1280.,
+            ),
         );
     }
 }
@@ -2011,6 +2095,33 @@ mod tests {
             .1;
         assert!((earth / 3239. - 1.1215).abs() < 1e-3);
         assert_eq!(CORONA_COLOUR, [0.5, 0.7, 1., 0.5]);
+    }
+
+    /// D324: the focused pill's spring against the five captures' scales, its layers shown
+    /// from the spring's peak (not at 5 and 8, at 10), the transition's alpha and ring.
+    #[test]
+    fn d324_focus_spring_slab_and_transition() {
+        for (age, game) in [
+            (5., 1.468),
+            (8., 1.571),
+            (10., 1.574),
+            (15., 1.511),
+            (18., 1.491),
+        ] {
+            let s = focus_spring(age);
+            assert!((s - game).abs() < 0.003, "{age}: {s} against {game}");
+        }
+        assert_eq!(focus_spring(0.), 1.);
+        assert!((focus_grow(200.) - 1.).abs() < 1e-6);
+        assert!(!focus_slab_shown(5.) && !focus_slab_shown(8.));
+        assert!(focus_slab_shown(10.) && focus_slab_shown(400.));
+        // The game's alpha (of 255) and ring red at ages 5 / 8 / 10, from (age + 1) / 15.
+        for (age, alpha, red) in [(5., 101., 95.), (8., 152., 63.), (10., 186., 42.)] {
+            let a: f32 = (age + 1.) / 15.;
+            assert!((a * 255. - alpha).abs() < 1.5, "{age}: {a}");
+            let ring = TRANSITION_BLUR_PX * (1. - a);
+            assert!((ring / 16. * 255. - red).abs() < 1.5, "{age}: {ring}");
+        }
     }
 
     #[test]
