@@ -4,11 +4,8 @@ Read first: STATUS-CURRENT.md, `docs/level-scripts/part-81.md`, part 29's handof
 
 ## State
 
-- PR 101 merged. PR 102 (`d330-earth-badges`) is rebased onto main, base main, CI was running.
-  Draft PR 103 (`d331-story-zoom`, worktree `E:\Projects\wt-d324`) is rebased on 102 and pushed.
-  After 102 merges: `git rebase --onto origin/main origin/d330-earth-badges d331-story-zoom`,
-  retarget 103 to main, mark ready, merge on green. `gh pr merge` is refused by the auto-mode
-  check; the owner clicks Merge.
+- PRs 101 and 102 merged. Draft PR 103 (`d331-story-zoom`, worktree `E:\Projects\wt-d324`) is
+  rebased onto main, base main. `gh pr merge` worked for 102 after `gh pr ready`.
 - Done in 103 (this part): `LevelWorld::story_open` (moved from the viewer) and
   `LevelWorld::story_planet_point`: while Story is up, Earth's planet point is the default result's
   slot `location` x `EARTH_RADIUS` (1750), set before the planets' entries each tick. Capture
