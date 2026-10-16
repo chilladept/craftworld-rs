@@ -5689,3 +5689,30 @@ fn story_results_list_every_slot_and_link_levels_to_their_group() {
     );
     assert_eq!(call("Planet", "GetCurResult__", None, &[]), Some(o(20)));
 }
+
+/// D331 (part 82): while Story is up on Earth, Earth turns its default result's badge
+/// toward the camera.
+#[test]
+fn d331_story_turns_earth_to_the_default_group() {
+    use lbp_runtime::{SearchSlot, EARTH_RADIUS};
+    let mut world = LevelWorld::default();
+    world.story_slots = vec![
+        SearchSlot {
+            id: (1, 5),
+            group: Some((4, 27)),
+            location: [1., 0., 0., 0.],
+        },
+        SearchSlot {
+            id: (4, 27),
+            group: None,
+            location: [0., 0.6, 0.8, 0.],
+        },
+    ];
+    world.pod.search.default_result = Some(1);
+    assert_eq!(world.story_planet_point(), None);
+    world.pod.search.selected_planet = Some(1);
+    world.pod.search.want_search_details_calls = 1;
+    let point = world.story_planet_point().unwrap();
+    assert!((point[1] - 0.6 * EARTH_RADIUS).abs() < 1e-3);
+    assert!((point[2] - 0.8 * EARTH_RADIUS).abs() < 1e-3);
+}

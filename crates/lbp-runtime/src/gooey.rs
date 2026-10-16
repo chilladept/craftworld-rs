@@ -781,6 +781,12 @@ impl LevelWorld {
             // The search's results: one SearchResults object (D328: its results are
             // `LevelWorld::story_results`), obtained at once, on one page.
             ("SearchDetails", "GetResults__") => Value::Object(self.search_results),
+            // D331 (part 82): FOUND (01.33): the native reads a byte of the results
+            // (+0x5d, 0x6057bc) that only their constructor clears (0x456a98) and only a
+            // group search sets (0x44dfc0, from 0x44e774, for SlotID types 3, 4, 8, 9).
+            // The Story results are made by the Story setup (0x449ce8), not a group
+            // search: false, view 6 (the game's settled Story frame matches view 6's Earth
+            // size, view 7 would be ~1.8x larger).
             ("SearchResults", "GetWantZoom__") => Value::Bool(false),
             ("SearchDetails", "IsBusyObtainingResults__")
             | ("SearchDetails", "IsPaged__")

@@ -2626,6 +2626,35 @@ pub fn add_engine_objects(
 /// D331: the Story search's default result, a story group (`SlotID` type 4 and number).
 pub const STORY_DEFAULT_GROUP: (i32, i32) = (4, 27);
 
+/// Earth's radius in level units (FOUND, 01.33 0x420814, part 81): a result's badge sits
+/// at its slot's `location` times this.
+pub const EARTH_RADIUS: f32 = 1750.;
+
+impl LevelWorld {
+    /// D331 (part 82): the Story search is up: the search state has selected Earth
+    /// (`Planets.SelectPlanet__i` with crafteroid 1) and asked for its search details.
+    /// MEASURED (viewer run, part 82): both on the tick Story is chosen (640);
+    /// `Planet.SetSearchResults` is not called.
+    pub fn story_open(&self) -> bool {
+        let search = &self.pod.search;
+        search.selected_planet == Some(1) && search.want_search_details_calls > 0
+    }
+
+    /// D331 (part 82): the point Earth turns toward the camera while the Story search is
+    /// up: the place of the selected entry (FOUND, 0x421708), here the default result's
+    /// badge, its slot's `location` times [`EARTH_RADIUS`] in Earth's own space. INFERRED:
+    /// the default result is the selected entry (the game's Story view settles facing
+    /// it, MEASURED).
+    pub fn story_planet_point(&self) -> Option<[f32; 4]> {
+        if !self.story_open() {
+            return None;
+        }
+        let slot = self.story_slots.get(self.pod.search.default_result?)?;
+        let [x, y, z, _] = slot.location;
+        Some([x * EARTH_RADIUS, y * EARTH_RADIUS, z * EARTH_RADIUS, 0.])
+    }
+}
+
 /// D328: the Story search's results, one per [`LevelWorld::story_slots`] entry.
 ///
 /// FOUND (01.33, 0x40f120, from the Story setup 0x449ce8): the engine clears the results,
@@ -3707,6 +3736,17 @@ impl LevelScripts {
         report.absorb(self.trigger_events(vm, host, budget));
         report.absorb(self.switch_reactions(vm, host, budget));
         report.absorb(self.apply_global_settings(vm, host, budget));
+        // D331: while Story is up Earth turns its default group toward the camera.
+        if let Some(point) = host.world.story_planet_point() {
+            let earth = self
+                .instances
+                .iter()
+                .find(|i| i.class.is_some_and(|c| vm.class_name(c) == "Earth"))
+                .map(|i| i.thing);
+            if let Some(earth) = earth {
+                self.set_planet_point(earth, point);
+            }
+        }
         let mut planets = self.run_all(vm, host, None, budget, &busy, Entries::Planets, frame_tick);
         self.start_threads(vm, host, budget, &mut planets);
         report.absorb(planets);

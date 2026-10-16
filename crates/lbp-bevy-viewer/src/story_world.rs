@@ -121,12 +121,9 @@ pub fn merge(scene: &mut LevelScene, story: LevelScene, globe: usize) -> Result<
     })
 }
 
-/// The Story search is up: the search state has selected Earth (`Planets.SelectPlanet__i`
-/// with crafteroid 1) and asked for its search details. MEASURED (viewer run, part 82):
-/// both on the tick Story is chosen (640); `Planet.SetSearchResults` is not called.
+/// The Story search is up ([`lbp_runtime::LevelWorld::story_open`]).
 pub fn story_open(world: &lbp_runtime::LevelWorld) -> bool {
-    let search = &world.pod.search;
-    search.selected_planet == Some(1) && search.want_search_details_calls > 0
+    world.story_open()
 }
 
 /// The visibility of a draw entity of the Pod's Earth or Moon: the pasted items while
