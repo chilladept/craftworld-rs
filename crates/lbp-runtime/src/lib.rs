@@ -1516,6 +1516,17 @@ impl LevelWorld {
 }
 
 impl World for LevelWorld {
+    /// D326 FOUND (the 01.33 listings): `SearchDetails.CreateStoryLevels__` is a static
+    /// native whose declared return type is the script class `SearchDetailsStoryLevels`,
+    /// and the pod's search state calls that object's script virtuals (`GetScale`,
+    /// `GetDefaultBrowseMode`, `DoTitle`), so the engine hands back a script object.
+    fn native_object_class(&mut self, class: &str, mangled: &str) -> Option<&'static str> {
+        match (class, mangled) {
+            ("SearchDetails", "CreateStoryLevels__") => Some("SearchDetailsStoryLevels"),
+            _ => None,
+        }
+    }
+
     fn thing_uid(&mut self, thing: u32) -> Result<i32, String> {
         self.state(thing)?
             .uid

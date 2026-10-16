@@ -208,6 +208,14 @@ pub trait Host {
     fn thing_script(&mut self, _thing: u32) -> Option<u32> {
         None
     }
+    /// D326: a native that makes a script object (the engine's factory, e.g.
+    /// `SearchDetails.CreateStoryLevels__`, whose declared return type is a script class
+    /// with code): the class to make. The VM then makes it as `NEW_OBJECT` does and runs
+    /// its `.init__` and `.ctor__`, and the call answers the new object. `None`: an ordinary
+    /// native call.
+    fn native_object_class(&mut self, _class: &str, _function: &str) -> Option<&'static str> {
+        None
+    }
     fn write(&mut self, _text: &str) {}
 }
 
@@ -569,7 +577,18 @@ impl Vm {
     /// superclass has one. `this` goes to the function's single argument row, else
     /// register 0 (INFERRED, docs/script-vm.md).
     fn init_frame(&self, class: ClassId, this: ObjectId) -> Result<Option<Frame>, Fault> {
-        let Some((c, f)) = self.find(class, ".init__") else {
+        self.this_frame(class, this, ".init__")
+    }
+
+    /// Frame running a function of no arguments but `this` (`.init__`, `.ctor__`) on an
+    /// object, if the class or a superclass has it with code.
+    fn this_frame(
+        &self,
+        class: ClassId,
+        this: ObjectId,
+        name: &str,
+    ) -> Result<Option<Frame>, Fault> {
+        let Some((c, f)) = self.find(class, name) else {
             return Ok(None);
         };
         let s = &self.classes[c.0 as usize].script;
@@ -1261,6 +1280,31 @@ impl Vm {
                             let owner = owner_class
                                 .and_then(|c| self.native_owner(c, &function))
                                 .map_or(owner, |c| self.classes[c.0 as usize].name.clone());
+                            // D326: a factory native makes a script object: its fields,
+                            // then `.init__`, then `.ctor__`, before the caller goes on.
+                            let made = host
+                                .native_object_class(&owner, &function)
+                                .and_then(|n| self.by_name.get(n).copied());
+                            if let Some(class) = made {
+                                let id = self.instantiate(class)?;
+                                if let Some(d) = dest {
+                                    let fr = stack.last_mut().expect("frame");
+                                    *fr.regs
+                                        .get_mut(usize::from(d))
+                                        .ok_or(Fault::Register { pc, register: d })? =
+                                        Value::Object(Some(id));
+                                }
+                                if depth + 2 >= MAX_CALL_DEPTH {
+                                    return Err(Fault::CallDepth);
+                                }
+                                if let Some(ctor) = self.this_frame(class, id, ".ctor__")? {
+                                    stack.push(ctor);
+                                }
+                                if let Some(init) = self.init_frame(class, id)? {
+                                    stack.push(init);
+                                }
+                                continue;
+                            }
                             // Script threads (docs/script-vm.md): `Thread.Start__` passes
                             // only `this`; the scheduler runs `ThreadMain__` on it.
                             let v = if owner == "Thread" && function == "StartImpl__" {
