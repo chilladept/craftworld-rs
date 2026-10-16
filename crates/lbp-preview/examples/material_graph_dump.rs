@@ -42,8 +42,12 @@ fn run() -> Result<(), String> {
             .filter(|a| a.component_value_count != 0 || a.name_hex.bytes().any(|c| c != b'0'))
             .map(|a| {
                 format!(
-                    "{}x{} base {:08x?}",
-                    a.name_hex, a.component_value_count, a.base_value_bits
+                    "{}x{} mask {:#x} keys {} base {:08x?}",
+                    a.name_hex,
+                    a.component_value_count,
+                    a.components_raw,
+                    a.derived_key_count,
+                    a.base_value_bits
                 )
             })
             .collect();
@@ -61,6 +65,17 @@ fn run() -> Result<(), String> {
             "  wire {}.{} -> {}.{} swizzle {:?}",
             w.box_from, w.port_from_raw, w.box_to, w.port_to_raw, w.swizzle_raw
         );
+    }
+    // D331: the diffuse route's verdict with animation base on (the level-scene default).
+    match lbp_preview::select_diffuse_with_animation_base(&g, true) {
+        Ok(s) => println!(
+            "diffuse: slot {} UV{} {} second {:?}",
+            s.slot,
+            s.uv_channel,
+            s.uv_transform.label(),
+            s.second_sample.map(|x| x.uv_transform.label())
+        ),
+        Err(e) => println!("diffuse: {e}"),
     }
     Ok(())
 }

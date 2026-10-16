@@ -76,13 +76,14 @@ fn main() -> Result<(), String> {
         ) {
             let swaps = lbp_preview::level_scene::region_materials(o);
             let mkey = lbp_preview::resolve(&catalog, mesh.guid, None)?;
+            // As the level scene loads it: standalone defaults on, editorColor tint.
+            let (mut options, _) = lbp_preview::StandaloneDefaults::ON.apply(Default::default());
+            if let Some(rm) = &t.data.render_mesh {
+                options.instance_color =
+                    Some(lbp_preview::level_scene::editor_color_tint(rm.editor_color));
+            }
             let g = lbp_preview::load_mesh_groups_with_overrides(
-                &source,
-                &catalog,
-                &mkey,
-                &control,
-                Default::default(),
-                &swaps,
+                &source, &catalog, &mkey, &control, options, &swaps,
             )?;
             for (p, b) in g.geometry.metadata.primitives.iter().zip(&g.bindings) {
                 println!(
