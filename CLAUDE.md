@@ -20,12 +20,12 @@ MODLOG.md, docs/architecture.md, docs/formats.md and docs/roadmap.md are 30-50 K
 4. Continue from the "Next:" line unless the user asks for something else.
 
 CLAUDE.md and AGENTS.md are already in context: never cat/Read/sed them again (19 recent
-sessions re-read them for ~43k tokens). A fresh session starts at ~92k tokens (harness,
+sessions re-read them for ~43k tokens). A fresh PC thread starts at ~99k tokens (harness,
 tool schemas, project prompt) before any work, and every turn re-reads all of it, so the
 cost driver is turns x context: batch independent reads into one command, answer from a
 single script instead of many `python -c` probes, and hand any step that needs more than
 ~5 calls to a subagent. Never re-read a published Artifact; keep a local copy.
-Details and measurements: `docs/context-audit-2026-10-12.md`; re-measure with
+Details and measurements: `docs/token-audit-2026-10-15.md`; re-measure with
 `python -I scripts/ctx_audit.py`.
 
 Do not open: `target/`, `*.zip`, `Cargo.lock`, `game-data/`, `references/**`
@@ -59,7 +59,8 @@ The facts AGENTS.md requires stay; repetition goes.
   baseline, unit, scope), one line per verification command with its result,
   failed experiments, not tested, Next. Link the milestone doc, don't restate it.
 - MODLOG.md entry: at most 6 lines.
-- Overwrite `STATUS-CURRENT.md` (at most ~60 lines) with the current state.
+- Overwrite `STATUS-CURRENT.md` (at most ~60 lines) with the current state; move the
+  previous "Latest" section to the end of STATUS.md, never keep it as "Before:".
 
 ## Build and test (Windows, PowerShell)
 
@@ -119,7 +120,7 @@ copy the relevant ones into each subagent brief.
   Agent-tool subagent that returns a file path plus a 3-line verdict. Implementer
   batches run as local `claude -p` workers in worktrees on the owner's plan usage,
   never cloud credit, and no follow-up work goes to finished cloud agents.
-- **Context rollover at about 100k tokens.** Finish the task, update the handoff
+- **Context rollover: plan at ~150k, stop near ~170k tokens** (floor is ~99k). Finish the task, update the handoff
   (`docs/handoff-pc-<date>*.md`, short, no copied logs) and STATUS-CURRENT.md first,
   then stop and let a fresh session continue.
 - **Do not install the archive.org DLC fix.** The owner declined it.
