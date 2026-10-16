@@ -570,6 +570,7 @@ pub fn install(app: &mut App) -> Result<(), String> {
             tick,
             relight,
             follow_fog,
+            follow_gravity,
             follow_things,
             follow_world,
             follow_menu,
@@ -1010,6 +1011,26 @@ fn follow_fog(play: NonSend<Play>, mut v: ResMut<crate::Viewer>) {
     println!(
         "Fog bias at tick {}: {bias:.1} level units from the scripts (Cam.SetDOFAndFog), added to the start and the end of the preview fog; the first two values (depth of field) apply under --depth-of-field",
         play.scripts.ticks
+    );
+}
+
+/// D330: hands the gravity global setting in force to the physics (`lbp_sim::WorldGravity`:
+/// the world's gravity and Sackboy's fall, 2.3 x setting + 0.4 per tick², FOUND), when a
+/// physics world runs (`--play-sackboy`, the scripted Pod's Sackboy). One line per change.
+fn follow_gravity(play: NonSend<Play>, gravity: Option<ResMut<lbp_sim::WorldGravity>>) {
+    let Some(mut gravity) = gravity else {
+        return;
+    };
+    let setting = play.host.world.pworld.settings_in_force().gravity;
+    if setting.to_bits() == gravity.setting.to_bits() {
+        return;
+    }
+    gravity.setting = setting;
+    println!(
+        "Gravity at tick {}: setting {setting:.3}, {:.3} per tick² ({:.3} x normal) for the physics and Sackboy",
+        play.scripts.ticks,
+        lbp_sim::gravity_per_tick(setting),
+        gravity.scale()
     );
 }
 
@@ -2008,7 +2029,7 @@ fn window(mut contexts: EguiContexts, play: NonSend<Play>) -> Result {
                 }
             ));
             ui.small(format!(
-                "  not applied: colour correction {correction:.3}, fog {fog:.3}, fog tint {fog_tint:.3}, gravity {:.3}, water level {:.3}",
+                "  gravity {:.3} (to the physics, D330); not applied: colour correction {correction:.3}, fog {fog:.3}, fog tint {fog_tint:.3}, water level {:.3}",
                 now.gravity, now.water_level
             ));
             ui.label(match play.things_scene {

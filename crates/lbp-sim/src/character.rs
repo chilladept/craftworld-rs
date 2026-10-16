@@ -3,8 +3,8 @@
 //! z-slab overlaps Sackboy's lane; the controller turns them and the pad state into a move,
 //! which is applied axis by axis and stopped at the first hit (move and stop, no slide along
 //! slopes yet).
-use crate::sackboy::{Contact, Input, Sackboy};
-use crate::{sv, ZSlab, UNIT_SCALE};
+use crate::sackboy::{Contact, Input, Sackboy, GRAVITY_TICK};
+use crate::{sv, WorldGravity, ZSlab, UNIT_SCALE};
 use avian2d::math::Vector;
 use avian2d::prelude::*;
 use bevy::prelude::*;
@@ -81,7 +81,10 @@ fn drive_sackboy(
     spatial: SpatialQuery,
     slabs: Query<&ZSlab, Without<SackboyBody>>,
     mut q: Query<(Entity, &mut SackboyBody, &Position, &mut ZSlab, &Collider)>,
+    world_gravity: Option<Res<WorldGravity>>,
 ) {
+    // D330: Sackboy's fall follows the level's gravity setting.
+    let gravity = GRAVITY_TICK * world_gravity.map_or(1.0, |g| g.scale());
     for (me, mut body, pos, mut slab, shape) in &mut q {
         let mut at = pos.0;
         let filter = SpatialQueryFilter::default().with_excluded_entities([me]);
@@ -121,12 +124,13 @@ fn drive_sackboy(
         let here = at;
         let has_floor = |z: f32| cast(here, Dir2::NEG_Y, LANE_PROBE, z).is_some();
         let input = body.input;
-        let d = body.controller.step(
+        let d = body.controller.step_with_gravity(
             input,
             &Contact {
                 grounded,
                 lane_has_floor: &has_floor,
             },
+            gravity,
         );
         let lane_z = body.controller.lane;
         // x, then y, each stopped at the first hit.

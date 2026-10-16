@@ -35,6 +35,47 @@ pub const GRAVITY: f32 = 2424.0;
 /// scaled by this; read positions back with [`to_level`].
 pub const UNIT_SCALE: f32 = 0.01;
 
+/// D330: the world's gravity per tick² at the normal gravity setting (1.0), the value
+/// [`gravity_per_tick`] gives there. FOUND (01.33): the game's gravity-ratio getter (0xce6f0)
+/// divides the world gravity by -2.7.
+pub const NORMAL_GRAVITY_PER_TICK: f32 = 2.7;
+
+/// D330: the world's gravity per tick² (downwards) for the level's gravity global setting
+/// (`Game.SetGlobalSettingsGravityTo`, the PWorld's blended type-1 value): `2.3 x setting +
+/// 0.4`, so 2.7 at the normal 1.0 and 0.4 at 0.0. FOUND (01.33): the gravity setter (0xcef3c)
+/// and the blend-factor setter (0xd623c) write `setting x -2.3 - 0.4` into the y lane of the
+/// physics world's gravity vector each time they run, with the setting as now blended; the
+/// world gravity native (0x5fd4c8) reads that vector's length.
+pub fn gravity_per_tick(setting: f32) -> f32 {
+    2.3 * setting + 0.4
+}
+
+/// D330: the level's gravity global setting in force, which scales the world's gravity
+/// ([`SimPlugin`]) and Sackboy's ([`character`]) against the normal setting. A display that
+/// runs the level's scripts writes it; without them it stays at the normal 1.0.
+#[derive(Resource, Debug, Clone, Copy, PartialEq)]
+pub struct WorldGravity {
+    pub setting: f32,
+}
+
+impl Default for WorldGravity {
+    fn default() -> Self {
+        Self { setting: 1.0 }
+    }
+}
+
+impl WorldGravity {
+    /// The world's gravity over the normal one: 1.0 at the normal setting. A setting that is
+    /// not a number counts as the normal one (our choice: the game would carry the NaN).
+    pub fn scale(&self) -> f32 {
+        if self.setting.is_finite() {
+            gravity_per_tick(self.setting) / NORMAL_GRAVITY_PER_TICK
+        } else {
+            1.0
+        }
+    }
+}
+
 /// A physics position in LBP world units.
 pub fn to_level(p: Vector) -> [f32; 2] {
     [p.x / UNIT_SCALE, p.y / UNIT_SCALE]
@@ -103,10 +144,19 @@ impl Default for SimPlugin {
 
 impl Plugin for SimPlugin {
     fn build(&self, app: &mut App) {
+        let base = self.gravity;
+        // D330: the world's gravity follows the level's gravity setting.
+        let follow = move |g: Res<WorldGravity>, mut gravity: ResMut<Gravity>| {
+            if g.is_changed() {
+                gravity.0 = Vector::new(0., -base * g.scale() * UNIT_SCALE);
+            }
+        };
         app.add_plugins(PhysicsPlugins::default().with_collision_hooks::<SlabHooks>())
             .insert_resource(Time::<Fixed>::from_hz(TICK_HZ))
             .insert_resource(SubstepCount(SUBSTEPS))
             .insert_resource(Gravity(Vector::new(0., -self.gravity * UNIT_SCALE)))
+            .init_resource::<WorldGravity>()
+            .add_systems(FixedPreUpdate, follow)
             .add_systems(
                 FixedPostUpdate,
                 put_to_sleep

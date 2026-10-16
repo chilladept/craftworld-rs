@@ -223,6 +223,13 @@ impl Sackboy {
 
     /// Advances one tick and returns the displacement (dx, dy, dz) to apply.
     pub fn step(&mut self, input: Input, contact: &Contact) -> [f32; 3] {
+        self.step_with_gravity(input, contact, GRAVITY_TICK)
+    }
+
+    /// [`Self::step`] with `gravity` per tick² in place of [`GRAVITY_TICK`] (D330: the
+    /// level's gravity setting, `crate::WorldGravity`). The jump profile is not scaled
+    /// (not read).
+    pub fn step_with_gravity(&mut self, input: Input, contact: &Contact, gravity: f32) -> [f32; 3] {
         let grounded = contact.grounded && self.jump_tick.is_none();
         // Horizontal: the caps scale with how far the stick is pushed; the acceleration
         // does not (MEASURED: 3 per tick both ways, then 29.34 to the right).
@@ -247,7 +254,7 @@ impl Sackboy {
                 self.vy = if grounded {
                     0.
                 } else {
-                    self.vy * AIR_DRAG - GRAVITY_TICK
+                    self.vy * AIR_DRAG - gravity
                 };
             }
         }
@@ -526,6 +533,28 @@ mod tests {
             "{v:?}"
         );
         assert!((v[64] + 173.66).abs() < 0.6, "{}", v[64]);
+    }
+
+    #[test]
+    fn d330_fall_follows_the_gravity_setting() {
+        // The normal setting keeps the measured fall; 0.0 leaves 0.4 per tick² (FOUND).
+        let lanes = |_: f32| true;
+        let air = Contact {
+            grounded: false,
+            lane_has_floor: &lanes,
+        };
+        let first = |setting: f32| {
+            let g = GRAVITY_TICK * crate::WorldGravity { setting }.scale();
+            Sackboy::at_lane(0.).step_with_gravity(Input::default(), &air, g)[1]
+        };
+        assert_eq!(
+            first(1.0),
+            Sackboy::at_lane(0.).step(Input::default(), &air)[1]
+        );
+        assert!((first(0.0) + 0.4 * GRAVITY_TICK / 2.7).abs() < 1e-5);
+        assert!((first(2.0) + 5.0 * GRAVITY_TICK / 2.7).abs() < 1e-4);
+        assert_eq!(crate::gravity_per_tick(1.0), crate::NORMAL_GRAVITY_PER_TICK);
+        assert_eq!(crate::WorldGravity { setting: f32::NAN }.scale(), 1.0);
     }
 
     #[test]
