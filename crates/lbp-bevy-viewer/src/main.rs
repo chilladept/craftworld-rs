@@ -23,6 +23,7 @@ mod lighting;
 mod pod_dissolve;
 mod sackboy_play;
 mod speech_overlay;
+mod story_world;
 mod thing_view;
 mod water;
 use bevy::{
@@ -113,6 +114,9 @@ struct LevelLoaded {
     pod_level: bool,
     /// D334: the water colours (`water::palette`).
     water_palette: Result<Vec<[f32; 3]>, String>,
+    /// D331: the Story default group's planet decorations level, loaded with the
+    /// scripted Pod (`story_world`); none elsewhere.
+    story_world: Option<Result<LevelScene, String>>,
 }
 /// D278: the mask of the Pod tent's dissolve (`pod_dissolve::TRANSITION_MASK`) as an
 /// image, with a word on how the load went; there while the shell layer has a script
@@ -385,6 +389,8 @@ impl Viewer {
             ..scene_options.clone()
         };
         let dissolve_mask_wanted = self.level.shell_scripted();
+        let story_wanted = self.level.pod_scripted();
+        let story_options = scene_options.clone();
         let options = self.preview_options();
         let (mesh_options, _) = self.standalone_options();
         let animation_guid = self.animation_guid.trim().to_ascii_lowercase();
@@ -485,8 +491,35 @@ impl Viewer {
                         let water_palette =
                             decode_texture(&catalog, &source, water::WATER_COLOURS, &worker)
                                 .map(|t| water::palette(&t));
+                        // D331: the default group's planet decorations, for the Story view.
+                        let story_world = (story_wanted
+                            && level_guid == Some(fog_tint::POD_LEVEL_GUID))
+                        .then(|| {
+                            let list = lbp_preview::story::read_story_slot_list(
+                                &source, &catalog, &worker,
+                            )?;
+                            let (kind, number) = lbp_runtime::STORY_DEFAULT_GROUP;
+                            let guid = list
+                                .slots
+                                .iter()
+                                .find(|s| {
+                                    (s.id.slot_type as i32, s.id.number as i32) == (kind, number)
+                                })
+                                .and_then(|s| s.planet_decorations.as_ref()?.guid)
+                                .ok_or("the default story group has no planet decorations")?;
+                            let (key, _) = level_scene::resolve_level(&catalog, Some(guid), None)?;
+                            level_scene::load_level_scene_with_options(
+                                &source,
+                                &catalog,
+                                &key,
+                                &worker,
+                                options,
+                                story_options,
+                            )
+                        });
                         Ok(LevelLoaded {
                             scene,
+                            story_world,
                             identity,
                             shell,
                             shell_feet,
@@ -1393,6 +1426,16 @@ fn load(
                     "{}",
                     use_world_lighting(&mut level.scene, &palette, pod_level)
                 );
+            }
+            // D331: the Story view's planet world, pasted onto the Pod's Earth.
+            if let (Some(story), Some(globe)) = (level.story_world.take(), v.level.pod) {
+                match story.and_then(|s| story_world::merge(&mut level.scene, s, globe)) {
+                    Ok(m) => println!(
+                        "Story world: {} items ({} meshes) of the default group's planet decorations pasted onto Thing {globe} (its Earth is Thing {}), shown while the Story search is up; by (Thing, mesh): {:?}",
+                        m.items, m.meshes, m.story_earth, m.by_thing
+                    ),
+                    Err(e) => println!("Story world: not pasted ({e})"),
+                }
             }
             let plan = plan_level(&level.scene, v.level.focus, v.level.pod)?;
             let light_frame = plan.light_frame;

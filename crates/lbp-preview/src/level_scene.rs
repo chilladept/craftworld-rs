@@ -570,6 +570,8 @@ pub struct LevelScene<T> {
     /// P2c: Things with a CHECKPOINT part and a valid POS (Thing index, world matrix), in
     /// reader order. The player spawns at a checkpoint.
     pub checkpoints: Vec<(usize, [f32; 16])>,
+    /// D331: each Thing's parent Thing (reader order), indexed by Thing.
+    pub parents: Vec<Option<usize>>,
 }
 
 impl<T> Default for LevelScene<T> {
@@ -584,6 +586,7 @@ impl<T> Default for LevelScene<T> {
             world_water: None,
             backdrop_presets: Vec::new(),
             checkpoints: Vec::new(),
+            parents: Vec::new(),
         }
     }
 }
@@ -1191,6 +1194,12 @@ pub fn skin_bone_things<T>(
         let Some(t) = things.get(item.thing) else {
             continue;
         };
+        // D331: the bone Things are the render mesh's; a decoration's mesh has bones of
+        // its own and is placed by its own matrix (The Cosmos's Earth rocks collapsed to
+        // the Earth's centre when skinned by the Earth's bones).
+        if item.decoration {
+            continue;
+        }
         let (Some(_), Some(rm)) = (&t.data.pos, &t.data.render_mesh) else {
             continue;
         };
@@ -1298,7 +1307,10 @@ pub fn build_scene_with_colors<T>(
     uses_instance: impl Fn(&T) -> bool,
     placement: PosPlacement,
 ) -> LevelScene<T> {
-    let mut scene = LevelScene::<T>::default();
+    let mut scene = LevelScene::<T> {
+        parents: things.iter().map(|t| t.parent).collect(),
+        ..Default::default()
+    };
     let mut by_source: MeshCache = HashMap::new();
     let c = &mut scene.counts;
     c.things_total = things.len();
@@ -3658,6 +3670,40 @@ mod tests {
             .lines()
             .iter()
             .any(|l| l.starts_with("Per-bone placement")));
+    }
+
+    /// D331: a decoration of a Thing with bone Things is not skinned by them.
+    #[test]
+    fn d331_decorations_are_not_skinned_by_their_things_bones() {
+        let mut earth = thing(0, Some(0x10), Some(identity_at(0.)));
+        earth.data.render_mesh.as_mut().unwrap().bone_things = vec![Some(0), Some(1)];
+        let mut squash = identity_at(0.);
+        squash[10] = 0.5;
+        let things = vec![earth, thing(1, None, Some(squash))];
+        let mesh: Vec<[f32; 3]> = vec![[0., 0., 10.]; 2];
+        let id = identity_at(0.);
+        let mut scene = build_scene(
+            &things,
+            |_| Ok(mesh.clone()),
+            |p| points_bounds(p),
+            |_| false,
+            |_| vec![BindPose { skin: id, inv: id }; 2],
+            PosPlacement::InverseBind,
+        );
+        for item in &mut scene.items {
+            item.decoration = true;
+        }
+        skin_bone_things(
+            &mut scene,
+            &things,
+            |_| Ok((vec![[1, 0, 0, 0]; 2], vec![[1., 0., 0., 0.]; 2])),
+            |p| Some(&p[..]),
+            |_| vec![BindPose { skin: id, inv: id }; 2],
+            |_, positions| positions,
+        );
+        let item = scene.items.iter().find(|i| i.thing == 0).unwrap();
+        assert_eq!(scene.meshes[item.mesh].source, MeshSource::Guid(0x10));
+        assert_eq!(scene.counts.per_bone_skinned, 0);
     }
 
     /// D317: the per-bone copy is baked in the frame of the item's matrix, so when the

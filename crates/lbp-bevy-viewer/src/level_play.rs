@@ -595,6 +595,7 @@ pub fn install(app: &mut App) -> Result<(), String> {
             follow_gravity,
             follow_colour_correction,
             follow_things,
+            follow_story_world,
             follow_world,
             follow_menu,
         )
@@ -1359,6 +1360,56 @@ fn follow_level(
             done.line()
         );
     }
+}
+
+/// D331 (part 82): while the Story search is up the planet world pasted onto the Pod's
+/// Earth (`story_world`) is shown and the Pod's own Earth and Moon are hidden. Set each
+/// tick after [`follow_things`] while it is up, so a script's visibility change does not
+/// undo it; on closing the Pod's planets are shown again once.
+fn follow_story_world(
+    play: NonSend<Play>,
+    v: Res<crate::Viewer>,
+    things: Option<Res<crate::thing_view::LevelThings>>,
+    mut entities: Query<(&crate::thing_view::LevelThing, &mut Visibility)>,
+    mut was: Local<Option<bool>>,
+) {
+    let (Some(things), Some(globe)) = (things, v.level.pod) else {
+        return;
+    };
+    let open = crate::story_world::story_open(&play.host.world);
+    // Closed and never opened: the scripts' own visibility stands (the pasted items are
+    // spawned hidden).
+    if !open && *was != Some(true) {
+        *was = Some(false);
+        return;
+    }
+    let globe = globe as u32;
+    let mut changed = 0;
+    for thing in [globe, crate::pod_menu::MOON_THING as u32] {
+        for &e in things.entities.get(&thing).into_iter().flatten() {
+            let Ok((tag, mut visibility)) = entities.get_mut(e) else {
+                continue;
+            };
+            if let Some(want) = crate::story_world::wanted(&tag.item, globe, open) {
+                if *visibility != want {
+                    *visibility = want;
+                    changed += 1;
+                }
+            }
+        }
+    }
+    if *was != Some(open) {
+        println!(
+            "Story world at tick {}: {} ({changed} entities changed)",
+            play.scripts.ticks,
+            if open {
+                "shown, the Pod's Earth and Moon hidden"
+            } else {
+                "hidden"
+            }
+        );
+    }
+    *was = Some(open);
 }
 
 /// D319 (part 70): the main menu the pod computer's scripts built and drew, handed to the
