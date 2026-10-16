@@ -803,3 +803,25 @@ fn d332_fog_tint_runs_over_the_level_colour_then_the_palette() {
     };
     assert_eq!(s.with_fog_tint(0.25, &palette, false).fog_color, palette[1]);
 }
+
+#[test]
+fn d333_fog_pulls_near_to_0_and_far_to_1000() {
+    use lbp_level::parts::LevelSettings;
+    let s = LevelSettings {
+        fog_near: 4000.,
+        fog_far: 41000.,
+        ..LevelSettings::default()
+    };
+    let at = |f: f32| {
+        let t = s.with_fog(f);
+        (t.fog_near, t.fog_far)
+    };
+    assert_eq!(at(0.), (4000., 41000.));
+    assert_eq!(at(f32::NAN), (4000., 41000.));
+    assert_eq!(at(1.), (0., 1000.));
+    assert_eq!(at(5.), (0., 1000.));
+    assert_eq!(at(0.5), (2000., 21000.));
+    // Below 0 the other way: near out, far further out (far above 1000).
+    assert_eq!(at(-0.5), (6000., 61000.));
+    assert_eq!(at(-3.), (8000., 81000.));
+}

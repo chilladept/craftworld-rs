@@ -541,6 +541,11 @@ pub struct LevelSettings {
 /// D332: palette steps per unit of fog tint (01.33 TOC constant 8.0 in 0xac6c0, FOUND).
 pub const FOG_TINT_STEPS: f32 = 8.;
 
+/// D333: where a full fog setting puts the fog's near and far distances, level units
+/// (01.33 0xac200, TOC constants 0.0 and 1000.0, FOUND).
+pub const FOG_NEAR_PULLED_TO: f32 = 0.;
+pub const FOG_FAR_PULLED_TO: f32 = 1000.;
+
 /// P2l: presets kept per PLevelSettings (levels seen store one).
 pub const MAX_KEPT_PRESETS: usize = 16;
 
@@ -643,6 +648,20 @@ impl LevelSettings {
     /// game tints after the preset blend and the darkness ([`Self::at_lighting`]).
     pub fn with_fog_tint(mut self, tint: f32, palette: &[[f32; 4]], pod: bool) -> Self {
         self.fog_color = Self::tinted_fog(self.fog_color, tint, palette, pod);
+        self
+    }
+    /// D333: these settings with the fog distances under PWorld `fog` (01.33 0xac200,
+    /// FOUND): with the setting clamped to -1..1, `FogNear` moves that far toward 0 and
+    /// `FogFar` toward 1000 (below 0 they move the other way). The game does this after
+    /// the preset blend, for every preset count; 0 or a value that is not a number
+    /// changes nothing. A far at or under the near means no fog.
+    pub fn with_fog(mut self, fog: f32) -> Self {
+        if !fog.is_finite() || fog == 0. {
+            return self;
+        }
+        let f = fog.clamp(-1., 1.);
+        self.fog_near += f * (FOG_NEAR_PULLED_TO - self.fog_near);
+        self.fog_far += f * (FOG_FAR_PULLED_TO - self.fog_far);
         self
     }
     /// The world Thing's (PWorld holder) settings, else the first Thing carrying the

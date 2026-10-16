@@ -138,11 +138,35 @@ relight (`LevelRelight::light`, the follower now follows lighting, darkness and 
 `cargo test -p lbp-level` (`d332_fog_tint_runs_over_the_level_colour_then_the_palette`),
 `-p lbp-bevy-viewer` (`d332_palettes_read_in_order_and_stop_at_a_gap`), clippy.
 
+## D333: fog
+
+### What the game does (FOUND, 01.33)
+
+- After the preset blend (0xac200, for every preset count), with F the fog setting eased
+  over the lighting group's transition and clamped to -1..1: `FogNear += F (0 - FogNear)`,
+  `FogFar += F (1000 - FogFar)`. F = 1 is fog from 0 to 1000 level units; F < 0 pushes both
+  out.
+- The camera setup (0x34fc48) adds the script bias (`Cam.SetDOFAndFog` third value) to both;
+  no fog when far <= near. The vertex constant (0x317bac) makes the fog factor
+  `(view depth - near) / (far - near)`, the linear fog the viewer already draws.
+
+### What changed
+
+`LevelSettings::with_fog` (`lbp-level`), applied after the fog tint at load and on every
+relight; the follower now follows the fog too.
+
+### Not modelled
+
+- The fog colour and distances ease over the transition in the game; the viewer relights in
+  `RELIGHT_STEP` steps at the values in force.
+
+### Verification
+
+`cargo test -p lbp-level` (`d333_fog_pulls_near_to_0_and_far_to_1000`), clippy. Viewer: Rocket
+Funland under `--level-scripts` (tick 291: fog 0.3, tint 0.875) logs fog 3026.6..28588.7 level
+units from 4323.7..40412.4 (x 0.7, + 300 for the far), in palette colour 6.
+
 ## Research for the next PRs (not applied yet)
 
-- Fog (FOUND): with F the eased fog setting in -1..1, `FogNear += F (0 - FogNear)` and
-  `FogFar += F (1000 - FogFar)` after the preset blend (0xac200, for every preset count), then
-  the script bias (`Cam.SetDOFAndFog` third value) is added to both (0x34fc48); no fog when
-  far <= near; the vertex fog factor is `(view depth - near) / (far - near)` (0x317bac).
 - Water (partly read): the tint picks from a 9-colour list at 8 x tint, murkiness x 0.7 goes
   in the same vector's w (shader parameter 0x4da2db17); water level and waves not read.

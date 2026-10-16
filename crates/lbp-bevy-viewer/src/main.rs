@@ -1360,7 +1360,8 @@ fn load(
                 // D267: the blocks are kept, so `--level-scripts` can light the level
                 // again when a script changes those two values.
                 // D332: and the fog colour tinted by `fogTint` over the constants' palette.
-                let [lighting, _, _, fog_tint, darkness] =
+                // D333: and the fog distances by `fog`.
+                let [lighting, _, fog, fog_tint, darkness] =
                     level.scene.world_lighting.unwrap_or_default();
                 let palette = match &level.fog_palettes {
                     Ok(p) => p.for_level(level.pod_level).to_vec(),
@@ -1376,7 +1377,7 @@ fn load(
                     (
                         main,
                         presets,
-                        [lighting, darkness, fog_tint],
+                        [lighting, darkness, fog_tint, fog],
                         palette.clone(),
                     )
                 });
@@ -2638,10 +2639,18 @@ fn use_world_lighting(scene: &mut LevelScene, fog_palette: &[[f32; 4]], pod: boo
     let Some(main) = scene.settings else {
         return "Lighting: no level settings read".into();
     };
-    let [lighting, _, _, fog_tint, darkness] = scene.world_lighting.unwrap_or_default();
+    let [lighting, _, fog, fog_tint, darkness] = scene.world_lighting.unwrap_or_default();
     let (settings, at) =
         level_scene::LevelSettings::at_lighting(&main, &scene.settings_presets, lighting, darkness);
-    let settings = settings.with_fog_tint(fog_tint, fog_palette, pod);
+    let settings = settings
+        .with_fog_tint(fog_tint, fog_palette, pod)
+        .with_fog(fog);
+    if fog != 0. {
+        println!(
+            "Fog {fog:.3}: fog near {:.1}, far {:.1} level units (D333)",
+            settings.fog_near, settings.fog_far
+        );
+    }
     scene.settings = Some(settings);
     if fog_tint > 0. {
         let c = settings.fog_color;

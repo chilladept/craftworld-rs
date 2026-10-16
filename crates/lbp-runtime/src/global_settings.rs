@@ -75,6 +75,17 @@ impl SettingsInForce {
     pub fn light_and_fog_tint(&self) -> [f32; 3] {
         [self.lighting[0], self.lighting[4], self.lighting[3]]
     }
+
+    /// D333: (lighting, darkness, fog tint, fog), every value of the lighting group the
+    /// level's light is built from but the colour correction (`LevelSettings::with_fog`).
+    pub fn light_and_fog(&self) -> [f32; 4] {
+        [
+            self.lighting[0],
+            self.lighting[4],
+            self.lighting[3],
+            self.lighting[2],
+        ]
+    }
 }
 
 impl WorldState {

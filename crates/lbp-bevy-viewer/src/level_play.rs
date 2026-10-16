@@ -56,7 +56,7 @@ struct Play {
     messages_printed: (u64, u64),
     /// The (lighting, darkness) pair the scene's light shows, once the level is drawn
     /// with a light that follows the PWorld lighting.
-    light: Option<LightFollower<3>>,
+    light: Option<LightFollower<4>>,
     /// The scene whose draw entities were last set from the script world
     /// (`thing_view::LevelThings::scene`), and what was done to them since the start.
     things_scene: Option<u64>,
@@ -1025,8 +1025,9 @@ const RELIGHT_AFTER_FRAMES: u32 = 60;
 /// already uses for the level file's own values (P3m, `LevelSettings::at_lighting`).
 /// Nothing while the level is not drawn yet ([`RELIGHT_AFTER_FRAMES`]), or is lit another
 /// way (the Pod, a chosen preset, the main block). D332: the fog colour follows the fog
-/// tint too (`LevelSettings::with_fog_tint`). Fog is not applied yet. One line per new
-/// light: the check that needs no screenshot.
+/// tint too (`LevelSettings::with_fog_tint`), D333 the fog distances the fog
+/// (`LevelSettings::with_fog`). One line per new light: the check that needs no
+/// screenshot.
 fn relight(mut play: NonSendMut<Play>, mut v: ResMut<crate::Viewer>) {
     let p = &mut *play;
     if v.ready_frames < RELIGHT_AFTER_FRAMES {
@@ -1041,13 +1042,13 @@ fn relight(mut play: NonSendMut<Play>, mut v: ResMut<crate::Viewer>) {
         .light
         .get_or_insert_with(|| LightFollower::new(level.stored));
     let now = p.host.world.pworld.settings_in_force();
-    let Some([lighting, darkness, fog_tint]) = follower.update(now.light_and_fog_tint()) else {
+    let Some([lighting, darkness, fog_tint, fog]) = follower.update(now.light_and_fog()) else {
         return;
     };
-    let light = level.light(lighting, darkness, fog_tint);
+    let light = level.light(lighting, darkness, fog_tint, fog);
     println!(
-        "Lighting at tick {}: lighting {lighting:.3}, darkness {darkness:.3}, fog tint {fog_tint:.3} (new light {}); not applied: fog {:.3}",
-        p.scripts.ticks, follower.relights, now.lighting[2]
+        "Lighting at tick {}: lighting {lighting:.3}, darkness {darkness:.3}, fog tint {fog_tint:.3}, fog {fog:.3} (new light {})",
+        p.scripts.ticks, follower.relights
     );
     v.lighting.light = light;
     v.lighting.dirty = true;
@@ -2124,7 +2125,7 @@ fn window(mut contexts: EguiContexts, play: NonSend<Play>) -> Result {
             let now = play.host.world.pworld.settings_in_force();
             let [lighting, correction, fog, fog_tint, darkness] = now.lighting;
             ui.label(format!(
-                "Global settings: {} apply calls; lighting {lighting:.3}, darkness {darkness:.3}, fog tint {fog_tint:.3} (D332) ({})",
+                "Global settings: {} apply calls; lighting {lighting:.3}, darkness {darkness:.3}, fog tint {fog_tint:.3} (D332), fog {fog:.3} (D333) ({})",
                 play.totals.global_settings.total_calls(),
                 match &play.light {
                     Some(f) => format!("scene lit {} times by them", f.relights),
@@ -2132,7 +2133,7 @@ fn window(mut contexts: EguiContexts, play: NonSend<Play>) -> Result {
                 }
             ));
             ui.small(format!(
-                "  gravity {:.3} (to the physics, D330); colour correction {correction:.3} (final pass, D331); not applied: fog {fog:.3}, water level {:.3}",
+                "  gravity {:.3} (to the physics, D330); colour correction {correction:.3} (final pass, D331); not applied: water level {:.3}",
                 now.gravity, now.water_level
             ));
             ui.label(match play.things_scene {
