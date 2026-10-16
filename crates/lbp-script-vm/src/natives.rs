@@ -3269,7 +3269,7 @@ pub const UI_CLASSES: [&str; 2] = ["Gooey", "Callout"];
 /// D319: natives of other classes the pod computer's per-frame step and its main menu ask
 /// (part 46 found 28 kinds of them unbound in the planets level), also answered by
 /// [`World::ui_call`].
-pub const UI_NATIVES: [(&str, &str); 25] = [
+pub const UI_NATIVES: [(&str, &str); 48] = [
     ("Planets", "CheckOverlayNeedsUpdate__"),
     ("PodComputer", "GetPodComputerUserPlayerNumber__"),
     (
@@ -3298,6 +3298,33 @@ pub const UI_NATIVES: [(&str, &str); 25] = [
     ("Audio", "RequestVoiceOverMovePack__Q7StringAbbb"),
     ("Start_Menu", "GetFriendStatus__Q13PodFriendData"),
     ("System", "GetLanguageID__"),
+    // D327: the pod's search state.
+    ("SearchDetails", "GetPlanet__"),
+    ("Planets", "SelectPlanet__i"),
+    ("Planets", "GetFocusPlanet__"),
+    ("Planets", "SetCursorMode__i"),
+    ("Planets", "SetBrowseMode__Q25Planets.EPlanetBrowseMode"),
+    ("Planets", "SetAllowedBrowseModes__i"),
+    ("Planets", "SetPublishCursorBadge__Q18SearchResultHandle"),
+    ("PodComputer", "SetLoader__Q23PodComputer.ELoaderType"),
+    ("PodComputer", "SetEarthHasControl__b"),
+    (
+        "PodComputerPlanets",
+        "SetWantSearchDetails__Q13SearchDetailsbbb",
+    ),
+    ("SearchDetails", "GetResults__"),
+    ("ResultCollection", "GetNumResults__"),
+    ("SearchResults", "GetWantZoom__"),
+    ("SearchDetails", "IsBusyObtainingResults__"),
+    ("SearchDetails", "IsPaged__"),
+    ("SearchDetails", "RequiresOnline__"),
+    ("SearchDetails", "CheckOverlayNeedsUpdate__"),
+    ("PodComputer", "IsLaunchingLevel__"),
+    ("PodComputerPlanets", "IsLoading__"),
+    ("SearchDetails", "GetCurrentPage__"),
+    ("SearchDetails", "GetCrossplaySearchMode__"),
+    ("SearchDetails", "ShowErrorMessage__"),
+    ("GriefReport", "ClearContext__"),
 ];
 
 #[cfg(test)]

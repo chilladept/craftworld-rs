@@ -344,6 +344,8 @@ pub struct LevelWorld {
     pub planets: Option<ObjectId>,
     /// Planet objects by `GetCrafteroid__i` index - 1, with their Thing.
     pub crafteroids: Vec<(ObjectId, Option<u32>)>,
+    /// D327: the SearchResults object `SearchDetails.GetResults__` answers (no results).
+    pub search_results: Option<ObjectId>,
     /// The game state's player records, in join order (`Game.GetNumPlayers__` is their
     /// count). A level read with [`LevelWorld::from_things`] starts with the record of
     /// one local player, number 0, who has no Sackboy yet; [`LevelWorld::add_player`]
@@ -2544,6 +2546,16 @@ pub fn add_engine_objects(
                     .push((o, thing.and_then(|t| u32::try_from(t).ok()))),
                 Err(f) => faults.push(format!("Planet {f:?}")),
             }
+        }
+    }
+    // D327 FOUND (the 01.33 listings): `SearchDetails.GetResults__` returns the native
+    // class SearchResults (base ResultCollection, no script fields); the search state
+    // calls `GetNumResults__` and `GetWantZoom__` on it without a null check. One object
+    // is made ahead and handed out on every call.
+    if let Some(class) = vm.class_by_name("SearchResults") {
+        match vm.instantiate(class) {
+            Ok(o) => host.world.search_results = Some(o),
+            Err(f) => faults.push(format!("SearchResults {f:?}")),
         }
     }
     if let Some(class) = vm.class_by_name("PodComputer") {

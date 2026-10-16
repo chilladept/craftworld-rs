@@ -654,7 +654,9 @@ impl LevelWorld {
     }
 
     fn menu_query(&mut self, class: &str, mangled: &str, args: &[Value]) -> Option<Value> {
-        let _ = args;
+        if let Some(v) = self.search_query(class, mangled, args) {
+            return Some(v);
+        }
         Some(match (class, mangled) {
             // No overlay of the planets changed.
             ("Planets", "CheckOverlayNeedsUpdate__") => Value::Bool(false),
@@ -692,6 +694,91 @@ impl LevelWorld {
             // listings, `IsCJK__`): 0 is one of the CJK languages, so the unbound default
             // drew the Story title at the CJK font scale (x1.5, not x2.5).
             ("System", "GetLanguageID__") => Value::Int(1),
+            _ => return None,
+        })
+    }
+}
+
+impl LevelWorld {
+    /// D327 (part 78): the natives the pod's search state (`PodStateSearch`) calls on its
+    /// SearchDetails, its results and the planets. FOUND (the 01.33 listings): the return
+    /// types (`GetResults__` a SearchResults, `GetFocusPlanet__` a Planet, `GetPlanet__`,
+    /// `GetCurrentPage__` s32, the rest bool or void) and that `GetFocusPlanet__` and
+    /// `GetResults__` are used without a null check. The answers are INFERRED unless the
+    /// line says otherwise.
+    fn search_query(&mut self, class: &str, mangled: &str, args: &[Value]) -> Option<Value> {
+        let int = || match args.first() {
+            Some(Value::Int(i)) => Some(*i),
+            _ => None,
+        };
+        let search = &mut self.pod.search;
+        Some(match (class, mangled) {
+            // INFERRED: the story levels are on Earth (crafteroid 1): the search state's
+            // `GetPlanetsViewType__` has its Story branch (views 6 and 7) under planet 1,
+            // and `OnActivateImpl` selects the planet this answers.
+            ("SearchDetails", "GetPlanet__") => Value::Int(1),
+            ("Planets", "SelectPlanet__i") => {
+                search.selected_planet = int();
+                Value::Void
+            }
+            // The selected crafteroid; null before a planet is selected.
+            ("Planets", "GetFocusPlanet__") => Value::Object(
+                search
+                    .selected_planet
+                    .and_then(|i| usize::try_from(i).ok()?.checked_sub(1))
+                    .and_then(|i| self.crafteroids.get(i))
+                    .map(|(o, _)| *o),
+            ),
+            ("Planets", "SetCursorMode__i") => {
+                search.cursor_mode = int();
+                Value::Void
+            }
+            ("Planets", "SetBrowseMode__Q25Planets.EPlanetBrowseMode") => {
+                search.browse_mode = int();
+                Value::Void
+            }
+            ("Planets", "SetAllowedBrowseModes__i") => {
+                search.allowed_browse_modes = int();
+                Value::Void
+            }
+            ("Planets", "SetPublishCursorBadge__Q18SearchResultHandle") => {
+                search.publish_cursor_badge_calls += 1;
+                Value::Void
+            }
+            ("PodComputer", "SetLoader__Q23PodComputer.ELoaderType") => {
+                search.loader = int();
+                Value::Void
+            }
+            ("PodComputer", "SetEarthHasControl__b") => {
+                search.earth_has_control = match args.first() {
+                    Some(Value::Bool(b)) => Some(*b),
+                    _ => None,
+                };
+                Value::Void
+            }
+            ("PodComputerPlanets", "SetWantSearchDetails__Q13SearchDetailsbbb") => {
+                search.want_search_details_calls += 1;
+                Value::Void
+            }
+            // The search's results: one SearchResults object, with no results (the story
+            // levels the game would list were not read), obtained at once, on one page.
+            ("SearchDetails", "GetResults__") => Value::Object(self.search_results),
+            ("ResultCollection", "GetNumResults__") => Value::Int(0),
+            ("SearchResults", "GetWantZoom__") => Value::Bool(false),
+            ("SearchDetails", "IsBusyObtainingResults__")
+            | ("SearchDetails", "IsPaged__")
+            | ("SearchDetails", "RequiresOnline__")
+            | ("SearchDetails", "CheckOverlayNeedsUpdate__")
+            | ("PodComputer", "IsLaunchingLevel__")
+            | ("PodComputerPlanets", "IsLoading__") => Value::Bool(false),
+            ("SearchDetails", "GetCurrentPage__")
+            | ("SearchDetails", "GetCrossplaySearchMode__") => Value::Int(0),
+            ("SearchDetails", "ShowErrorMessage__") => {
+                search.error_message_calls += 1;
+                Value::Void
+            }
+            // No grief report is open.
+            ("GriefReport", "ClearContext__") => Value::Void,
             _ => return None,
         })
     }

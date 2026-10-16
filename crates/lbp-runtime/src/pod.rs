@@ -98,6 +98,32 @@ pub struct PodState {
     pub action_prompts: BTreeMap<String, u64>,
     /// `Native.GetPlayerColour__Q5Thing` calls with a Thing that has a PYellowHead.
     pub player_colour_calls: u64,
+    /// D327: what the pod's search state told the planets and the pod computer.
+    pub search: PlanetsSearch,
+}
+
+/// D327 (part 78): the values the search state (`PodStateSearch`) hands the planets and
+/// the pod computer, kept as the last one given; nothing moves or draws by them yet.
+#[derive(Debug, Clone, Default)]
+pub struct PlanetsSearch {
+    /// `Planets.SelectPlanet__i`: a crafteroid index (1 = Earth, `GetCrafteroid__i`);
+    /// `Planets.GetFocusPlanet__` answers that crafteroid, null before any.
+    pub selected_planet: Option<i32>,
+    /// `Planets.SetCursorMode__i`, `SetBrowseMode__Q25Planets.EPlanetBrowseMode`,
+    /// `SetAllowedBrowseModes__i`.
+    pub cursor_mode: Option<i32>,
+    pub browse_mode: Option<i32>,
+    pub allowed_browse_modes: Option<i32>,
+    /// `PodComputer.SetLoader__Q23PodComputer.ELoaderType`, `SetEarthHasControl__b`.
+    pub loader: Option<i32>,
+    pub earth_has_control: Option<bool>,
+    /// `PodComputerPlanets.SetWantSearchDetails__Q13SearchDetailsbbb` calls.
+    pub want_search_details_calls: u64,
+    /// `Planets.SetPublishCursorBadge__Q18SearchResultHandle` calls.
+    pub publish_cursor_badge_calls: u64,
+    /// `SearchDetails.ShowErrorMessage__` calls (the search answered no results on its
+    /// first page); no message is drawn.
+    pub error_message_calls: u64,
 }
 
 /// Most requests [`PodState::host_use_pod_requests`] keeps.

@@ -11,16 +11,14 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D326 Story's search state runs (2026-10-16)
-- Runtime (`docs/level-scripts/part-77.md`): a factory native can make a script object
-  (`Host::native_object_class`: fields, `.init__`, `.ctor__`); `SearchDetails.CreateStoryLevels__`
-  makes a `SearchDetailsStoryLevels` and `Planet.GetCurResult__` an empty `SearchResultHandle`
-  (INFERRED: nothing under the cursor yet). FOUND (listings): `Gooey.FontScale` is script code over
-  `Get/SetStylesheetScalingFactor`, now bound; `IsCJK` is true for language 0, so
-  `System.GetLanguageID__` answers English (1). Session: choose on Story at 640 runs
-  `PodStateSearch` without faults and builds the Story title bubble ("STORY", x2.5).
-- Next: the search results, focus planet, browse modes and paging natives (default answers now).
-- D325 (part 76): the menu answers the pad's focus moves, choose and back on the key's tick.
+## Latest: D327 Story focuses Earth (2026-10-16)
+- Runtime (`docs/level-scripts/part-78.md`): the search state's natives on its SearchDetails, its
+  results and the planets answer (`gooey.rs` `search_query`; kept in `PodState::search`). FOUND
+  (listings): `GetPlanet__` feeds `SelectPlanet__i`, and the Story planet views (6/7) are for planet
+  1. INFERRED: Story is on Earth, a local one-page search; the results stay empty (story slots not
+  read), so `ShowErrorMessage__` is called once. Session: unbound calls 742 -> 2, planets view 6.
+- Next: the story results (the slots the game lists on Earth), then draw the Story frame in the viewer.
+- D326 (part 77): Story's search state runs (factory natives, Story title bubble).
 
 ## Measured counts (distinct catalog GUID; Complete = manual, all textures + geometry)
 - Mesh census 01.33 (4,261 GUIDs, after D188-D190): 4,259 viewable, 4,239 all-diffuse by

@@ -5566,3 +5566,46 @@ fn d301_a_stopped_pod_computer_step_leaves_the_planets_running() {
         ]
     );
 }
+
+/// D327: the search state's planets natives. The focus planet is null until a planet is
+/// selected, then the selected crafteroid; the results are the one SearchResults object
+/// with no results, and the setters are kept.
+#[test]
+fn search_state_selects_the_focus_planet_and_keeps_its_modes() {
+    use lbp_script_vm::ObjectId;
+    let mut w = LevelWorld {
+        crafteroids: vec![(ObjectId(7), None), (ObjectId(8), None)],
+        search_results: Some(ObjectId(9)),
+        ..LevelWorld::default()
+    };
+    let call =
+        |w: &mut LevelWorld, class: &str, f: &str, args: &[Value]| w.ui_call(class, f, None, args);
+    assert_eq!(
+        call(&mut w, "Planets", "GetFocusPlanet__", &[]),
+        Some(Value::Object(None))
+    );
+    let planet = call(&mut w, "SearchDetails", "GetPlanet__", &[]);
+    assert_eq!(planet, Some(Value::Int(1)));
+    call(&mut w, "Planets", "SelectPlanet__i", &[Value::Int(1)]);
+    assert_eq!(
+        call(&mut w, "Planets", "GetFocusPlanet__", &[]),
+        Some(Value::Object(Some(ObjectId(7))))
+    );
+    assert_eq!(
+        call(&mut w, "SearchDetails", "GetResults__", &[]),
+        Some(Value::Object(Some(ObjectId(9))))
+    );
+    assert_eq!(
+        call(&mut w, "ResultCollection", "GetNumResults__", &[]),
+        Some(Value::Int(0))
+    );
+    call(
+        &mut w,
+        "Planets",
+        "SetBrowseMode__Q25Planets.EPlanetBrowseMode",
+        &[Value::Int(1)],
+    );
+    call(&mut w, "SearchDetails", "ShowErrorMessage__", &[]);
+    assert_eq!(w.pod.search.browse_mode, Some(1));
+    assert_eq!(w.pod.search.error_message_calls, 1);
+}

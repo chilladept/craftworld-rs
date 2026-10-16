@@ -1939,6 +1939,7 @@ fn play_level(vm: &mut Vm, mut world: LevelWorld, opts: &PlayOptions) -> Played 
             serde_json::json!({"in_use": r.in_use, "frame": r.frame})
         }).collect::<Vec<_>>(),
         "our_pod": host.world.our_pod,
+        "search": search_json(&host.world.pod.search),
         "pod_computer_in_use": host.world.pod_computer_in_use,
         "in_use_changes": host.world.pod.in_use_changes.iter().map(|c| {
             serde_json::json!({"in_use": c.in_use, "frame": c.frame})
@@ -2286,6 +2287,7 @@ impl<'a> SessionSide<'a> {
             "transition_texture": w.pod.transition_texture,
             "action_prompts": w.pod.action_prompts,
             "actions_not_read": w.pod.actions_not_read,
+            "search": search_json(&w.pod.search),
             "avatar": self.avatar,
         });
         serde_json::json!({
@@ -3017,4 +3019,19 @@ fn run() -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// D327: what the pod's search state told the planets and the pod computer.
+fn search_json(s: &lbp_runtime::PlanetsSearch) -> serde_json::Value {
+    serde_json::json!({
+        "selected_planet": s.selected_planet,
+        "cursor_mode": s.cursor_mode,
+        "browse_mode": s.browse_mode,
+        "allowed_browse_modes": s.allowed_browse_modes,
+        "loader": s.loader,
+        "earth_has_control": s.earth_has_control,
+        "want_search_details_calls": s.want_search_details_calls,
+        "publish_cursor_badge_calls": s.publish_cursor_badge_calls,
+        "error_message_calls": s.error_message_calls,
+    })
 }
