@@ -32,6 +32,18 @@ Read first (max 5):
   0x19bf3 via `decode_texture`.
 - Toolchain: `. "E:\Projects\LBP2 Rust Rewrite\scripts\use-local-rust.ps1"`.
 
+## Capture result (arrived after the handoff)
+
+- Working form: run the exe directly (no Start-Process; `--qa-capture` already shows the
+  window unactivated on the 2nd monitor), hold-at 600. Whale Tale needs
+  `--play-sackboy-at "-13602,30320,0"` (the default spawn has no floor; Sackboy falls to
+  Y about 1726 and the frame goes flat pink). `--play-sackboy-input "-:700"` logs his position.
+- Shots `d334b-whale_tale-a35/-a0.png`: good gameplay frame, but **the water body is not drawn**
+  (identical at alpha 0, 0.35, 1). The surface Y 29792 is below the floor at 30074, so the body
+  should show below the platform. Suspects: `thing_view`'s follow hiding `v.scene` entities that
+  map to no Thing, or the body's Z span/transform. (The exe had a temporary `TMP_WATER_ALPHA`
+  env knob, removed from the source before commit.)
+
 ## Next
 
 1. Verify the water body in a working capture (Whale Tale near the spawn); fix if the body
