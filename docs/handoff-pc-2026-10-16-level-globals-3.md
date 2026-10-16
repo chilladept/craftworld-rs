@@ -3,7 +3,8 @@
 Read first (max 5):
 - `docs/level-globals.md` section "Research for the next PRs"
 - `local-analysis/level-globals/fog-tint-research.md` (EBOOT research on darkness / fog tint /
-  fog; written by a background agent of part 3, check it exists and is complete)
+  fog; complete: FogColor is light-block offset 0x10, palette lerp at 8 x tint, fog
+  near/far math; the viewer's darkness also scales exposure, which the game does not)
 - `local-analysis/level-globals/final-pass-shader.md` last section (live-constant method)
 
 ## State
