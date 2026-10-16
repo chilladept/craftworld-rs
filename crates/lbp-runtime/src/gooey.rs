@@ -197,6 +197,8 @@ pub struct GooeyState {
     pub input: GooeyInput,
     /// D325: `PWorld.Frame` of the first builds of top-level frames (at most 256).
     pub build_frames: Vec<i32>,
+    /// D325: the focus moved since the last build of a top-level frame.
+    pub focus_moved: bool,
 }
 
 /// D325: the menu input the pad gives the Gooey for its next build. FOUND (the script
@@ -247,6 +249,7 @@ impl GooeyState {
         if self.focus != Some(focus) {
             self.focus = Some(focus);
             self.focus_since = Some(frame);
+            self.focus_moved = true;
         }
     }
 
@@ -304,6 +307,7 @@ impl GooeyState {
         if self.open.is_empty() {
             // D325: a choice no focused button took lapses with the build.
             self.input.choose = false;
+            self.focus_moved = false;
             let key = (f.high_bits, f.id.unwrap_or(-1));
             self.first_built.entry(key).or_insert(frame);
             self.frames.insert(key, f);
@@ -456,7 +460,8 @@ impl LevelWorld {
             "EndFrameInput" => {
                 g.end(frame);
                 let back = g.input.back && int(a(0)) & GOOEY_BACK != 0;
-                if back {
+                // A back no root frame took lapses with the build.
+                if back || g.open.is_empty() {
                     g.input.back = false;
                 }
                 Value::Int(if back { GOOEY_BACK } else { 0 })
@@ -611,8 +616,13 @@ impl LevelWorld {
                 g.renders += 1;
                 Value::Void
             }
-            // Nothing changed outside the scripts' own calls.
-            "NeedsUpdate" => Value::Bool(false),
+            // D325: the pad moved the focus or waits to choose or go back. FOUND (the
+            // listings, `PodComputer.NeedUpdateUI__`): this answer is or-ed into the pod
+            // computer's rebuild test, and without it the main menu is rebuilt only when a
+            // state asks (every ~30 frames in the session). INFERRED (the engine's code was
+            // not read): the game's Gooey answers true on the frame its input changes, as it
+            // reacts to the pad at once.
+            "NeedsUpdate" => Value::Bool(g.focus_moved || g.input.choose || g.input.back),
             "SetColoursFromPlayer" => {
                 g.colours_player = Some(int(a(0)));
                 Value::Void
@@ -1422,5 +1432,62 @@ mod tests {
             .find(|p| matches!(&p.kind, PlacedKind::Button { label, style: 1, .. } if label == "Store"))
             .expect("Store");
         assert_eq!(size("Store"), store.size);
+    }
+
+    #[test]
+    fn d325_input_asks_for_a_build_and_answers_it_once() {
+        let mut w = LevelWorld::default();
+        let call =
+            |w: &mut LevelWorld, name: &str, args: &[Value]| w.ui_call("Gooey", name, None, args);
+        let needs = |w: &mut LevelWorld| call(w, "NeedsUpdate__", &[]);
+        menu_tree(&mut w);
+        // The first focus came with the build: nothing waits.
+        assert_eq!(needs(&mut w), Some(Value::Bool(false)));
+        call(&mut w, "SetScriptUIDHighBits__i", &[Value::Int(1)]);
+        let m = Value::Mat44(pod_computer_draw_matrix());
+        call(&mut w, "SetItemViewMatrix__im", &[Value::Int(1), m]);
+        w.pworld.frame = 40;
+        assert!(w.gooey.move_focus([0., 1.], None, 40));
+        let id = w.gooey.focus.expect("focus").1;
+        assert_ne!(id, 6);
+        assert_eq!(w.gooey.focus_since, Some(40));
+        assert_eq!(needs(&mut w), Some(Value::Bool(true)));
+        menu_tree(&mut w);
+        assert_eq!(needs(&mut w), Some(Value::Bool(false)));
+        // Choose: the focused button answers 256 once, then the build is done.
+        w.gooey.input.choose = true;
+        assert_eq!(needs(&mut w), Some(Value::Bool(true)));
+        call(&mut w, "SetScriptUIDHighBits__i", &[Value::Int(1)]);
+        let button =
+            "DoSpaceButtonNamed__iQ6StringQ21Gooey.EGooeyTextStyleQ23Gooey.EGooeyButtonStateif";
+        call(
+            &mut w,
+            "StartFrameNamed__iQ23Gooey.EGooeyBubbleStyle",
+            &[Value::Int(1), Value::Int(0)],
+        );
+        let pressed = |w: &mut LevelWorld| {
+            call(
+                w,
+                button,
+                &[
+                    Value::Int(id),
+                    s("Community"),
+                    Value::Int(1),
+                    Value::Int(0),
+                    Value::Int(256),
+                    Value::Float(0.),
+                ],
+            )
+        };
+        assert_eq!(pressed(&mut w), Some(Value::Int(GOOEY_ACTIVATE)));
+        assert_eq!(pressed(&mut w), Some(Value::Int(0)));
+        // Back: the root's EndFrameInput answers 512 once.
+        w.gooey.input.back = true;
+        assert_eq!(needs(&mut w), Some(Value::Bool(true)));
+        assert_eq!(
+            call(&mut w, "EndFrameInput__i", &[Value::Int(512)]),
+            Some(Value::Int(GOOEY_BACK))
+        );
+        assert_eq!(needs(&mut w), Some(Value::Bool(false)));
     }
 }

@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D324
+# Current state (overwrite each milestone) — after D325
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -11,17 +11,16 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D324 the Pod main menu comes in and the focused pill grows as the game's (2026-10-16)
-- Viewer (`docs/level-scripts/part-75.md`): FOUND (RenderDoc 7295 / 7927 / 8348, ticks 606 / 609 /
-  611) while the menu comes in it is drawn into a target of its own and laid over the scene by one
-  draw (PS 3483): the pixel and seven ring taps averaged, times alpha (age + 1) / 15 (101 / 152 /
-  186 of 255), ring radius 16 x 0.618 x (1 - alpha) px; the menu's own draws keep full alphas. The
-  model reproduces the game's composite within 0.3 levels at 606. MEASURED: the focused pill's
-  scale over the others 1.468 / 1.571 / 1.574 / 1.511 / 1.491 at 606 to 619, a damped spring to 1.5
-  (decay 0.1869, 0.2830 rad a frame, within 0.003); its slab is not drawn at 606 / 609 (INFERRED:
-  from the spring's peak, age 9.04).
-- MEASURED against the game's final output in the menu's region (mean abs, levels): 606 23.2 ->
-  11.1, 609 25.1 -> 15.2, 611 17.3 -> 9.6; 616 / 619 unchanged (17.8 / 12.9 -> 17.9 / 12.8).
+## Latest: D325 the Pod main menu answers the pad (2026-10-16)
+- Runtime (`docs/level-scripts/part-76.md`): the menu's scripts get the pad's focus moves, choose
+  (the focused button answers 256 once) and back (the root's `EndFrameInput(512)` answers 512
+  once). FOUND (listings): the menu is rebuilt only when `PodComputer.NeedUpdateUI` is true, which
+  ors in `Gooey.NeedsUpdate`; that now answers true while input waits, so a key acts on its own
+  tick (before: builds every ~31 ticks). Session: down moves Story -> Community -> Recent Activity;
+  back pops the menu and the pod computer closes on that tick; choose on Story pushes
+  `PodStateSearch`, which faults on unbound SearchDetails / Planets natives (next).
+- Viewer: arrows / D-pad move the focus, Backspace is the menu's back, Enter chooses under
+  `--pod-menu-choose`; the focused pill's spring restarts on a move (INFERRED).
 
 ## Measured counts (distinct catalog GUID; Complete = manual, all textures + geometry)
 - Mesh census 01.33 (4,261 GUIDs, after D188-D190): 4,259 viewable, 4,239 all-diffuse by

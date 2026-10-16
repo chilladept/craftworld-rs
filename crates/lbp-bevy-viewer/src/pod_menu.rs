@@ -740,6 +740,10 @@ pub struct ScriptMenuFrame {
     pub colour: [f32; 4],
     /// D323: frames since the frame was first built.
     pub age: f32,
+    /// D325: frames since the focus last moved to another button, or [`Self::age`] when it
+    /// has not moved since the frame was first built: the focused pill's spring and slab go
+    /// by it. INFERRED (not captured): a newly focused pill springs from 1 as the first does.
+    pub focus_age: f32,
 }
 
 impl ScriptMenuFrame {
@@ -770,12 +774,19 @@ impl ScriptMenuFrame {
             .find(|r| Some(r.number) == player)
             .or(world.player_records.first())
             .map_or(lbp_script_vm::natives::DEFAULT_PLAYER_COLOUR, |r| r.colour);
+        let age = if age == f32::MAX { 0. } else { age };
+        let focus_age = world
+            .gooey
+            .focus_since
+            .map_or(age, |s| (world.pworld.frame - s) as f32)
+            .clamp(0., age);
         Some(Self {
             placed: lbp_runtime::layout_with(menu.frame, menu.focus, fonts),
             matrix: Mat4::from_cols_array(&menu.matrix),
             fade,
             colour: lbp_script_vm::natives::colour_vector(colour),
-            age: if age == f32::MAX { 0. } else { age },
+            age,
+            focus_age,
         })
     }
 }
@@ -1864,12 +1875,12 @@ pub(crate) fn paint_script_menu(
             if matches!(
                 item.kind,
                 lbp_runtime::PlacedKind::Button { focused: true, .. }
-            ) && focus_slab_shown(frame.age)
+            ) && focus_slab_shown(frame.focus_age)
             {
                 // D323: the focused pill's eight layers, the deepest first, each a step
                 // back along the menu's z (the projection moves and shrinks it) and a little
                 // along the pill's own axes; the last at the pill.
-                let step = focus_layer_step(frame.age);
+                let step = focus_layer_step(frame.focus_age);
                 let ex = Vec2::from_angle(angle);
                 let up = Vec2::new(ex.y, -ex.x);
                 let unit = dx.length();
@@ -2005,7 +2016,7 @@ pub(crate) fn paint_script_menu(
         let k = px_scale
             * label.units_per_font_pixel
             * if focused {
-                lbp_runtime::FOCUS_SCALE * focus_grow(frame.age)
+                lbp_runtime::FOCUS_SCALE * focus_grow(frame.focus_age)
             } else {
                 1.
             }

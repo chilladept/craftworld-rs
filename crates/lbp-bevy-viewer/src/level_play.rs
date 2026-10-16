@@ -104,6 +104,9 @@ struct Play {
     dissolve_edge_printed: bool,
     /// D298: the depth-of-field range last printed (level units).
     dof_printed: Option<[f32; 2]>,
+    /// D325 `--pod-menu-choose` (QA): Enter chooses the focused entry of the scripts' menu.
+    /// Off by default: Story's state faults on natives not bound yet.
+    menu_choose: bool,
 }
 
 /// The script world of the Pod's shell layer (part 28): the second level of the
@@ -389,6 +392,7 @@ pub fn install(app: &mut App) -> Result<(), String> {
     let hold_at = tick_option(&all, "--level-scripts-hold-at")?;
     let in_use_at = tick_option(&all, "--level-scripts-in-use-at")?;
     let press_at = tick_option(&all, "--level-scripts-press-at")?;
+    let menu_choose = all.iter().any(|a| a == "--pod-menu-choose");
     if press_at.is_some() && shell_guid.is_none() {
         println!(
             "--level-scripts-press-at is not used without the Pod's shell layer (--pod-camera N --pod-shell HEX): the engage press is read by the shell level's script"
@@ -557,6 +561,7 @@ pub fn install(app: &mut App) -> Result<(), String> {
         dissolve_printed: false,
         dissolve_edge_printed: false,
         dof_printed: None,
+        menu_choose,
     })
     .insert_resource(crate::CaptureHold(hold_at.is_some()))
     .insert_resource(menu_assets.unwrap_or_default())
@@ -593,6 +598,7 @@ pub fn install(app: &mut App) -> Result<(), String> {
             .after(crate::camera)
             .before(crate::capture),
     )
+    .add_systems(Update, menu_keys)
     .add_systems(EguiPrimaryContextPass, (speech, window));
     Ok(())
 }
@@ -712,7 +718,16 @@ fn puter_key(p: &mut Play, key: PuterKey) {
         return;
     };
     let ticks = shell.scripts.ticks;
-    match key_act(key, shell.host.world.pod_computer_in_use) {
+    // D325: while the scripts' menu is drawn, the closing key is the menu's back: its
+    // root frame's `EndFrameInput` answers 512 on the next build, the state pops and the
+    // pod computer's script asks the host to stop using it, as the game's circle does.
+    let in_use = shell.host.world.pod_computer_in_use;
+    if in_use && key == PuterKey::Back && p.host.world.gooey.drawn_menu().is_some() {
+        p.host.world.gooey.input.back = true;
+        println!("Menu back after tick {ticks}: the menu's next build answers back (512)");
+        return;
+    }
+    match key_act(key, in_use) {
         Some(KeyAct::Press) => {
             shell.press = true;
             println!(
@@ -726,6 +741,52 @@ fn puter_key(p: &mut Play, key: PuterKey) {
             );
         }
         None => {}
+    }
+}
+
+/// D325: the arrows and the D-pad move the focus of the scripts' drawn menu while the pod
+/// computer is in use (`GooeyState::move_focus`, the layout measured in the game's fonts);
+/// under `--pod-menu-choose` Enter or Cross chooses the focused entry. The menu is built
+/// again on the next tick (the Gooey then needs an update).
+fn menu_keys(
+    mut play: NonSendMut<Play>,
+    keys: Res<ButtonInput<KeyCode>>,
+    pads: Query<&Gamepad>,
+    assets: Res<crate::pod_menu::MenuAssets>,
+) {
+    let p = &mut *play;
+    let in_use = p
+        .shell
+        .as_ref()
+        .is_some_and(|s| s.host.world.pod_computer_in_use);
+    if !in_use || p.host.world.gooey.drawn_menu().is_none() {
+        return;
+    }
+    let pad = |b| pads.iter().any(|g| g.just_pressed(b));
+    let fonts = (!assets.gooey_fonts.faces.is_empty()).then_some(&assets.gooey_fonts);
+    let ticks = p.scripts.ticks;
+    let world = &mut p.host.world;
+    let frame = world.pworld.frame;
+    for (key, button, dir) in [
+        (KeyCode::ArrowUp, GamepadButton::DPadUp, [0., -1.]),
+        (KeyCode::ArrowDown, GamepadButton::DPadDown, [0., 1.]),
+        (KeyCode::ArrowLeft, GamepadButton::DPadLeft, [-1., 0.]),
+        (KeyCode::ArrowRight, GamepadButton::DPadRight, [1., 0.]),
+    ] {
+        if (keys.just_pressed(key) || pad(button)) && world.gooey.move_focus(dir, fonts, frame) {
+            println!(
+                "Menu focus after tick {ticks}: node {:?}",
+                world.gooey.focus.map(|f| f.1)
+            );
+        }
+    }
+    let choose =
+        keys.any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter]) || pad(GamepadButton::South);
+    if choose && p.menu_choose {
+        world.gooey.input.choose = true;
+        println!(
+            "Menu choose after tick {ticks}: the focused button answers 256 on the next build"
+        );
     }
 }
 
