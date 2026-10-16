@@ -1368,9 +1368,17 @@ fn follow_level(
 /// undo it; on closing the Pod's planets are shown again once.
 fn follow_story_world(
     play: NonSend<Play>,
-    v: Res<crate::Viewer>,
+    mut v: ResMut<crate::Viewer>,
     things: Option<Res<crate::thing_view::LevelThings>>,
-    mut entities: Query<(&crate::thing_view::LevelThing, &mut Visibility)>,
+    light: Option<Res<crate::story_world::StoryLight>>,
+    mut entities: Query<
+        (&crate::thing_view::LevelThing, &mut Visibility),
+        Without<crate::story_world::Backdrop>,
+    >,
+    mut backdrops: Query<
+        (&crate::story_world::Backdrop, &mut Visibility),
+        Without<crate::thing_view::LevelThing>,
+    >,
     mut was: Local<Option<bool>>,
 ) {
     let (Some(things), Some(globe)) = (things, v.level.pod) else {
@@ -1398,7 +1406,24 @@ fn follow_story_world(
             }
         }
     }
+    // D336 (0xdb2c4, 0xd9990): the decorations level's backdrop replaces the Pod's, and its
+    // lighting becomes the Pod world's.
+    for (backdrop, mut visibility) in &mut backdrops {
+        let want = crate::story_world::backdrop_wanted(*backdrop, open);
+        if *visibility != want {
+            *visibility = want;
+            changed += 1;
+        }
+    }
     if *was != Some(open) {
+        if let Some(light) = light {
+            let (planets, shell) = if open { &light.story } else { &light.pod };
+            v.lighting.light = planets.clone();
+            if let Some((_, l)) = v.lighting.shell.as_mut() {
+                *l = shell.clone();
+            }
+            v.lighting.dirty = true;
+        }
         println!(
             "Story world at tick {}: {} ({changed} entities changed)",
             play.scripts.ticks,

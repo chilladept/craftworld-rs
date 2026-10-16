@@ -59,6 +59,9 @@ pub struct PreviewLight {
     /// P2x: the Pod scenes use the live game's values (GAME_FOG_*, Puter-driven start)
     /// because pod_planets.bin's stored settings differ from the live ones.
     pub pod_fog: bool,
+    /// D336: the light keeps its own settings' fog even in the Pod (the Story's backdrop
+    /// lighting: its fog is not the Pod's live constants).
+    pub own_fog: bool,
     pub from_level: bool,
     /// P2l: level values before the preview fit (key = sun colour x multiplier).
     pub raw_key: Vec3,
@@ -127,6 +130,7 @@ impl PreviewLight {
             fog: None,
             game_fog: None,
             pod_fog: false,
+            own_fog: false,
             from_level: false,
             raw_key: Vec3::splat(0.65),
             raw_ambient: Vec3::splat(0.35),
@@ -248,6 +252,7 @@ impl PreviewLight {
             fog,
             game_fog,
             pod_fog: false,
+            own_fog: false,
             from_level: true,
             raw_key,
             raw_ambient,
@@ -717,6 +722,7 @@ mod tests {
         assert!((lit.lbp_fog_color() - Vec3::new(0.8, 0.4, 0.2)).length() < 1e-6);
         let pod = PreviewLight {
             pod_fog: true,
+            own_fog: false,
             ..lit.clone()
         };
         assert_eq!(pod.lbp_fog_color(), Vec3::from(GAME_FOG_COLOR));

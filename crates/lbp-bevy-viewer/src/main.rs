@@ -1428,12 +1428,38 @@ fn load(
                 );
             }
             // D331: the Story view's planet world, pasted onto the Pod's Earth.
+            let mut story_settings = None;
             if let (Some(story), Some(globe)) = (level.story_world.take(), v.level.pod) {
                 match story.and_then(|s| story_world::merge(&mut level.scene, s, globe)) {
-                    Ok(m) => println!(
-                        "Story world: {} items ({} meshes) of the default group's planet decorations pasted onto Thing {globe} (its Earth is Thing {}), shown while the Story search is up; by (Thing, mesh): {:?}",
-                        m.items, m.meshes, m.story_earth, m.by_thing
-                    ),
+                    Ok(m) => {
+                        println!(
+                            "Story world: {} items ({} meshes) of the default group's planet decorations pasted onto Thing {globe} (its Earth is Thing {}), shown while the Story search is up; by (Thing, mesh): {:?}; D336: {} backdrop items in place of the Pod's, its lighting {}, its world factors {:?}",
+                            m.items,
+                            m.meshes,
+                            m.story_earth,
+                            m.by_thing,
+                            m.backdrop_items,
+                            if m.settings.is_some() { "read" } else { "not read" },
+                            m.world_lighting
+                        );
+                        // D336 (0xda074): the decorations level's PWorld factors become
+                        // the Pod world's: its backdrop preset under them (D332, D333, D335).
+                        let [lighting, _, fog, fog_tint, darkness] =
+                            m.world_lighting.unwrap_or_default();
+                        let palette = match &level.fog_palettes {
+                            Ok(p) => p.for_level(level.pod_level).to_vec(),
+                            Err(_) => Vec::new(),
+                        };
+                        story_settings = m.settings.map(|s| {
+                            let (s, _) = lbp_preview::level_scene::LevelSettings::at_lighting(
+                                &s,
+                                &[],
+                                lighting,
+                                darkness,
+                            );
+                            s.with_fog_tint(fog_tint, &palette, true).with_fog(fog)
+                        });
+                    }
                     Err(e) => println!("Story world: not pasted ({e})"),
                 }
             }
@@ -1622,6 +1648,21 @@ fn load(
                     // D280: in the shared frame a display unit of the shell is the
                     // planets level's (the shell's own scale times the root's).
                     shell_light.display_scale = planets_light.display_scale;
+                }
+                // D336: the Story's lighting, built as the Pod's: the planets in their
+                // frame, the shell with its own direction (INFERRED, as P2r).
+                if let (Some(s), Some((centre, scale))) = (story_settings, light_frame) {
+                    let mut planets = lighting::PreviewLight::from_settings(&s, centre, scale);
+                    planets.own_fog = true;
+                    let shell = lighting::PreviewLight {
+                        toward_light: shell_light.toward_light,
+                        display_scale: shell_light.display_scale,
+                        ..planets.clone()
+                    };
+                    commands.insert_resource(story_world::StoryLight {
+                        pod: (v.lighting.light.clone(), shell_light.clone()),
+                        story: (planets, shell),
+                    });
                 }
                 v.lighting.shell = Some((first, shell_light));
                 for (i, (entity, ..)) in v.scene[first..].iter().enumerate() {
@@ -2547,6 +2588,9 @@ struct LevelPlan {
     /// D276: per entry of `placed`, whether the item is spawned hidden: the other mesh
     /// of a pair the level's scripts swap (`SceneItem::alternate`).
     hidden: Vec<bool>,
+    /// D336: per entry of `placed`, for an item of the backdrop Thing, whether it is the
+    /// Story's pasted backdrop (`SceneItem::alternate`) rather than the level's own.
+    backdrop: Vec<Option<bool>>,
     lines: Vec<String>,
     home: Orbit,
     /// Level units to display units (centre and unit-size scale).
@@ -2620,12 +2664,17 @@ fn plan_level(
         .collect();
     let (placed, home, display, normalize) = place_items(scene, &buckets, focus, pod)?;
     // The items `place_items` placed, in its order: those whose mesh has display buckets.
-    let (things, hidden): (Vec<_>, Vec<_>) = scene
-        .items
-        .iter()
-        .filter(|i| buckets.get(i.mesh).is_some_and(Result::is_ok))
-        .map(|i| (thing_item(scene, i), i.alternate))
-        .unzip();
+    let shown = || {
+        scene
+            .items
+            .iter()
+            .filter(|i| buckets.get(i.mesh).is_some_and(Result::is_ok))
+    };
+    let (things, hidden): (Vec<_>, Vec<_>) =
+        shown().map(|i| (thing_item(scene, i), i.alternate)).unzip();
+    let backdrop = shown()
+        .map(|i| (Some(i.thing) == scene.counts.backdrop.thing).then_some(i.alternate))
+        .collect();
     let mut lines = scene.counts.lines();
     lines.extend(display);
     let light = level_light(scene, &buckets);
@@ -2635,6 +2684,7 @@ fn plan_level(
         placed,
         things,
         hidden,
+        backdrop,
         lines,
         home,
         normalize,
@@ -3570,6 +3620,7 @@ fn spawn_level(
     for (n, (mesh_index, transform)) in plan.placed.into_iter().enumerate() {
         let item = plan.things.get(n).copied().flatten();
         let hidden = plan.hidden.get(n).copied().unwrap_or(false);
+        let backdrop = plan.backdrop.get(n).copied().flatten();
         for (mesh, material, image, guid) in &uploaded[mesh_index] {
             let entity = commands
                 .spawn((
@@ -3581,6 +3632,11 @@ fn spawn_level(
             if hidden {
                 // D276: the other mesh of a swapped pair waits for its script.
                 commands.entity(entity).insert(Visibility::Hidden);
+            }
+            if let Some(pasted) = backdrop.filter(|_| follow) {
+                commands
+                    .entity(entity)
+                    .insert(story_world::Backdrop { pasted });
             }
             if let (Some(things), Some(item)) = (things.as_mut(), item) {
                 commands.entity(entity).insert(thing_view::LevelThing {
@@ -4123,7 +4179,7 @@ fn apply_lighting(
             l.pod_t = pod_t;
             l.sun_point = planets_sun_point(&l, world_thing);
             l.shadows &= !no_shadows;
-            l.pod_fog = pod_fog;
+            l.pod_fog = pod_fog && !l.own_fog;
             l
         } else {
             v.lighting.light.clone()
@@ -4135,7 +4191,7 @@ fn apply_lighting(
             l.pod_t = pod_t;
             // The Pod shell draws with fragment variant 8: no shadow (CONFIRMED).
             l.shadows = false;
-            l.pod_fog = pod_fog;
+            l.pod_fog = pod_fog && !l.own_fog;
             l
         } else {
             l.clone()

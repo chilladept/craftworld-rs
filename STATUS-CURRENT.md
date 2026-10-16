@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D331
+# Current state (overwrite each milestone) — after D336
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -11,17 +11,17 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D331 Story turns Earth to The Cosmos (2026-10-16)
-- Part 82 (`docs/level-scripts/part-82.md`): while Story is up the viewer pastes the default
-  group's planet decorations level (The Cosmos, group (4, 27)) onto the Pod's Earth and turns
-  Earth to the group's slot `location` x 1750 (FOUND); the frame matches the game's layout.
-  PMaterialOverride is applied in level scenes (region gmat swaps).
-- FOUND: Story never zooms (`GetWantZoom__` 0x6057bc is set only by group searches for SlotID
-  types 3, 4, 8, 9); the camera stays on view 6.
-- Next: the Story backdrop (plan 00019c73, dark space); the copper continents (gmat 108277,
-  dark red); the group's badge card and bubble.
+## Latest: D336 the Story backdrop and its lighting (2026-10-16)
+- Part 83 (`docs/level-scripts/part-83.md`): while Story is up the viewer swaps the Pod's
+  backdrop for The Cosmos's own (0xdb2c4, FOUND) and lights the Pod world with that
+  backdrop plan's preset under The Cosmos's PWorld factors (0xda074, FOUND). With
+  `--lbp-lighting` the room fades to dark with coloured dots as in the game.
+- FOUND: gmat 108277 (copper continents) is `proc_victoria_jelly_glassy`, the glass program
+  family (x6 specular/rim/reflection after the sqrt); the viewer's glass route is
+  `window_glassy` only.
+- Next: the copper continents on the glass route; the group's badge card and bubble.
+- D331 (part 82): Story turns Earth to The Cosmos; Story never zooms (view 6).
 - D330 (part 81): the Story title's speech bubble.
-- D329 (part 80): choosing is always on; the viewer draws the Story frame.
 
 ## Measured counts (distinct catalog GUID; Complete = manual, all textures + geometry)
 - Mesh census 01.33 (4,261 GUIDs, after D188-D190): 4,259 viewable, 4,239 all-diffuse by

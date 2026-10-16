@@ -12,6 +12,11 @@
 //! decorations level's Earth model onto the Pod's, and is kept as an alternate item (out
 //! of the scene bounds, spawned hidden). While the Story search is up
 //! ([`story_open`]) those items are shown and the Pod's own Earth and Moon are hidden.
+//!
+//! D336 (docs/level-scripts/part-83.md): the swap also moves the decorations level's
+//! backdrop Thing into the Pod world in place of the Pod's (0xdb2c4) and copies its PWorld
+//! lighting factors (0xda074), so the Pod world is lit by that backdrop's settings
+//! (0xd9990). The viewer pastes those backdrop items unmoved and swaps the lights.
 use bevy::prelude::*;
 use lbp_preview::level_scene::{self, MeshSource, ScenePayload};
 
@@ -30,6 +35,15 @@ pub struct Merged {
     pub meshes: usize,
     /// Pasted items by the decorations level's Thing and mesh label.
     pub by_thing: std::collections::BTreeMap<(usize, String), usize>,
+    /// D336: the decorations level's backdrop items pasted in place of the Pod's backdrop
+    /// (none when either level has no backdrop Thing).
+    pub backdrop_items: usize,
+    /// D336: the lighting of the decorations level's backdrop plan (its preset 0), which
+    /// becomes the Pod world's lighting while Story is up.
+    pub settings: Option<level_scene::LevelSettings>,
+    /// D336: the decorations level's PWorld lighting factors (0xda074 copies them into the
+    /// Pod world): `lighting`, `colourCorrection`, `fog`, `fogTint`, `darkness`.
+    pub world_lighting: Option<[f32; 5]>,
 }
 
 /// The first model item of `thing` drawing [`EARTH_MESH`].
@@ -89,6 +103,20 @@ pub fn merge(scene: &mut LevelScene, story: LevelScene, globe: usize) -> Result<
         })
         .cloned()
         .collect();
+    // D336: the backdrop moves into the Pod world unmoved (0xdb2c4 re-homes the Thing
+    // and its plan), so its items keep their level matrices.
+    let pod_backdrop = scene.counts.backdrop.thing;
+    let backdrop_kept: Vec<_> = match (backdrop, pod_backdrop) {
+        (Some(b), Some(_)) => story
+            .items
+            .iter()
+            .filter(|i| i.thing == b && !i.alternate)
+            .cloned()
+            .collect(),
+        _ => Vec::new(),
+    };
+    let settings = story.backdrop_presets.first().copied().or(story.settings);
+    let world_lighting = story.world_lighting;
     let mut remap = std::collections::HashMap::new();
     let labels: Vec<String> = story.meshes.iter().map(|m| m.source.label()).collect();
     let mut meshes: Vec<_> = story.meshes.into_iter().map(Some).collect();
@@ -113,12 +141,54 @@ pub fn merge(scene: &mut LevelScene, story: LevelScene, globe: usize) -> Result<
         scene.items.push(item);
         items += 1;
     }
+    let mut backdrop_items = 0;
+    for mut item in backdrop_kept {
+        let next = scene.meshes.len();
+        let index = *remap.entry(item.mesh).or_insert_with(|| {
+            scene
+                .meshes
+                .push(meshes[item.mesh].take().expect("each mesh moved once"));
+            next
+        });
+        item.mesh = index;
+        item.thing = pod_backdrop.expect("checked above");
+        item.uid = None;
+        item.alternate = true;
+        scene.items.push(item);
+        backdrop_items += 1;
+    }
     Ok(Merged {
         story_earth,
         items,
         meshes: remap.len(),
         by_thing,
+        backdrop_items,
+        settings,
+        world_lighting,
     })
+}
+
+/// D336: a draw entity of the backdrop Thing: the Pod world's own backdrop, or the
+/// decorations level's pasted in its place (shown while the Story search is up).
+#[derive(Component, Debug, Clone, Copy)]
+pub struct Backdrop {
+    pub pasted: bool,
+}
+
+/// D336: the Pod's lights (planets, shell) and the Story's, swapped while Story is up.
+#[derive(Resource, Debug, Clone)]
+pub struct StoryLight {
+    pub pod: (crate::lighting::PreviewLight, crate::lighting::PreviewLight),
+    pub story: (crate::lighting::PreviewLight, crate::lighting::PreviewLight),
+}
+
+/// D336: the visibility of a backdrop entity: the pasted one while Story is up.
+pub fn backdrop_wanted(backdrop: Backdrop, open: bool) -> Visibility {
+    if backdrop.pasted == open {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
+    }
 }
 
 /// The Story search is up ([`lbp_runtime::LevelWorld::story_open`]).
@@ -167,5 +237,15 @@ mod tests {
         assert_eq!(wanted(&item(1, false), 1, false), shown);
         assert_eq!(wanted(&item(4, false), 1, false), shown);
         assert_eq!(wanted(&item(7, false), 1, true), None);
+    }
+
+    #[test]
+    fn d336_story_swaps_the_pods_backdrop_for_the_pasted_one() {
+        let pod = Backdrop { pasted: false };
+        let story = Backdrop { pasted: true };
+        assert_eq!(backdrop_wanted(pod, false), Visibility::Inherited);
+        assert_eq!(backdrop_wanted(story, false), Visibility::Hidden);
+        assert_eq!(backdrop_wanted(pod, true), Visibility::Hidden);
+        assert_eq!(backdrop_wanted(story, true), Visibility::Inherited);
     }
 }
