@@ -1428,7 +1428,7 @@ fn load(
             if let Some(things) = things {
                 commands.insert_resource(things);
             }
-            if v.level.pod.is_none() && std::env::var_os("DBG_NO_WATER").is_none() {
+            if v.level.pod.is_none() {
                 println!(
                     "{}",
                     spawn_water(
@@ -4395,9 +4395,6 @@ fn capture(
     mut v: ResMut<Viewer>,
     time: Res<Time>,
     hold: Option<Res<CaptureHold>>,
-    dbg_cam: Query<&GlobalTransform, With<Camera3d>>,
-    dbg_disp: Option<Res<sackboy_play::LevelDisplay>>,
-    dbg_water: Query<(&GlobalTransform, &Visibility), With<water::WaterBody>>,
 ) {
     if v.job.is_none() && !v.requested {
         v.ready_frames += 1;
@@ -4405,17 +4402,6 @@ fn capture(
     let held = hold.is_some_and(|h| h.0);
     if v.ready_frames > 120 && time.elapsed_secs() > 10. && !held {
         if let Some(path) = v.capture.take() {
-            // DBG-D334D
-            if let Some(d) = dbg_disp.as_ref() {
-                let inv = d.0.inverse();
-                for c in &dbg_cam {
-                    println!("DBG camera display {:?} level {:?} fwd {:?}", c.translation(), inv.transform_point3(c.translation()), c.forward());
-                }
-                for (w, vis) in &dbg_water {
-                    let (sc, _, tr) = w.to_scale_rotation_translation();
-                    println!("DBG water {:?} centre level {:?} scale level {:?}", vis, inv.transform_point3(tr), sc / d.0.x_axis.x);
-                }
-            }
             commands
                 .spawn(Screenshot::primary_window())
                 .observe(save_to_disk(path))

@@ -791,6 +791,7 @@ fn toward_light_at(p: vec3<f32>) -> vec3<f32> {
 // D292: Bevy's alpha-mode bits of StandardMaterial flags (pbr_types.wgsl, pinned 0.19.1).
 const ALPHA_MODE_BITS: u32 = 7u << 29u;
 const ALPHA_MODE_OPAQUE: u32 = 0u;
+const ALPHA_MODE_BLEND: u32 = 2u << 29u;
 // D189 graph texture k at uv with explicit gradients (non-uniform control flow).
 fn graph_texture(k: u32, uv: vec2<f32>, gx: vec2<f32>, gy: vec2<f32>) -> vec4<f32> {
     switch k {
@@ -1272,6 +1273,11 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool)
     // Blended draws (decals) keep alpha 1, the glass its own below.
     if dissolve_on && (pbr.material.flags & ALPHA_MODE_BITS) == ALPHA_MODE_OPAQUE {
         alpha = dissolve_keep * glow_alpha;
+    }
+    // D334: a blended draw writes its material's alpha (the water body's translucency);
+    // the texture's alpha stays out (decals cut by their alpha test, base alpha 1).
+    if (pbr.material.flags & ALPHA_MODE_BITS) == ALPHA_MODE_BLEND {
+        alpha = pbr.material.base_color.a;
     }
 #ifdef GLASS_DUAL_SOURCE
     var cover = vec3<f32>(1.0);
