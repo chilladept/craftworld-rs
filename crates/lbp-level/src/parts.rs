@@ -336,6 +336,31 @@ pub struct PartData {
     /// PCheckpoint as stored, the spawn counts (D307: the checkpoint's light).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub checkpoint: Option<Checkpoint>,
+    /// PMaterialOverride as stored (D331, head >= 0x360): per mesh region, the material
+    /// drawn instead of the mesh's own. Older heads are read through and not kept.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub material_override: Option<MaterialOverride>,
+}
+
+/// PMaterialOverride as stored (D331): the region overrides in order and the mesh the
+/// overrides were authored against.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct MaterialOverride {
+    pub regions: Vec<RegionOverride>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mesh: Option<Descriptor>,
+}
+
+/// RegionOverride as stored (D331): the mesh primitive region it applies to, the
+/// material plan it came from, the gmat drawn on that region and its UV scale.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct RegionOverride {
+    pub region: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub material_plan: Option<Descriptor>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub material: Option<Descriptor>,
+    pub uv_scale: [f32; 3],
 }
 
 /// PCheckpoint as stored, the fields kept (D307): the spawns left, the most it holds and
@@ -1420,13 +1445,21 @@ fn part_body(
         }
         "MATERIAL_OVERRIDE" => {
             let n = r.count(4)?;
+            let mut regions = Vec::with_capacity(n);
             for _ in 0..n {
-                r.i32()?;
-                r.resource(true)?;
-                r.resource(false)?;
-                r.v3()?;
+                let region = r.i32()?;
+                let material_plan = r.resource(true)?;
+                let material = r.resource(false)?;
+                let uv_scale = r.v3()?;
+                regions.push(RegionOverride {
+                    region,
+                    material_plan,
+                    material,
+                    uv_scale,
+                });
             }
-            r.resource(false)?;
+            let mesh = r.resource(false)?;
+            things.list[me].data.material_override = Some(MaterialOverride { regions, mesh });
         }
         "SWITCH_INPUT" => {
             thing_ref(r, things)?;

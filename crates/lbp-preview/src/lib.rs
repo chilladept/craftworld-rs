@@ -185,10 +185,54 @@ pub fn load_mesh_groups_with_options(
     control: &LoadControl,
     options: PreviewOptions,
 ) -> Result<GroupedMesh, String> {
+    load_mesh_groups_with_overrides(source, catalog, key, control, options, &[])
+}
+
+/// D331: one PMaterialOverride region swap: mesh primitives whose `region` equals
+/// `region` take this gmat descriptor (GUID and/or lowercase SHA-1 hex) instead of their
+/// own. The override's uvScale is not applied (INFERRED/left out: no mesh-level UV-scale
+/// input exists in the material loader).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct RegionMaterial {
+    pub region: u32,
+    pub guid: Option<u32>,
+    pub hash: Option<String>,
+}
+
+/// D331: replaces the material descriptor of every primitive whose region is listed
+/// (first listed entry wins); returns the number of primitives changed.
+pub fn apply_region_materials(
+    primitives: &mut [lbp_mesh::Primitive],
+    overrides: &[RegionMaterial],
+) -> usize {
+    let mut changed = 0;
+    for p in primitives {
+        if let Some(o) = overrides.iter().find(|o| o.region == p.region) {
+            p.material_flags = 0;
+            p.material_kind = u8::from(o.guid.is_some()) * 2 + u8::from(o.hash.is_some());
+            p.material_guid = o.guid;
+            p.material_hash = o.hash.clone();
+            changed += 1;
+        }
+    }
+    changed
+}
+
+/// D331: [`load_mesh_groups_with_options`] with the primitives of the listed regions
+/// drawn with the override's gmat (see [`RegionMaterial`]).
+pub fn load_mesh_groups_with_overrides(
+    source: &AttachedSource,
+    catalog: &Catalog,
+    key: &LocationKey,
+    control: &LoadControl,
+    options: PreviewOptions,
+    overrides: &[RegionMaterial],
+) -> Result<GroupedMesh, String> {
     if let Some(color) = options.instance_color {
         color.validate()?;
     }
-    let (geometry, data) = read_mesh(source, key, control)?;
+    let (mut geometry, data) = read_mesh(source, key, control)?;
+    apply_region_materials(&mut geometry.metadata.primitives, overrides);
     let mut cache: std::collections::HashMap<
         LocationKey,
         Result<std::sync::Arc<MaterialAsset>, String>,

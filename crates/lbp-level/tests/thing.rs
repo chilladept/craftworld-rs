@@ -828,3 +828,39 @@ fn d333_fog_pulls_near_to_0_and_far_to_1000() {
     assert_eq!(at(-0.5), (6000., 61000.));
     assert_eq!(at(-3.), (8000., 81000.));
 }
+
+/// D331: a PMaterialOverride keeps every region (region, plan, gmat, uvScale) and the
+/// mesh it was authored against.
+#[test]
+fn d331_material_override_keeps_the_regions() {
+    let mut w = W::new(1);
+    w.u32(1).thing_header(1, 0, 0, 0, 0x3f, bit(0x23));
+    w.u32(9).u32(2); // part reference, two regions
+    w.u32((-468_172_612i32) as u32); // region
+    w.u8(2).u32(0x19af6); // material plan (descriptor, no flags word)
+    w.u32(0).u8(2).u32(0x19af0); // gmat
+    w.f32(10.).f32(10.).f32(0.);
+    w.u32(7).u8(0).u32(0).u8(0).f32(1.).f32(1.).f32(0.); // null plan and gmat
+    w.u32(0).u8(2).u32(0x27bd); // mesh
+    w.u32(0).u32(0).u32(0).u32(0).u32(0).u8(0).u8(0); // RLevel tail
+    let r = run(&w, 0x3e5);
+    assert_eq!(r.stop, None);
+    let o = r.things[0].data.material_override.as_ref().unwrap();
+    assert_eq!(o.mesh.and_then(|d| d.guid), Some(0x27bd));
+    assert_eq!(o.regions.len(), 2);
+    let a = &o.regions[0];
+    assert_eq!(
+        (
+            a.region,
+            a.material_plan.and_then(|d| d.guid),
+            a.material.and_then(|d| d.guid),
+            a.uv_scale
+        ),
+        (-468_172_612, Some(0x19af6), Some(0x19af0), [10., 10., 0.])
+    );
+    let b = &o.regions[1];
+    assert_eq!(
+        (b.region, b.material_plan, b.material, b.uv_scale),
+        (7, None, None, [1., 1., 0.])
+    );
+}
