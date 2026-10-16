@@ -21,6 +21,13 @@
 //! 0 ([`clear_scene_alpha`]), every other level by the scene's alpha, a no-op where that is
 //! 1. `--no-final-pass` turns it off.
 //!
+//! D322 (part 73): in the Pod the scripts' main menu is drawn as the game draws it, into the
+//! scene after the copy back and before this pass (FOUND, frames 8980 / 9601): its draws blend
+//! premultiplied colour over the scene in encoded values (One, OneMinusSrcAlpha) and add their
+//! alpha (One, One), so the pass mixes back to the menu by the menu's own alpha. The viewer
+//! rasterizes the menu into a layer ([`MenuLayer`], `pod_menu.rs`) that the final entries
+//! compose under the shader define `MENU_LAYER`; without the layer the entries are unchanged.
+//!
 //! One full-screen chain on the main 3D camera ([`EdgeGlow`]), after the main passes and
 //! before egui/UI (`Core3dSystems::PostProcess`). The glow runs while a `ViewerMaterial`
 //! dissolve is on and (D303, part 54) with the final pass on every frame, as the game's chain
@@ -33,6 +40,8 @@ use bevy::{
     prelude::*,
     render::{
         extract_component::{ExtractComponent, ExtractComponentPlugin},
+        extract_resource::{ExtractResource, ExtractResourcePlugin},
+        render_asset::RenderAssets,
         render_resource::{
             binding_types::{sampler, texture_2d},
             AddressMode, BindGroupEntries, BindGroupLayoutDescriptor, BindGroupLayoutEntries,
@@ -44,7 +53,7 @@ use bevy::{
         },
         renderer::{RenderContext, RenderDevice, ViewQuery},
         sync_component::SyncComponent,
-        texture::{CachedTexture, TextureCache},
+        texture::{CachedTexture, GpuImage, TextureCache},
         view::ViewTarget,
         Render, RenderApp, RenderStartup, RenderSystems,
     },
@@ -92,6 +101,28 @@ pub fn disable() {
 static FINAL_PASS: AtomicBool = AtomicBool::new(false);
 pub fn enable_final_pass() {
     FINAL_PASS.store(true, Ordering::Relaxed);
+}
+/// Whether the final pass runs (D322: the menu is then composed in it).
+pub fn final_pass_on() -> bool {
+    FINAL_PASS.load(Ordering::Relaxed)
+}
+
+/// D322: the menu layer the final pass composes (FOUND, frames 8980 / 9601: the menu is drawn
+/// into the scene after the copy back, before the pass): `colour` holds the menu's
+/// premultiplied colour in encoded values and 1 - its transmittance (`Rgba8Unorm`, the size
+/// of the window), `alpha` the sum of its draws' alphas (`R8Unorm`, the game's alpha target).
+/// Composed only while `on`.
+#[derive(Resource, Clone, Default)]
+pub struct MenuLayer {
+    pub colour: Handle<Image>,
+    pub alpha: Handle<Image>,
+    pub on: bool,
+}
+impl ExtractResource for MenuLayer {
+    type Source = Self;
+    fn extract_resource(source: &Self) -> Self {
+        source.clone()
+    }
 }
 /// D300: the scene's alpha as the final pass sees it in the Pod's frames: 0 on every pixel
 /// (the anti-aliasing job's copy back, FOUND frames 5247 / 14790). Set for the Pod picture
@@ -144,8 +175,11 @@ impl Plugin for GlowPostPlugin {
                 Shader::from_wgsl(shader_source(), "d292-edge-glow.wgsl"),
             )
             .unwrap();
-        app.add_plugins(ExtractComponentPlugin::<EdgeGlow>::default())
-            .add_systems(PostUpdate, update_active);
+        app.add_plugins((
+            ExtractComponentPlugin::<EdgeGlow>::default(),
+            ExtractResourcePlugin::<MenuLayer>::default(),
+        ))
+        .add_systems(PostUpdate, update_active);
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;
         };
@@ -201,11 +235,12 @@ fn composite_entry(glow: bool, final_pass: bool) -> &'static str {
 pub(crate) struct GlowPipelines {
     /// One texture and the sampler (source and blur passes).
     single: BindGroupLayoutDescriptor,
-    /// The scene, the sampler and the blurred glow (the final add).
+    /// The scene, the sampler, the blurred glow (the final add) and D322's menu layer
+    /// (colour and alpha; the scene in their place when there is no layer, unread).
     composite: BindGroupLayoutDescriptor,
     sampler: Sampler,
     source: HashMap<TextureFormat, CachedRenderPipelineId>,
-    composite_ids: HashMap<(TextureFormat, &'static str, bool), CachedRenderPipelineId>,
+    composite_ids: HashMap<(TextureFormat, &'static str, bool, bool), CachedRenderPipelineId>,
     blur_h: CachedRenderPipelineId,
     blur_v: CachedRenderPipelineId,
     vertex: bevy::render::render_resource::VertexState,
@@ -228,6 +263,7 @@ fn descriptor(
     format: TextureFormat,
     srgb: bool,
     alpha_cleared: bool,
+    menu: bool,
 ) -> RenderPipelineDescriptor {
     let mut shader_defs = Vec::new();
     if srgb {
@@ -235,6 +271,9 @@ fn descriptor(
     }
     if alpha_cleared {
         shader_defs.push("SCENE_ALPHA_CLEARED".into());
+    }
+    if menu {
+        shader_defs.push("MENU_LAYER".into());
     }
     RenderPipelineDescriptor {
         label: Some(format!("d292_{entry}").into()),
@@ -278,6 +317,8 @@ fn init_pipelines(
                 texture_2d(TextureSampleType::Float { filterable: true }),
                 sampler(SamplerBindingType::Filtering),
                 texture_2d(TextureSampleType::Float { filterable: true }),
+                texture_2d(TextureSampleType::Float { filterable: true }),
+                texture_2d(TextureSampleType::Float { filterable: true }),
             ),
         ),
     );
@@ -297,12 +338,14 @@ fn init_pipelines(
         GLOW_FORMAT,
         false,
         false,
+        false,
     ));
     let blur_v = cache.queue_render_pipeline(descriptor(
         &vertex,
         &single,
         "glow_blur_v",
         GLOW_FORMAT,
+        false,
         false,
         false,
     ));
@@ -327,6 +370,8 @@ pub(crate) struct GlowView {
     quarter_v: CachedTexture,
     source: CachedRenderPipelineId,
     composite: CachedRenderPipelineId,
+    /// D322: the same with the menu layer composed.
+    composite_menu: CachedRenderPipelineId,
     /// D294: whether the glow's three passes run (else only the final pass, glow 0).
     glow: bool,
 }
@@ -359,23 +404,27 @@ fn prepare_glow(
                 GLOW_FORMAT,
                 srgb,
                 false,
+                false,
             ))
         });
         let entry = composite_entry(marker.active, marker.final_pass);
         let cleared = marker.alpha_cleared;
-        let composite = *p
-            .composite_ids
-            .entry((format, entry, cleared))
-            .or_insert_with(|| {
-                cache.queue_render_pipeline(descriptor(
-                    &p.vertex,
-                    &p.composite,
-                    entry,
-                    format,
-                    srgb,
-                    cleared,
-                ))
-            });
+        let mut composite = |menu: bool| {
+            *p.composite_ids
+                .entry((format, entry, cleared, menu))
+                .or_insert_with(|| {
+                    cache.queue_render_pipeline(descriptor(
+                        &p.vertex,
+                        &p.composite,
+                        entry,
+                        format,
+                        srgb,
+                        cleared,
+                        menu,
+                    ))
+                })
+        };
+        let (composite, composite_menu) = (composite(false), composite(true));
         let size = target.main_texture().size();
         let mut texture = |label: &'static str, div: u32| {
             textures.get(
@@ -402,6 +451,7 @@ fn prepare_glow(
             quarter_v: texture("d292_glow_quarter_v", 4),
             source,
             composite,
+            composite_menu,
             glow: marker.active,
         };
         commands.entity(entity).insert(view);
@@ -413,18 +463,31 @@ fn prepare_glow(
 /// runs (the final pass, glow 0; the scene is bound in the glow's slot, unread).
 /// D302: under `--mlaa` the add pass reads the anti-aliased scene (`mlaa_post.rs`), the
 /// source pass the scene before it, as the game's (part 53).
+/// D322: with a [`MenuLayer`] that is on and uploaded, the add pass composes the menu
+/// (`MENU_LAYER`; the final entries read it, `pod_menu` turns it on only with the final pass).
 pub(crate) fn edge_glow(
     view: ViewQuery<(&ViewTarget, &GlowView, Option<&crate::mlaa_post::MlaaView>), With<EdgeGlow>>,
     pipelines: Res<GlowPipelines>,
     cache: Res<PipelineCache>,
+    (layer, gpu_images): (Option<Res<MenuLayer>>, Res<RenderAssets<GpuImage>>),
     mut ctx: RenderContext,
 ) {
     let (target, glow, mlaa) = view.into_inner();
+    let menu = layer
+        .as_deref()
+        .filter(|l| l.on)
+        .and_then(|l| Some((gpu_images.get(&l.colour)?, gpu_images.get(&l.alpha)?)))
+        .filter(|_| cache.get_render_pipeline(glow.composite_menu).is_some());
+    let composite_id = if menu.is_some() {
+        glow.composite_menu
+    } else {
+        glow.composite
+    };
     let (Some(source), Some(blur_h), Some(blur_v), Some(composite)) = (
         cache.get_render_pipeline(glow.source),
         cache.get_render_pipeline(pipelines.blur_h),
         cache.get_render_pipeline(pipelines.blur_v),
-        cache.get_render_pipeline(glow.composite),
+        cache.get_render_pipeline(composite_id),
     ) else {
         return;
     };
@@ -447,6 +510,10 @@ pub(crate) fn edge_glow(
     } else {
         post.source
     };
+    let (menu_colour, menu_alpha) = match menu {
+        Some((c, a)) => (&c.texture_view, &a.texture_view),
+        None => (post.source, post.source),
+    };
     let steps = [
         (source, bind_single(post.source), &glow.half.default_view),
         (
@@ -464,7 +531,13 @@ pub(crate) fn edge_glow(
             device.create_bind_group(
                 "d292_glow_composite",
                 &cache.get_bind_group_layout(&pipelines.composite),
-                &BindGroupEntries::sequential((scene, &pipelines.sampler, glow_view)),
+                &BindGroupEntries::sequential((
+                    scene,
+                    &pipelines.sampler,
+                    glow_view,
+                    menu_colour,
+                    menu_alpha,
+                )),
             ),
             post.destination,
         ),
@@ -517,6 +590,11 @@ const BODY: &str = r#"
 @group(0) @binding(0) var source_texture: texture_2d<f32>;
 @group(0) @binding(1) var source_sampler: sampler;
 @group(0) @binding(2) var glow_texture: texture_2d<f32>;
+#ifdef MENU_LAYER
+// D322: the menu layer (premultiplied encoded colour, 1 - transmittance) and its summed alpha.
+@group(0) @binding(3) var menu_texture: texture_2d<f32>;
+@group(0) @binding(4) var menu_alpha: texture_2d<f32>;
+#endif
 struct FullscreenVertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) uv: vec2<f32>,
@@ -621,20 +699,53 @@ fn final_mix(scene: vec4<f32>, c: vec3<f32>) -> vec4<f32> {
     let e = mix(c, to_encoded(scene.rgb), a);
     return vec4<f32>(from_encoded(min(e, vec3<f32>(1.0))), 1.0);
 }
+#ifdef MENU_LAYER
+// D322: the scene with the menu drawn into it as the game draws it after the copy back
+// (FOUND, frames 8980 / 9601): premultiplied colour over the scene in encoded values
+// (One, OneMinusSrcAlpha), xyz; the menu's alpha added to the scene's (One, One), w.
+fn with_menu(scene: vec4<f32>, position: vec2<f32>) -> vec4<f32> {
+    let p = min(vec2<i32>(floor(position)), vec2<i32>(textureDimensions(menu_texture)) - vec2<i32>(1));
+    let m = textureLoad(menu_texture, p, 0);
+    let add = textureLoad(menu_alpha, p, 0).r;
+#ifdef SCENE_ALPHA_CLEARED
+    let a = clamp(add, 0.0, 1.0);
+#else
+    let a = clamp(scene.a + add, 0.0, 1.0);
+#endif
+    return vec4<f32>(m.rgb + (1.0 - m.a) * to_encoded(scene.rgb), a);
+}
+// The pass's last step on the scene with the menu (encoded), saturated at the end.
+fn final_mix_menu(e: vec4<f32>, c: vec3<f32>) -> vec4<f32> {
+    let mixed = mix(c, e.rgb, e.a);
+    return vec4<f32>(from_encoded(min(mixed, vec3<f32>(1.0))), 1.0);
+}
+#endif
 // c = (scene x FINAL_SCALE + glow) x vignette, then the mix back by the scene's alpha.
 @fragment
 fn final_composite(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let scene = textureLoad(source_texture, vec2<i32>(floor(in.position.xy)), 0);
     let glow = textureSampleLevel(glow_texture, source_sampler, in.uv, 0.0).rgb;
+#ifdef MENU_LAYER
+    let e = with_menu(scene, in.position.xy);
+    let c = (e.rgb * FINAL_SCALE + glow) * vignette(in.position.xy);
+    return final_mix_menu(e, c);
+#else
     let c = (to_encoded(scene.rgb) * FINAL_SCALE + glow) * vignette(in.position.xy);
     return final_mix(scene, c);
+#endif
 }
 // The same with no dissolve (the glow term 0).
 @fragment
 fn final_only(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let scene = textureLoad(source_texture, vec2<i32>(floor(in.position.xy)), 0);
+#ifdef MENU_LAYER
+    let e = with_menu(scene, in.position.xy);
+    let c = e.rgb * FINAL_SCALE * vignette(in.position.xy);
+    return final_mix_menu(e, c);
+#else
     let c = to_encoded(scene.rgb) * FINAL_SCALE * vignette(in.position.xy);
     return final_mix(scene, c);
+#endif
 }
 "#;
 
@@ -864,6 +975,9 @@ mod tests {
         preprocess_with(srgb, false)
     }
     fn preprocess_with(srgb: bool, cleared: bool) -> String {
+        preprocess_all(srgb, cleared, false)
+    }
+    fn preprocess_all(srgb: bool, cleared: bool, menu: bool) -> String {
         let mut active = vec![true];
         let mut body = String::new();
         for line in shader_source().lines() {
@@ -872,6 +986,7 @@ mod tests {
                 let on = match def.trim() {
                     "SRGB_TARGET" => srgb,
                     "SCENE_ALPHA_CLEARED" => cleared,
+                    "MENU_LAYER" => menu,
                     other => panic!("{other}"),
                 };
                 let parent = *active.last().unwrap();
@@ -1156,6 +1271,42 @@ mod tests {
                 for entry in ["glow_source", "final_composite", "final_only"] {
                     assert!(module.entry_points.iter().any(|e| e.name == entry));
                 }
+            }
+        }
+    }
+    /// D322: under `MENU_LAYER` the final entries compose the menu layer over the encoded
+    /// scene (premultiplied over), add its alpha to the scene's (0 in the Pod) and mix back
+    /// by that; without it the entries are D300's text. naga validates every combination.
+    #[test]
+    fn d322_menu_layer_shader_validates() {
+        for srgb in [true, false] {
+            for cleared in [false, true] {
+                let plain = preprocess_all(srgb, cleared, false);
+                assert!(!plain.contains("menu_texture") && !plain.contains("with_menu"));
+                assert_eq!(plain, preprocess_with(srgb, cleared));
+                let source = preprocess_all(srgb, cleared, true);
+                assert!(source.contains("@group(0) @binding(3) var menu_texture"));
+                assert!(source.contains("@group(0) @binding(4) var menu_alpha"));
+                assert!(source.contains("m.rgb + (1.0 - m.a) * to_encoded(scene.rgb)"));
+                assert_eq!(source.contains("let a = clamp(add, 0.0, 1.0);"), cleared);
+                assert_eq!(
+                    source.contains("let a = clamp(scene.a + add, 0.0, 1.0);"),
+                    !cleared
+                );
+                assert!(source.contains("let c = (e.rgb * FINAL_SCALE + glow) * vignette"));
+                assert!(source.contains("let mixed = mix(c, e.rgb, e.a);"));
+                // D292's own add does not read the layer.
+                let d292 = &source[source.find("fn glow_composite").unwrap()..];
+                let d292 = &d292[..d292.find("fn vignette").unwrap()];
+                assert!(!d292.contains("menu"));
+                let module = naga::front::wgsl::parse_str(&source)
+                    .unwrap_or_else(|e| panic!("{}", e.emit_to_string(&source)));
+                naga::valid::Validator::new(
+                    naga::valid::ValidationFlags::all(),
+                    naga::valid::Capabilities::all(),
+                )
+                .validate(&module)
+                .unwrap();
             }
         }
     }

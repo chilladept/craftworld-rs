@@ -4,6 +4,7 @@ mod dual;
 mod game_font;
 mod glow_post;
 mod gooey_ui;
+mod menu_layer;
 mod mlaa_post;
 mod pod_menu;
 mod popit_browser;

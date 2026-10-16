@@ -13,6 +13,7 @@
 //! [--qa-hide-ui] [--qa-capture local-analysis/NEW.png]`.
 use crate::game_font::GameFont;
 use crate::gooey_ui::{demo_capture, demo_capture_path, DemoCapture};
+use crate::menu_layer::{MenuCanvas, MenuImage, MenuPrim, MenuShape};
 use crate::ui_script::{run_script, DEFAULT_FUNCTION};
 use bevy::prelude::*;
 use lbp_ui_script::pod::{layout, PodMenu, ASPECT, GLOBE, MOON};
@@ -922,6 +923,8 @@ pub(crate) struct GameLabel {
     font: std::sync::Arc<GameFont>,
     units_per_font_pixel: f32,
     built: f32,
+    /// D322: the last raster as the menu layer's image.
+    layer_image: Option<MenuImage>,
 }
 
 /// A picture of the card (the player's picture, a pin), faded with the menu.
@@ -936,6 +939,11 @@ const FOCUS_COLOUR: [f32; 3] = [29. / 255., 220. / 255., 205. / 255.];
 /// covers 82 / 255 of the picture, its text about 0.62.
 const PILL_ALPHA: f32 = 82. / 255.;
 const LABEL_ALPHA: f32 = 0.62;
+/// D322 FOUND (frames 8980 / 9601, the text draws after the copy back): an unfocused pill's
+/// text is white at alpha 102 / 255 over the pill (the target's alpha 82 + 102 = 184 under
+/// the letters); the focused pill's text is opaque white. Used when the menu is drawn as
+/// the game draws it (the final pass on); [`LABEL_ALPHA`] stays the overlay's.
+const GAME_LABEL_ALPHA: f32 = 102. / 255.;
 /// Text size against the pill's height (INFERRED by eye from the game frame's letters).
 const LABEL_SIZE: f32 = 0.56;
 /// A game-font label is rasterized again when its size has changed by this share.
@@ -1040,6 +1048,7 @@ fn spawn_script_menu(
                                 font,
                                 units_per_font_pixel: units * font_scale,
                                 built: 0.,
+                                layer_image: None,
                             },
                         )],
                     ))
@@ -1179,13 +1188,91 @@ fn menu_to_screen(clip_from_world: Mat4, world_from_menu: Mat4, p: Vec2, size: V
     )
 }
 
+/// D322: the menu layer's state: the canvas, what was drawn on it last and the card's
+/// pictures as layer images (made once).
+#[derive(Default)]
+pub(crate) struct LayerState {
+    canvas: Option<MenuCanvas>,
+    last: Vec<MenuPrim>,
+    pictures: Option<(Option<MenuImage>, Vec<MenuImage>)>,
+}
+
+fn layer_texture(
+    width: u32,
+    height: u32,
+    format: bevy::render::render_resource::TextureFormat,
+    data: Vec<u8>,
+) -> Image {
+    Image::new(
+        bevy::render::render_resource::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        bevy::render::render_resource::TextureDimension::D2,
+        data,
+        format,
+        bevy::asset::RenderAssetUsages::default(),
+    )
+}
+
+/// D322: draws `prims` into the layer when they or the window size changed, uploads it
+/// and turns it on for the final pass.
+fn update_layer(
+    commands: &mut Commands,
+    layer: Option<Mut<crate::glow_post::MenuLayer>>,
+    state: &mut LayerState,
+    images: &mut Assets<Image>,
+    (width, height): (usize, usize),
+    prims: Vec<MenuPrim>,
+) {
+    use bevy::render::render_resource::TextureFormat;
+    let resized = state
+        .canvas
+        .as_ref()
+        .is_none_or(|c| (c.width, c.height) != (width, height));
+    if !resized && prims == state.last && layer.as_ref().is_some_and(|l| l.on) {
+        return;
+    }
+    if resized {
+        state.canvas = Some(MenuCanvas::new(width, height));
+    }
+    let canvas = state.canvas.as_mut().expect("made above");
+    canvas.clear();
+    for p in &prims {
+        canvas.draw(p);
+    }
+    state.last = prims;
+    let (colour, alpha) = canvas.bytes();
+    let (w, h) = (width as u32, height as u32);
+    match layer {
+        Some(mut l) if !resized => {
+            if let Some(mut image) = images.get_mut(&l.colour) {
+                image.data = Some(colour);
+            }
+            if let Some(mut image) = images.get_mut(&l.alpha) {
+                image.data = Some(alpha);
+            }
+            l.on = true;
+        }
+        _ => {
+            commands.insert_resource(crate::glow_post::MenuLayer {
+                colour: images.add(layer_texture(w, h, TextureFormat::Rgba8Unorm, colour)),
+                alpha: images.add(layer_texture(w, h, TextureFormat::R8Unorm, alpha)),
+                on: true,
+            });
+        }
+    }
+}
+
 /// D319: draws the scripts' main menu over the planets each frame, after the script camera
 /// is placed: every item at the place the menu's matrix, the level's display matrix and the
 /// camera give its centre, sized and turned by the same projection (the menu follows the
 /// planets world through the zoom), the pill colours of the game frame, faded in by the
 /// frame's transition. D321: text in the game's font and the card with the player's
 /// picture and pins where [`MenuAssets`] has them (else the OS sans serif in bold and flat
-/// PLACEHOLDER colours).
+/// PLACEHOLDER colours). D322: with the final pass the menu is drawn into the layer the
+/// pass composes (`menu_layer.rs`), as the game draws it (part 73).
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub(crate) fn paint_script_menu(
     mut commands: Commands,
@@ -1212,6 +1299,10 @@ pub(crate) fn paint_script_menu(
     mut pictures: Query<&mut ImageNode, (With<ScriptMenuImage>, Without<GameLabel>)>,
     (assets, mut images): (Option<Res<MenuAssets>>, ResMut<Assets<Image>>),
     mut built: Local<Option<usize>>,
+    (mut layer, mut layer_state): (
+        Option<ResMut<crate::glow_post::MenuLayer>>,
+        Local<LayerState>,
+    ),
 ) {
     let frame = menu.as_ref().and_then(|m| m.0.as_ref());
     let (Some(frame), Some(display), Ok((transform, projection)), Ok(window)) =
@@ -1219,6 +1310,9 @@ pub(crate) fn paint_script_menu(
     else {
         for (_, mut v) in &mut roots {
             *v = Visibility::Hidden;
+        }
+        if let Some(l) = layer.as_mut().filter(|l| l.on) {
+            l.on = false;
         }
         return;
     };
@@ -1238,11 +1332,32 @@ pub(crate) fn paint_script_menu(
         projection.get_clip_from_view() * transform.to_matrix().inverse() * display.0;
     let world_from_menu = frame.matrix;
     let fade = frame.fade;
+    // D322: with the final pass the menu is drawn as the game draws it, into a layer the pass
+    // composes (premultiplied over in encoded values, alpha added); the UI nodes then only
+    // place things (and draw the OS-font labels when the game's font is missing).
+    let layer_route = crate::glow_post::final_pass_on();
+    let scale = window.scale_factor();
+    let mut prims: Vec<Vec<MenuPrim>> = vec![Vec::new(); frame.placed.len()];
+    let mut placed_at: Vec<Option<(Vec2, f32)>> = vec![None; frame.placed.len()];
+    if layer_route && layer_state.pictures.is_none() {
+        let image = |p: &Picture| MenuImage::from_rgba(p.width, p.height, &p.rgba);
+        layer_state.pictures = Some((
+            assets.as_ref().and_then(|a| a.picture.as_ref()).map(image),
+            assets
+                .as_ref()
+                .map(|a| a.pins.iter().map(image).collect())
+                .unwrap_or_default(),
+        ));
+    }
     for (ScriptMenuPart(c), mut background) in &mut parts {
-        *background = BackgroundColor(rgba(*c, fade));
+        *background = if layer_route {
+            BackgroundColor(Color::NONE)
+        } else {
+            BackgroundColor(rgba(*c, fade))
+        };
     }
     for mut image in &mut pictures {
-        image.color = Color::srgba(1., 1., 1., fade);
+        image.color = Color::srgba(1., 1., 1., if layer_route { 0. } else { fade });
     }
     // Screen pixels a root-frame unit along each item's own x (for the game-font labels).
     let mut px_per_unit = vec![None; frame.placed.len()];
@@ -1271,21 +1386,96 @@ pub(crate) fn paint_script_menu(
         } else {
             0.
         };
-        ui.rotation = Rot2::radians(item.angle + turn + dx.y.atan2(dx.x));
-        *background = BackgroundColor(match &item.kind {
-            lbp_runtime::PlacedKind::Button { focused: true, .. } => rgba(FOCUS_COLOUR, fade),
+        let angle = item.angle + turn + dx.y.atan2(dx.x);
+        ui.rotation = Rot2::radians(angle);
+        // The fill in encoded values (the game's numbers) and its alpha.
+        let fill = match &item.kind {
+            lbp_runtime::PlacedKind::Button { focused: true, .. } => {
+                Some([FOCUS_COLOUR[0], FOCUS_COLOUR[1], FOCUS_COLOUR[2], fade])
+            }
             lbp_runtime::PlacedKind::Button { .. } => {
                 let c = frame.colour;
-                Color::srgba(c[0], c[1], c[2], PILL_ALPHA * fade)
+                Some([c[0], c[1], c[2], PILL_ALPHA * fade])
             }
-            lbp_runtime::PlacedKind::PlayerIcon => Color::srgba(
+            lbp_runtime::PlacedKind::PlayerIcon => Some([
                 CARD_FRAME[0],
                 CARD_FRAME[1],
                 CARD_FRAME[2],
                 CARD_FRAME[3] * fade,
-            ),
-            lbp_runtime::PlacedKind::Text { .. } => Color::NONE,
-        });
+            ]),
+            lbp_runtime::PlacedKind::Text { .. } => None,
+        };
+        *background = match fill {
+            Some(f) if !layer_route => BackgroundColor(Color::srgba(f[0], f[1], f[2], f[3])),
+            _ => BackgroundColor(Color::NONE),
+        };
+        if layer_route {
+            let centre = Vec2::new(at.x, at.y);
+            placed_at[*i] = Some((centre, angle));
+            let card = item.kind == lbp_runtime::PlacedKind::PlayerIcon;
+            let (w, h) = (w * scale, h * scale);
+            let shape = if card {
+                MenuShape::Rect
+            } else {
+                MenuShape::Capsule
+            };
+            let list = &mut prims[*i];
+            if let Some(colour) = fill {
+                list.push(MenuPrim {
+                    centre: centre * scale,
+                    size: Vec2::new(w, h),
+                    angle,
+                    shape,
+                    colour,
+                    image: None,
+                });
+            }
+            if card {
+                // The card's parts at the places the card's nodes give them (shares of the
+                // card; the pins square, a share of its width).
+                let rot = Vec2::from_angle(angle);
+                let at_local = |x: f32, y: f32| centre * scale + rot.rotate(Vec2::new(x, y));
+                let (pictures, pins) = layer_state
+                    .pictures
+                    .as_ref()
+                    .map(|(p, pins)| (p.clone(), pins.clone()))
+                    .unwrap_or_default();
+                let [left, top, pw, ph] = CARD_PICTURE_BOX;
+                let (colour, image) = match pictures {
+                    Some(img) => ([1., 1., 1., fade], Some(img)),
+                    None => (rgba_of(CARD_PICTURE, fade), None),
+                };
+                list.push(MenuPrim {
+                    centre: at_local(
+                        -w / 2. + (left + pw / 2.) / 100. * w,
+                        -h / 2. + (top + ph / 2.) / 100. * h,
+                    ),
+                    size: Vec2::new(pw / 100. * w, ph / 100. * h),
+                    angle,
+                    shape: MenuShape::Rect,
+                    colour,
+                    image,
+                });
+                for (n, x) in CARD_PIN_CENTRES.into_iter().enumerate() {
+                    let side = CARD_PIN_WIDTH / 100. * w;
+                    let (colour, image, shape) = match pins.get(n) {
+                        Some(img) => ([1., 1., 1., fade], Some(img.clone()), MenuShape::Rect),
+                        None => (rgba_of(CARD_ICONS[n], fade), None, MenuShape::Capsule),
+                    };
+                    list.push(MenuPrim {
+                        centre: at_local(
+                            -w / 2. + x / 100. * w,
+                            -h / 2. + CARD_PIN_DOWN / 100. * h,
+                        ),
+                        size: Vec2::splat(side),
+                        angle,
+                        shape,
+                        colour,
+                        image,
+                    });
+                }
+            }
+        }
         for (ScriptMenuLabel(j), mut font, mut colour) in &mut labels {
             if j != i {
                 continue;
@@ -1309,34 +1499,78 @@ pub(crate) fn paint_script_menu(
         let Some(item) = frame.placed.get(label.item) else {
             continue;
         };
-        let Some(scale) = px_per_unit.get(label.item).copied().flatten() else {
+        let Some(px_scale) = px_per_unit.get(label.item).copied().flatten() else {
             continue;
         };
         let focused = matches!(
             item.kind,
             lbp_runtime::PlacedKind::Button { focused: true, .. }
         );
-        let k = scale
+        let k = px_scale
             * label.units_per_font_pixel
             * if focused {
                 lbp_runtime::FOCUS_SCALE
             } else {
                 1.
-            };
+            }
+            * if layer_route { scale } else { 1. };
         if (k / label.built - 1.).abs() > LABEL_RASTER_STEP || label.built == 0. {
             label.built = k;
             match label.font.raster(&label.text, k) {
+                Some(r) if layer_route => {
+                    label.layer_image = Some(MenuImage::from_coverage(r.width, r.height, &r.alpha));
+                }
                 Some(r) => {
                     node.width = Val::Px(r.width as f32);
                     node.height = Val::Px(r.height as f32);
                     image.image = images.add(image_of(r.width, r.height, r.rgba()));
                 }
-                None => node.display = Display::None,
+                None => {
+                    label.layer_image = None;
+                    node.display = Display::None;
+                }
             }
+        }
+        if layer_route {
+            image.color = Color::NONE;
+            if let (Some(img), Some((centre, angle))) = (
+                label.layer_image.clone(),
+                placed_at.get(label.item).copied().flatten(),
+            ) {
+                let a = if focused { 1. } else { GAME_LABEL_ALPHA };
+                prims[label.item].push(MenuPrim {
+                    centre: centre * scale,
+                    size: Vec2::new(img.width as f32, img.height as f32),
+                    angle,
+                    shape: MenuShape::Rect,
+                    colour: [1., 1., 1., a * fade],
+                    image: Some(img),
+                });
+            }
+            continue;
         }
         let a = if focused { 1. } else { LABEL_ALPHA };
         image.color = Color::srgba(1., 1., 1., a * fade);
     }
+    if layer_route {
+        let size = (
+            window.physical_width() as usize,
+            window.physical_height() as usize,
+        );
+        update_layer(
+            &mut commands,
+            layer.map(Mut::from),
+            &mut layer_state,
+            &mut images,
+            size,
+            prims.into_iter().flatten().collect(),
+        );
+    }
+}
+
+/// An encoded colour and an alpha as a layer colour.
+fn rgba_of(c: [f32; 3], a: f32) -> [f32; 4] {
+    [c[0], c[1], c[2], a]
 }
 
 #[cfg(test)]

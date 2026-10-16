@@ -11,7 +11,20 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D321 the Pod main menu in the game's font, with the player's card (2026-10-15)
+## Latest: D322 the Pod main menu blended as the game blends it (2026-10-15)
+- Viewer (`docs/level-scripts.md` part 73): FOUND (RenderDoc frames 8980 / 9601) the menu is drawn
+  into the scene after the copy back and before the final pass, premultiplied colour over in
+  encoded 8-bit values (One, OneMinusSrcAlpha) with the alphas added (One, One): pill = player
+  colour at 82/255, text white at 102/255 (target alpha 82 / 184), focused pill and card opaque.
+  The viewer rasterizes the menu into a layer (`menu_layer.rs`) that the final pass composes
+  (`MENU_LAYER`: the menu over the scene, then the mix back by its alpha); `--no-final-pass`
+  keeps the UI overlay. `rt20_*_up` are the target before the final pass.
+- MEASURED against the game's final output at 619 (fill / text, Me): game (94, 129, 55) /
+  (160, 180, 139), D321 (99, 143, 55) / (213, 221, 208), D322 (94, 129, 56) / (160, 180, 141);
+  letter ink Me 29 / 54 / 30, Recent Activity 180 / 263 / 172. A no-menu still is byte-identical.
+  Open: the planets' rim halo, the card's shadows, the focused pill's own colour.
+
+## Before: D321 the Pod main menu in the game's font, with the player's card (2026-10-15)
 - Runtime and viewer (`docs/level-scripts.md` part 72): FOUND (01.33) the Gooey's text style
   table (style 1, the menu's buttons: font 1, size 32) and the font GUID table; font 1 is
   Eigerdals Black (INFERRED from the enum names, MEASURED on the frame). The fonts are loose disc
