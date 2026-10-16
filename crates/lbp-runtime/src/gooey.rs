@@ -190,7 +190,33 @@ pub struct GooeyState {
     pub calls: BTreeMap<String, u64>,
     /// Frames or items not kept (the depth and item guards, an `EndFrame` with no frame).
     pub dropped: u64,
+    /// D325: `PWorld.Frame` when the focus last moved to another node (the focused pill's
+    /// spring starts there).
+    pub focus_since: Option<i32>,
+    /// D325: the pad's menu input waiting for the next build of the menu.
+    pub input: GooeyInput,
+    /// D325: `PWorld.Frame` of the first builds of top-level frames (at most 256).
+    pub build_frames: Vec<i32>,
 }
+
+/// D325: the menu input the pad gives the Gooey for its next build. FOUND (the script
+/// listings, `PodStateMainMenu.UpdateUI`): a button's answer is tested only for its
+/// activate bit (256, passed as the button's mask when the entry is open) and the root
+/// frame's `EndFrameInput(512)` only for 512, which pops the state. INFERRED: which pad
+/// button gives which (the game's engine code was not read): the viewer's choose and back
+/// keys.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct GooeyInput {
+    /// The focused button is activated: its button call answers 256 once.
+    pub choose: bool,
+    /// Back: an `EndFrameInput` whose mask has 512 answers 512 once.
+    pub back: bool,
+}
+
+/// D325: the activate bit of a button's answer and mask.
+pub const GOOEY_ACTIVATE: i32 = 256;
+/// D325: the back bit of `EndFrameInput`'s answer and mask.
+pub const GOOEY_BACK: i32 = 512;
 
 impl GooeyState {
     fn font_scale(&self) -> f32 {
@@ -216,16 +242,75 @@ impl GooeyState {
         });
     }
 
+    /// Sets the focus, noting the frame when it moves to another node.
+    fn set_focus(&mut self, focus: (i32, i32), frame: i32) {
+        if self.focus != Some(focus) {
+            self.focus = Some(focus);
+            self.focus_since = Some(frame);
+        }
+    }
+
+    /// D325: moves the focus of the drawn menu to the button nearest the focused one in the
+    /// direction `dir` (root frame units, x right, y down), as laid out with `fonts`; false
+    /// when no button lies that way. INFERRED (the engine's navigation code was not read):
+    /// the buttons whose centre lies within 60 degrees of the direction, the nearest by the
+    /// distance along it plus twice the distance across; locked entries can take the focus.
+    pub fn move_focus(&mut self, dir: [f32; 2], fonts: Option<&GooeyFonts>, frame: i32) -> bool {
+        let Some(menu) = self.drawn_menu() else {
+            return false;
+        };
+        let bits = self.focus.map_or(self.high_bits, |f| f.0);
+        let focused = menu.focus;
+        let placed = layout_with(menu.frame, focused, fonts);
+        let buttons: Vec<(i32, [f32; 2])> = placed
+            .iter()
+            .filter_map(|p| match p.kind {
+                PlacedKind::Button { id, .. } => Some((id, p.centre)),
+                _ => None,
+            })
+            .collect();
+        let Some(&(_, from)) = buttons.iter().find(|(id, _)| Some(*id) == focused) else {
+            return false;
+        };
+        let len = (dir[0] * dir[0] + dir[1] * dir[1]).sqrt();
+        if len <= 0. {
+            return false;
+        }
+        let d = [dir[0] / len, dir[1] / len];
+        let best = buttons
+            .iter()
+            .filter(|(id, _)| Some(*id) != focused)
+            .filter_map(|&(id, c)| {
+                let v = [c[0] - from[0], c[1] - from[1]];
+                let along = v[0] * d[0] + v[1] * d[1];
+                let across = (v[0] * d[1] - v[1] * d[0]).abs();
+                (along > 0. && across <= along * 3f32.sqrt()).then_some((along + 2. * across, id))
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0));
+        match best {
+            Some((_, id)) => {
+                self.set_focus((bits, id), frame);
+                true
+            }
+            None => false,
+        }
+    }
+
     fn end(&mut self, frame: i32) {
         let Some(f) = self.open.pop() else {
             self.dropped += 1;
             return;
         };
         if self.open.is_empty() {
+            // D325: a choice no focused button took lapses with the build.
+            self.input.choose = false;
             let key = (f.high_bits, f.id.unwrap_or(-1));
             self.first_built.entry(key).or_insert(frame);
             self.frames.insert(key, f);
             self.builds += 1;
+            if self.build_frames.len() < 256 {
+                self.build_frames.push(frame);
+            }
         } else {
             self.push(GooeyItem::Frame(f));
         }
@@ -367,9 +452,14 @@ impl LevelWorld {
                 Value::Void
             }
             // No input reached the frame: no bit of the mask.
+            // D325: the back bit when the pad asked for it and the mask has it.
             "EndFrameInput" => {
                 g.end(frame);
-                Value::Int(0)
+                let back = g.input.back && int(a(0)) & GOOEY_BACK != 0;
+                if back {
+                    g.input.back = false;
+                }
+                Value::Int(if back { GOOEY_BACK } else { 0 })
             }
             "SetFrameLayout" => {
                 if let Some(f) = g.open.last_mut() {
@@ -430,7 +520,16 @@ impl LevelWorld {
                     font_scale,
                     icon: name.contains("Icon"),
                 }));
-                Value::Int(0)
+                // D325: the focused button answers the activate bit once when chosen and
+                // its mask has the bit (a locked entry passes 0).
+                let id = int(a(0));
+                let chosen = g.input.choose
+                    && g.focus == Some((g.high_bits, id))
+                    && int(a(4)) & GOOEY_ACTIVATE != 0;
+                if chosen {
+                    g.input.choose = false;
+                }
+                Value::Int(if chosen { GOOEY_ACTIVATE } else { 0 })
             }
             "DoBreak" => {
                 g.push(GooeyItem::Break);
@@ -476,7 +575,7 @@ impl LevelWorld {
                         })
                 });
                 if !on_button {
-                    g.focus = Some((bits, id));
+                    g.set_focus((bits, id), frame);
                 }
                 Value::Bool(true)
             }

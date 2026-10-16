@@ -3,6 +3,7 @@
 //! level_scripts SNAPSHOT GAME-DIRS LEVEL-PATH NEW-JSON [--entry=NAME]... [--ticks=N]
 //! level_scripts SNAPSHOT GAME-DIRS LEVEL-PATH NEW-JSON --play=TICKS [--flags=MASK,..]
 //!     [--puter-in-use=TICK] [--our-pod] [--enter-pad-zone=TICK] [--press=TICK:MASK,..]
+//!     [--menu=TICK:KEY,..] (D325: up, down, left, right, choose, back on the drawn menu)
 //!     [--player-colour=AARRGGBB] [--with-level=LEVEL-PATH]
 //! level_scripts SNAPSHOT GAME-DIRS --all NEW-JSON [--play=TICKS] [--strict]
 //!     [--visit-triggers] [--pulse-switches]
@@ -608,6 +609,8 @@ struct PlayOptions {
     pad_zone_from: Option<u64>,
     /// `--press`: (tick, button word of player 0's pad on that tick).
     presses: Vec<(u64, u32)>,
+    /// D325 `--menu`: (tick, key) for the drawn Gooey menu.
+    menu_keys: Vec<(u64, String)>,
     /// `--player-colour`: the players' stored colour, 0xAARRGGBB.
     colour: Option<u32>,
 }
@@ -639,6 +642,38 @@ fn feed_input(world: &mut LevelWorld, tick: u64, opts: &PlayOptions, avatar: &mu
         let down = opts.presses.iter().filter(|(t, _)| *t == tick);
         world.set_pad_buttons(0, down.fold(0, |word, (_, mask)| word | mask));
     }
+    // D325: the drawn menu's keys before the tick (up, down, left, right move the focus;
+    // choose and back reach the next build).
+    for (_, key) in opts.menu_keys.iter().filter(|(t, _)| *t == tick) {
+        let frame = world.pworld.frame;
+        let g = &mut world.gooey;
+        match key.as_str() {
+            "up" => drop(g.move_focus([0., -1.], None, frame)),
+            "down" => drop(g.move_focus([0., 1.], None, frame)),
+            "left" => drop(g.move_focus([-1., 0.], None, frame)),
+            "right" => drop(g.move_focus([1., 0.], None, frame)),
+            "choose" => g.input.choose = true,
+            "back" => g.input.back = true,
+            _ => {}
+        }
+    }
+}
+
+/// D325 `--menu=TICK:KEY,..`: KEY is up, down, left, right, choose or back.
+fn parse_menu_keys(text: &str) -> Result<Vec<(u64, String)>, String> {
+    text.split(',')
+        .map(|item| {
+            let (tick, key) = item
+                .trim()
+                .split_once(':')
+                .ok_or_else(|| format!("{item:?}: expected TICK:KEY"))?;
+            let tick = tick.parse::<u64>().map_err(|e| format!("{item:?}: {e}"))?;
+            match key {
+                "up" | "down" | "left" | "right" | "choose" | "back" => Ok((tick, key.to_owned())),
+                _ => Err(format!("{item:?}: unknown key")),
+            }
+        })
+        .collect()
 }
 
 /// `--press=TICK:MASK,..`: a mask is decimal, or hexadecimal after `0x`.
@@ -2217,6 +2252,7 @@ impl<'a> SessionSide<'a> {
         });
         serde_json::json!({
             "frames_built": g.builds,
+            "build_frames": g.build_frames,
             "top_level_frames": g.frames.keys().map(|k| format!("{k:?}")).collect::<Vec<_>>(),
             "renders": g.renders,
             "colours_player": g.colours_player,
@@ -2632,6 +2668,11 @@ fn run() -> Result<(), String> {
         .transpose()
         .map_err(|e| format!("--press: {e}"))?
         .unwrap_or_default();
+    let menu_keys = option("--menu=")
+        .map(parse_menu_keys)
+        .transpose()
+        .map_err(|e| format!("--menu: {e}"))?
+        .unwrap_or_default();
     let colour = option("--player-colour=")
         .map(|c| u32::from_str_radix(c.trim_start_matches("0x"), 16))
         .transpose()
@@ -2647,6 +2688,7 @@ fn run() -> Result<(), String> {
                 && !a.starts_with("--puter-in-use=")
                 && !a.starts_with("--enter-pad-zone=")
                 && !a.starts_with("--press=")
+                && !a.starts_with("--menu=")
                 && !a.starts_with("--player-colour=")
                 && !a.starts_with("--with-level=")
                 && *a != "--our-pod"
@@ -2660,7 +2702,7 @@ fn run() -> Result<(), String> {
             "usage: level_scripts SNAPSHOT GAME-DIRS LEVEL-PATH|--all NEW-JSON \
                     [--entry=NAME]... [--ticks=N] [--play=TICKS] [--flags=MASK,..] \
                     [--puter-in-use=TICK] [--our-pod] [--enter-pad-zone=TICK] \
-                    [--press=TICK:MASK,..] [--player-colour=AARRGGBB] \
+                    [--press=TICK:MASK,..] [--menu=TICK:KEY,..] [--player-colour=AARRGGBB] \
                     [--with-level=LEVEL-PATH] [--strict] [--visit-triggers] \
                     [--pulse-switches]"
                 .into(),
@@ -2684,6 +2726,7 @@ fn run() -> Result<(), String> {
         our_pod: all.iter().any(|a| a == "--our-pod"),
         pad_zone_from,
         presses,
+        menu_keys,
         colour,
     });
     if play.is_some() && !entries.is_empty() {
