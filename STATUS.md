@@ -5548,3 +5548,659 @@ Next: a frame of the change-over from the game; the viewer's own Sackboy in the 
 **+0 newly viewable / +0 newly Complete (viewer feature).**
 Next: the Sackboy by default in the scripted Pod picture; the lane on engaging; his z span.
 `docs/level-scripts.md` part 32.
+
+## D257 ledge-fall jump layer weight (2026-10-12)
+- MEASURED on three RPCS3 ledge falls (lower-body vertex fits): the jump layer eases in with the 0x20a5f4
+  follower from 0, peak += 0.125 (|vy| - peak), weight clamp(peak/10) times the blend-in; full weight about
+  10 ticks after the edge (ours stopped near 0.77). w error 0.064 (D234 ramp 0.276). Landing tail at full
+  weight. INFERRED: the follower holds under the landing tail. `docs/d250-air-lean-turn.md` (D257).
+
+## D258 scripts run past unbound natives (2026-10-12)
+- RScript plan stage 1 (`docs/rscript-plan.md`). An unbound native returns its type's default and is counted
+  (`Bindings::default_unbound`; viewer and `level_scripts --play`; off in tests). `level_scripts --all
+  --play=N` reports bound and unbound calls and the faults left over every level. 19 natives bound (116).
+- MEASURED, 378 levels, 60 ticks, 13,547 scripted Things: stopped by a fault 4,940 -> 1,722; 76,269 calls
+  to 64 unbound natives defaulted. Left: switch inputs 1,143, `PWorld.GameMode` 220, local transforms 199,
+  TriggerLevelLink 113. Next: stage 2, trigger events. `docs/level-scripts.md` part 9.
+
+## D282 his z span, his arrival and the pod computer's user (2026-10-14)
+- "Pod picture" PR 9 (input option C), viewer only (`docs/level-scripts.md` part 33). Three
+  placeholders of D281 replaced by FOUND rules of the 01.33 EBOOT (static reading, evidence only).
+  Only with `--play-sackboy --level-scripts --pod-camera N --pod-shell HEX`.
+- Z span. FOUND: absolute world z -500 to 100, set by the creature's constructor and rewritten
+  every creature update (widening paths not taken in normal play: INFERRED).
+  `level_play::POD_PLAYER_Z_SPAN` replaces `POD_PLAYER_HALF_DEPTH` (200). pod.bin's trigger
+  (z -193.7) holds him in all three lanes; the lane decision is the pad zone's z >= -300 alone.
+  The play mode's span on other levels (100, PLACEHOLDER) is unchanged.
+- Arrival. FOUND: checkpoint translation, z max(checkpoint z, a box z) + 50, slot x offset (0,
+  +80, -40, +40, -80; slot 0 first), no height offset. `sackboy_play::checkpoint_arrival`, box
+  not identified (INFERRED: the checkpoint's z): start (-3.05, 540.76, 0), he falls. MEASURED:
+  out of the pad zone on tick 1, in on tick 25 (y -331.3, still falling), on the floor on tick
+  28 at y -476.4; nothing in between. The game's arrival (-5.37, -477.97): 2.3 in x unexplained.
+  `data_spawn` (Moon x -1.11) stays for other levels.
+- Pod computer user. FOUND: no script native moves him; the animation code switches his input
+  context, faces him to pi and draws his body offset by (target - position) * blend, target
+  (-12.469, -482.979, -93.170) with x from the "pod_controller" Thing. Viewer: while in use his
+  movement input is dropped (`pod_input`), his facing eases to pi at 0.4 per tick
+  (`pod_facing`), his figure is drawn at lerp(position, target, blend) (`engage_drawn`); blend =
+  the change-over value (PLACEHOLDER for the clips' progress); his physics place stays. FOUND in
+  the file: "pod_controller" (Thing 5) is at x 17.846, not -12.469 (30.3 unexplained). The
+  D281 note "the game moves him to z -200" is not explained by this code.
+- MEASURED (`local-analysis/rscript/stage6/shots/d282-*`): walk run as D281 (out 471, press 472
+  ignored, in 514, press 535 taken, in use 536, change-over 1.0 on 555), he stays at x -11.0
+  while in use with walk and lane keys given, shown facing 177.8 degrees by 545, 180 by 560.
+  Lanes: out on 504 at z -305 (z rule, still in the trigger's list), in on 566, in use 595.
+  Stills at 470 and 580 equal over two runs. Eleven captures without `--play-sackboy` equal byte
+  for byte to D281's.
+- Left: the enter/hold/leave clips and their timing; the controller x gap; the z -200 read; the
+  arrival's x; the checkpoint box; the way out of the pod computer (not run in the viewer).
+- Tests: three new viewer tests (`d282_*`), `d281_the_pad_zone_...` updated (back lane out by
+  the z rule only). fmt, CI clippy, CI tests (612), `cargo check` of both viewers and the
+  viewer's clippy pass; viewer tests 81 pass, `sackboy_play::tests::input_script_steps` fails as
+  on main. The runtime is untouched.
+- Next: the pod computer's clips; the Sackboy by default in the scripted Pod picture;
+  `pod_mask.tex`.
+
+## D283 the script camera's lens (2026-10-14)
+- "Pod picture" PR 10, viewer only (`docs/level-scripts.md` part 34). FOUND (01.33, static
+  reading, evidence only): the render camera's lens is ortho factor, vertical FOV (radians),
+  aspect, near, far; perspective when the ortho factor is 0. `Cam.SetCameraFromToUp` writes near,
+  far, ortho factor and FOV every call (the Pod: 10, 100,000, 0, 1.0 rad = 57.3 deg) and not the
+  aspect (the game camera's 16:9 stays; INFERRED). Part 23's third float is the ortho factor.
+  The override has no lens of its own: the game camera's near 10, far 40,000 (+ a zone's
+  pull-back), 60 deg; part 20 corrected (10 and 40,000 are the game camera's constants always).
+- Viewer: `level_play::script_lens` draws a script camera with the script's FOV and planes and
+  the override with the game camera's; planes from level to display units by the level's
+  display scale (INFERRED: the game's world units are level units). In the Pod (scale 1.5706e-4)
+  Bevy gets near 0.0015706 and far 15.706 display units, FOV 1.0 rad (vertical, as Bevy's); was
+  0.01 and 100 (64 and 636,705 level units). Ortho factor other than 0: the viewer's lens stays
+  (PLACEHOLDER). Aspect never written. The viewer's lens is kept and put back when the camera goes
+  out; a level without a script camera is never touched. Bevy's far plane only culls whole
+  entities (its projection is infinite).
+- MEASURED (`local-analysis/rscript/stage6/shots/d283-*`): the planets level reaches at most
+  72,847 level units along the view (69,306 at rest): nothing culled by far 100,000. The FOV was
+  already the script's (part 23), so the closed Pod at 470, the walk and press at 580, the intro at
+  30 and 200 and nine of the eleven equality captures are equal byte for byte to D282's. Changed:
+  in use from 600 held at 610, 3 pixels (a shell sliver between 10 and 64 units from the eye); the
+  planets level alone at 600 (no world Thing root; the camera among its Things), 15.3 percent:
+  a near object the old near plane cut is now drawn whole. Against the game's closed frame the
+  470 still is as close as D282's (the same bytes).
+- Cinema bars: FOUND `HUD.EnterCinemaMode`/`LeaveCinemaMode` (bars smoothstep(amount) x 0.17 +
+  0.01 of the height each); the Pod's scripts never call them. INFERRED: the intro's black bar is
+  the level's Thing 12. Docs only.
+- Tests: three viewer tests (`d283_*`). fmt, CI clippy, CI tests (612), `cargo check` of both
+  viewers and the viewer's clippy pass; viewer tests 84 pass, `sackboy_play::tests::input_script_steps`
+  fails as on main. The runtime is untouched.
+- Next: the orthographic branch; the camera zones' FOV and far; the pod computer's clips.
+
+## D284 the Pod's second mask, by the mesh's own UV (2026-10-14)
+- "Pod picture" PR 11, viewer only (`docs/level-scripts.md` part 35). The card materials'
+  `pod_mask.tex` (0x1fbc7) is sampled at the mesh's raw UV0 (FOUND: identity UV transform in
+  the captured draws): where its red is over one half the line stands one band higher, and at
+  value 1 the rule's last term adds a band where it is black: `edge = (above - 100 g)/400 + 1 -
+  m6 + at_one (1 - m6)` (`pod_dissolve::edge`, the shader's arithmetic).
+- MEASURED (throwaway probe, value for value against the mesh's channels): `pod_card` 0x2f6a's
+  primary coordinates are UV0; `pod_card_edge` 0x2fda's primary are UV1 and its second
+  sample's are UV0 (tent and platform); the glass is solid. Each bucket now records which input
+  holds raw UV0 (`pod_dissolve::uv0_source`: `in.uv`, `in.uv_b` or none, the glass keeping the
+  position tile) and its material GUID; the transition mask moves to UV0 x 40 on 0x2fda too.
+- `thing_view::apply`: at alpha 0 the platform's 0x2fda entities keep the dissolve at value 1
+  (`LevelThings::dissolve_edge`), 0x252f3 gets nothing; `follow_dissolve` gives `pod_mask` to
+  the two card materials only. MEASURED: all 291 triangles of the platform's card edge have
+  their UV0 on the white strip and patch, so at value 1 the rim is kept whole (lit), not cut.
+  The raised parts of the tent are its floor, the block beside it and its rim (mesh height 204
+  to 991 and 883 to 892).
+- MEASURED (`local-analysis/rscript/stage6/shots/d284-*`, base `d284-base-*` = d283 bytes): the
+  intro, the four without scripts, closed at 600, 640, 641, the planets captures and pod.bin alone
+  equal D283's; in use at 619, 620 and 640 (both lightings) equal main's build. Changed: 610 and
+  615 (the card edge's band pattern now at UV0). A check build painting `m6` = 1 shows none of the
+  raised parts in view at 610 to 619 and the platform's rim in 146 pixels at 640. Also changed:
+  the viewer's Sackboy in the two `--play-sackboy` closed stills (zipper and leg patches); bisected
+  to the material type holding one more image handle (INFERRED: coplanar draw order), not the rule.
+- Game frame `d156-rpcs3-pod-open-t1.png` (mid change-over, camera at the open eye): posts with a
+  green top line and green traces. The viewer's 619 shows none (its camera is not at the open eye
+  until 628); its 615 is closer (posts with a white line). INFERRED: the game's posts are plain
+  tent near value 0.7, not raised parts. 640 against `open-t2`: unchanged, the camera's height.
+- Tests: four viewer tests (`d284_*`) and the shader validation extended. fmt, CI clippy, CI tests
+  (612), `cargo check` of both viewers and the viewer's clippy pass; viewer tests 88 pass,
+  `sackboy_play::tests::input_script_steps` fails as on main. The runtime is untouched.
+- Next: the player's green as the flat colour (part 30's stored colour); the camera's timing.
+
+## D285 the player's default colour as the Pod's flat colour (2026-10-14)
+- "Pod picture" PR 12, runtime and viewer (`docs/level-scripts.md` part 36). FOUND (01.33,
+  evidence only): a new profile takes entry 0 of the script class `PlayerColour`'s palette (12
+  entries; 0x1589a8 given index 0 by both callers); entry 0's primary is (150, 221, 60). The Pod
+  script sets the tent's shape colour from `GetPlayerColour(avatar)` (part 21).
+- Runtime: `lbp_script_vm::natives::DEFAULT_PLAYER_COLOUR = 0xff96dd3c` replaces the white
+  placeholder as a player record's start colour; `level_scripts --player-colour` still overrides.
+- Viewer: `pod_dissolve::uniforms` squares the stored rgb before the decode (MEASURED: the captured
+  vc[4] is exactly the squares of (150, 221, 60) / 255, alpha not squared, and the shader takes no
+  root of it), so the frame shows (88, 192, 14) as the game's does. The dissolve line prints the
+  display bytes.
+- MEASURED (`local-analysis/rscript/stage6/shots/d285-*`, base `d285-base-*` = d284 bytes): without
+  scripts, closed at 600, the planets level, 619 and 640 equal main's build; 610 and 615 (both
+  lightings) changed, the line and traces green. Edge pixels: viewer 615 median (88, 191, 14);
+  game `open-t1` median (84, 158, 24), (93, 180, 24) at the same brightness, a brighter glow
+  (121, 222, 36) the viewer does not draw.
+- MEASURED (378 levels, 60 ticks; plain / trigger visit / pulsed; `d285-play-all-*.json`): Things
+  stopped by a fault 3 / 3 / 3; plain equal to D274's in every value; with the visit only pod.bin's
+  shape colour now differs from the level file (one more level and Thing in `changed` and
+  `shape_colour`).
+- Tests: `d285_pod_flat_colour_is_the_square_of_the_stored_colour`, the start colour in
+  `d273_pod_computer_natives` and the runtime's `d273_*` play test. fmt, CI clippy, CI tests (612),
+  `cargo check` of both viewers and the viewer's clippy pass; viewer tests 89 pass,
+  `sackboy_play::tests::input_script_steps` fails as on main.
+- Next: the Pod's side walls show a texture where the game has clear glass (owner report; glass
+  material 0x1d14c drawn with a placeholder); the camera's timing.
+
+## D286 the Pod's side walls as clear glass (2026-10-14)
+- "Pod picture" PR 13, viewer only (`docs/level-scripts.md` part 37), from the owner's report
+  of a strange texture on the Pod's side walls. P2j's default wall art (0x1f3b9 in slot 0 of
+  `window_glassy` 0x1d14c, drawn opaque) is gone; `--runtime-texture` still adds it on request,
+  `--no-pod-wall` does nothing.
+- MEASURED (the captured glass draw): blend One, InvSrcAlpha; only the normal map and the
+  transition mask bound; FOUND: alpha 0.2 x the dissolve's kept share, colour premultiplied,
+  the constant 0.11765 in place of the green in the edge; TC0 is the mesh's UV0.
+- Viewer: material GUID 0x1d14c only (alpha mode 4 not used as the rule) draws
+  `AlphaMode::Premultiplied`, alpha 0.2 x kept share, lit grey with the bump and gloss times
+  that alpha; raw UV0 recovered from the bump's UV0 x 2 (`lbp-preview` `BumpMap::uv_transform`).
+- MEASURED (`local-analysis/rscript/stage6/shots/d286-*`): the planets captures, `--pod-open`
+  and 640 equal D285/D284; the closed, no-script, 610 and 615 frames show the room through the
+  panels. Against `d156-rpcs3-pod-default.png`: the right panel's drawings and statue match;
+  the left shows the cloth where the game shows wall art; the game's glass is darker and
+  greener (right panel mean (63, 88, 92) against (145, 151, 140)).
+- Tests: `p2j_d286_*`, `d286_*` (three) and the shader validation extended. fmt, CI clippy, CI
+  tests (612), `cargo check` of both viewers and the viewer's clippy pass; viewer tests 92 pass,
+  `sackboy_play::tests::input_script_steps` fails as on main.
+- Next: the glass's blend in the encoded output space and its specular scale; the left panel's
+  view; the camera's timing.
+
+## D287 the Pod's glass blended as the game does (2026-10-14)
+- "Pod picture" PR 14, viewer only (`docs/level-scripts.md` part 38). MEASURED (the captured
+  frame, before and after the glass draw): the target is `R8G8B8A8_UNORM` without sRGB, so the
+  game blends its encoded output, out = s + 0.8 d; the glass's share s is (17, 22, 23) left and
+  (7, 15, 21) right. The game's dark green-blue panels are the room behind them: the viewer's
+  room under the level's own lighting is (69, 90, 88) behind the right panel against the game's
+  (73, 86, 87); part 37's stills used `--preview-lighting` ((160, 163, 148)), which also draws
+  the hanging cloths plain tan where they carry art (the left panel's "cloth against wall art").
+- Viewer, glass GUID 0x1d14c only: s = alpha x the encoded lit colour + the glass specular
+  (gloss 0.6 x 6 x light^2 x (pow(R.L) + rim / 2), after the alpha, level lighting only);
+  `glass_blend` writes the secant of the encoded blend through destinations 0.35 and 0.75 as a
+  premultiplied colour and one alpha. Mean error (1.7, 0.9, 1.2) / 255 over the viewer's room
+  pixels (D286's linear blend: (10.2, 5.4, 2.7)).
+- MEASURED (`local-analysis/rscript/stage6/shots/d287-*`): planets frames, `--pod-open`, 640 and
+  the walk run equal D286; the glass frames change by at most 13 (51 at 615 under the level
+  lighting). Panel means (left; right): game (133, 138, 111); (66, 84, 90); now under the level
+  lighting (129, 133, 109); (60, 83, 94); with `--preview-lighting` (163, 151, 122); (133, 141,
+  132), D286 (170, 156, 125); (143, 147, 135).
+- Tests: `d287_*` (four) and two D286 tests updated. fmt, CI clippy, CI tests, `cargo check` of
+  both viewers and the viewer's clippy pass; viewer tests 96 pass,
+  `sackboy_play::tests::input_script_steps` fails as on main.
+- Next: the preview lighting's washed-out room and the cloths' art; the left panel's larger
+  glass share; the camera's timing.
+
+## D288 the hanging cloths' art on every lighting route (2026-10-14)
+- "Pod picture" PR 15, viewer only (`docs/level-scripts.md` part 39). FOUND: each hanging cloth
+  of the planets room is two buckets of the backdrop mesh on the same triangles, a plain cloth
+  (0x1f3ad, earlier) and the art (0x1f3b3 left, 0x1f3b4 right, later, slot 0). MEASURED: which
+  one won the equal depth followed Bevy's draw order, not the lighting (the level alone lost the
+  art under its own lighting too; `--bump-gloss` brought it back under the preview). The game
+  shows the art.
+- Viewer: every opaque bucket gets a constant depth bias equal to its index in the mesh (capped
+  at 65), so a later material wins an equal depth; bucket 0 and one-material meshes unchanged,
+  decals 8, glass 0.
+- The preview's washed-out room is its own design (D121 Lambert preview, "not game lighting"):
+  MEASURED mostly its Bevy distance fog (the level's fog colour as linear light); unchanged.
+- MEASURED (`local-analysis/rscript/stage6/shots/d288-*`): planets at 600, pod camera, preview
+  331,393 pixels and level lighting 290,610 (art and the easel's canvas now drawn); closed Pod
+  with the preview 290,699, under the level lighting 6; Da Vinci rookie test (0001e786) equal
+  with the preview, 28 pixels (at most 8) under its own lighting.
+- Tests: `d288_a_later_bucket_on_the_same_triangles_is_drawn_nearer`. fmt, CI clippy, CI tests,
+  `cargo check` of both viewers and the viewer's clippy pass; viewer tests 97 pass,
+  `sackboy_play::tests::input_script_steps` fails as on main.
+- Next: the left panel's larger glass share; the camera's timing; the game's depth rule for
+  coplanar primitives from a capture.
+
+## D289 the script camera's smoothing step as the game's (2026-10-14)
+- "Pod picture" PR 16, script VM only (`docs/level-scripts.md` part 40). FOUND (EBOOT 01.33,
+  `native_Smooth3D` 0x5fed34 -> core 0x3905b8 -> 1-D step 0x38ef7c): the velocity is projected on
+  the direction to the target, clamped to the top speed (arg 5), and one fixed step of 1.0 of a
+  time-optimal move runs (speed up by arg 4, brake to stop on the target); only the new velocity
+  comes back, zero under 1e-4 or when closer than the new speed, so the camera stops short. The
+  game's resting eye (0, -299.4804, 902.3901, RenderDoc f14790) is that stop-short.
+- VM: `Math.Smooth3D__rrrff` uses that step. `Smooth2D` (core 0x38f2fc not read) and the scalar
+  `Smooth` (wrapper's argument order not read) keep the older INFERRED rule.
+- MEASURED (`level_scripts`, both Pod levels, in use at 600,
+  `local-analysis/rscript/stage6/d289-camera-session.json`): the planets camera leaves on 601,
+  last moves on 614 and is reported at rest on 615 at (0, -299.4803, 902.3904), no overshoot
+  (before: 122 past on 612, rest on 626 at (0, -300, 900)). The dissolve is unchanged (0.75 on 615,
+  1.0 on 620), so the camera is at its open eye while the tent stands, as in `open-t1`.
+- Tests: `d289_*` (three). fmt, CI clippy, CI tests and `cargo check` of both viewers pass.
+- Next: `Smooth2D` and the scalar `Smooth` from the EBOOT; the viewer's change-over stills again
+  against `open-t1`; the left panel's larger glass share.
+
+## D290 the glass's blend per channel (2026-10-14)
+- "Pod picture" PR 17, viewer only (`docs/level-scripts.md` part 41). MEASURED (closed Pod, tick
+  600, level lighting, the room from a probe with the glass clear): part 38's left-panel "twice
+  the game's share over a darker room" was the planets-only still's room (other pixels behind
+  that panel); the real room (142.7, 142.2, 108.2) and share (15.0, 19.7, 22.1) are within error
+  of the game's (145.1, 144.5, 110.7), (17.3, 21.9, 22.9). The game's left share is about twice
+  its right by design (the sun lights the left panel, N.L 0.52). Part 38's lines corrected.
+- Viewer, glass GUID 0x1d14c only: the secant of the encoded blend per channel (t_c, S_c),
+  written as two blend sources (S, 1) and (1 - t, 1) with the colour blend One + OneMinusSrc1;
+  a pipeline key marks the glass, which alone takes a copy of the shader with `enable
+  dual_source_blending;`. Bevy 0.19.1 / wgpu 29 already asks for every adapter feature; without
+  `DUAL_SOURCE_BLENDING` the glass keeps the one-T blend (D287).
+- MEASURED (`local-analysis/rscript/stage6/shots/d290-*`, D289 build against this one): planets
+  at 600 with the pod camera and Da Vinci (0001e786) equal; the closed Pod changes 377,445
+  pixels, all inside the glass. Panel means (left; right): before (129.2, 133.5, 108.6); (60.5,
+  82.8, 93.6), now (129.6, 133.4, 107.8); (64.0, 82.3, 89.4), game (133.4, 137.6, 111.5); (65.9,
+  83.5, 90.3).
+- Tests: `d290_*` (seven); the D287 tests stay on the fallback; the shader validation resolves
+  the `#ifdef`s.
+  fmt, CI clippy, CI tests, `cargo check` of both viewers and the viewer's clippy pass; viewer
+  tests 104 pass, `sackboy_play::tests::input_script_steps` fails as on main.
+- Next: the left panel's remaining (-4, -4, -4) (room 0.8 x -2.4 plus the bump, within error);
+  `Smooth2D` and the scalar `Smooth` from the EBOOT; the change-over stills against `open-t1`.
+
+## D291 the dissolve's band mixed in the game's output (2026-10-14)
+- "Pod picture" PR 18, viewer only (`docs/level-scripts.md` part 42). FOUND (`pod_card_edge`,
+  frame 5247): `out = mix((COL0, 0), (lit_encoded, texalpha), t)`, then fog; nothing adds light
+  on the line. Fog is 0 on the tent in both captures (vc[16]). The glow is a post pass reading
+  the scene's alpha (0.7 x (1 - a) x rgb, two 9-tap blurs, added in the final pass, which also
+  scales the frame by 1.2998).
+- Viewer: the dissolve mixes the encoded pair (`dissolve_mix`), then fogs on the level route.
+- MEASURED (`local-analysis/rscript/stage6/shots/d291-base-*` / `d291-new-*`, in use at 600,
+  held at 615/617/618): only the band changes (up to 51 levels darker, green most); the line's
+  pixels at (88, 192, 14) are unchanged.
+- Tests: `d291_*` (three) and the shader text test. fmt passes; viewer tests 107 pass,
+  `sackboy_play::tests::input_script_steps` fails as on main.
+- Next: D292 the glow post pass (alpha = keep while dissolving, a full-screen node).
+
+## D292 the glow on the dissolve's line (2026-10-14)
+- "Pod picture" PR 19, viewer only (`docs/level-scripts.md` part 43). FOUND (frame 5247): the
+  tent writes alpha = t; post pass 3256 (half size) `0.7 x (1 - a) x rgb`, 3281/3298 a 9-tap
+  blur at a quarter size (0.3, 0.225, 0.15, 0.105, 0.06 at 0, +-2, +-6, +-10, +-14 px; 1.38 per
+  pass), 3454 adds it (and scales the frame by 1.2998, not copied).
+- Viewer: opaque materials under the dissolve write alpha = the kept share (`dual.rs`); new
+  `glow_post.rs`, four full-screen passes on the main camera in `Core3dSystems::PostProcess`
+  (before egui/UI), in encoded values on the sRGB main texture, only while a dissolve is on;
+  `--no-edge-glow` turns it off.
+- MEASURED (`local-analysis/rscript/stage6/shots/d292-new-*` against `d291-new-*`): Da Vinci
+  and the planets at 600 equal; in use at 600, held at 615/617, a halo on both sides of the
+  line, excess above it +26..30 / +21..28 / +19..21 / +12..16 / +6..9 at 1/2/3/5/9 px, about
+  1.5-2 x the game's `open-t1` (19 / 12 / 9 / 5 / 0 over its baseline); 0.7 (FOUND) kept.
+- Tests: `d292_*` (six) with a CPU mirror of the chain; the shader text test checks the alpha
+  write. fmt, the viewer's clippy and `cargo check --workspace` pass; viewer tests 113 pass,
+  `sackboy_play::tests::input_script_steps` fails as on main.
+- Next: the glow's strength and the x1.2998 against t1's own settings; the band's glow against
+  a game frame.
+
+## D293 the 2-D and scalar smoothing steps as the game's (2026-10-14)
+- "Pod picture" PR 20, script VM only (`docs/level-scripts.md` part 44). FOUND (EBOOT 01.33):
+  `native_Smooth2D` 0x60195c -> 0x5ee7e4 -> core 0x38f2fc, the 2-D twin of 0x3905b8 (distance and
+  projection on x, y; 1-D step; offset over distance x new speed; zero under 1e-4 or the new
+  speed; velocity only, w cleared). `native_Smooth__fffff` 0x6019f8 -> 0x5ee844 -> 0x38ef7c with
+  (pos, vel, target, acc, top speed), returning (new pos, new vel, 0, 0); the step lands on the
+  target where its plan fits. It divides by the acceleration (zero gives non-finite values).
+- VM: `smooth_nd` serves `Smooth3D` (unchanged) and `Smooth2D`; `smooth_1d` serves `Smooth`. The
+  older INFERRED rule is gone.
+- MEASURED (`level_scripts`, both Pod levels, in use at 600,
+  `local-analysis/rscript/stage6/d293-smooth-session.json`): the same report byte for byte as
+  D289's. `Smooth` is called 699 times, all (0, 0, 0, 10, 100) (the zoom stays 0); `Smooth2D`
+  (`PlanetThing.Update__rb`) is not reached.
+- Tests: `d293_*` (two); the part 6 scalar case now lands at rest. fmt, the VM's clippy and tests
+  and `cargo check --workspace` pass.
+- Next: `PlanetThing.Update__rb` in the Pod session; the pod computer state's extra zoom; the
+  viewer's change-over stills against `open-t1`.
+
+## D294 the final pass's brightness and vignette as the game's (2026-10-14)
+- "Pod picture" PR 21, viewer only (`docs/level-scripts.md` part 45). FOUND (frame 5247, final
+  pass PS 14857): `out = (scene x 1.2998 + glow) x (0.2 + 0.8 smoothstep(0, 1, saturate(1.2 - r)))`,
+  `r = |((u - 0.5) x 1.0996, (v - 0.5) x 1.7002)|`, encoded values.
+- Viewer (`glow_post.rs`): consts `FINAL_SCALE`, `VIGNETTE_AXES`, `VIGNETTE_START`,
+  `VIGNETTE_FLOOR`; the add pass's `final_composite` (with the glow) and `final_only` (no
+  dissolve, glow 0). New `--final-pass`, off by default, level-lighting route only (ignored
+  with a note under `--preview-lighting` / `--no-lbp-lighting`); with it the pass runs every frame.
+- MEASURED (`local-analysis/rscript/stage6/shots/d294-*`, hidden window): without the flag the 614
+  still equals main's byte for byte. In use at 600, held at 614, against `open-t1`, mean |d|:
+  DS body 4.0 -> 0.1, left glass 30.3 -> 2.0, right glass 20.5 -> 7.0, wall 9.3 -> 1.1, post cards
+  3.8 -> 2.9 / 2.4; viewport 29.7 -> 25.2. Closed Pod at 600 against `d156-rpcs3-pod-default`:
+  19.0 -> 5.8. Halo at 2/3/5 px 27.0/21.3/14.4 -> 23.0/18.0/12.6 (game 14.7/11.2/5.0). Da Vinci
+  clips with it (13.9 % of pixels at 255; no game frame).
+- Tests: `d294_*` (four); fmt, the viewer's clippy and `cargo check --workspace` pass; viewer
+  tests 117 pass, `sackboy_play::tests::input_script_steps` fails as on main.
+- Next: the flag on by default after a non-Pod game frame; the glow's strength and the line's
+  thickness against t1.
+
+## D295-D297 the planets menu zoom, the tent's line and the glow (2026-10-14)
+- D297 (`docs/level-scripts.md` part 48), viewer comment and test only. FOUND (RenderDoc frames
+  5247 and 14790): the four post passes and their constants are the same in both frames, so the
+  glow strength 0.7 holds; the blur rebuilds the game's within 0.25 level. MEASURED (tick 614,
+  `--final-pass`, after D296): halo above the line 46.1 / 10.7 / 7.7 / 4.1 / -3.1 at
+  1/2/3/5/9 px against `open-t1`'s 47.4 / 14.7 / 11.2 / 5.0 / -0.7; on the left post (flat
+  background) within 0.7 level at 2, 3 and 9 px. The earlier excess was the doubled line and the
+  missing final pass. Test `d297_line_halo_matches_t1_at_0_7`.
+- D296 (part 47), viewer: the tent's back faces are culled while the dissolve is on (FOUND: every
+  captured Pod draw culls back faces). The far wall's second line no longer shows through the
+  cut; the line is 1.99 game px against the game's 1.77 (was 3.56).
+- D295 (part 46), runtime: the planets level's pod computer runs `PerFrameUpdate__b` each tick
+  (FOUND EBOOT 0x40663c); in use it pushes the main menu, whose view starts the planets world's
+  0.05-a-tick blend from view 0 (z -15000) to view 1 (z -5000). MEASURED: `SetView` on tick 601,
+  blend 0.718 on 614, done on 621; every D293 path event unchanged. The session report's planet,
+  video and per-frame counts were always 0 before (fixed).
+- Next: make `--final-pass` the default after a non-Pod game frame (Da Vinci clips 13.9% with
+  it); the viewer's change-over stills with the planets view zoomed (D295) against `open-t1`;
+  depth of field (FOUND in 5247's chain); the halo's 5 px gap and the right post once the room
+  is the game's view.
+
+## D299 where the game's final pass applies (2026-10-14)
+- Docs only (`docs/level-scripts.md` part 50). FOUND (RenderDoc, the blank Moon level): the
+  final pass has frame 5247's constants (x1.2998, the vignette, glow 0.7) but ends by mixing
+  back to the scene by the scene's alpha, which is 1 outside the Pod, so it returns the scene.
+  The game's Moon and Bravery Test frames match the viewer without `--final-pass`; it stays off
+  by default. MEASURED: with D295 the room behind the window registers against `open-t1` at
+  scale 0.96 at tick 614 (was 1.62), region |d| 10.6 -> 5.0 (1.2 at 616). The game's zoom runs
+  about two ticks ahead of the VM's (one is part 46's step order).
+
+## D298 the game's depth of field (2026-10-14)
+- Viewer only (`docs/level-scripts.md` part 49). FOUND (RenderDoc frames 5247 and 14790, hidden
+  desktop): before the glow, a half-size source (scene 2x2 mean, depth gate in alpha), two
+  rings of five pentagon taps at radius `saturate(8 g - 7)` x 1.6 half-size texels (a tap
+  counts when its gate is within 0.01 of the centre's or above), and a bilinear composite by
+  that radius beyond the range's start (scene alpha kept). FOUND (EBOOT 0x2e81ac): the
+  `SetDOFAndFog` distances become depth-buffer values; the two frames' gate constants fit
+  (80,000, 100,000) and (12,000, 16,000) with the Pod camera's planes within 0.13 %: the radius
+  runs linearly in depth from the first value to the second.
+- New `dof_post.rs` and `--depth-of-field` (off by default, level-lighting route only), fed each
+  frame from the scripts' range (`level_play::follow_dof`). Consts `DOF_RAMP`, `DOF_TAP_STEP`,
+  `DOF_TAP_DIRS`, `DOF_SAME_LAYER`, `DOF_RING_PASSES`.
+- MEASURED (`shots/d298-*`, with `--final-pass`): without the flag every still is byte-equal to
+  the build before. At 614 (range 31,159-39,667) the room's gradient against `open-t1` (1.20):
+  3.76 -> 1.84; upper left 1.30 -> 1.18 (0.67), upper right 1.45 -> 1.35 (0.65), upper centre
+  1.54 -> 0.92 (0.76); DualShock and posts unchanged. Closed Pod at 600 and Da Vinci unchanged
+  (nothing beyond 80,000; no range), as the game's 5247.
+- Tests `d298_*` (six); fmt, the viewer's clippy and `cargo check --workspace` pass; viewer tests
+  124 pass, `sackboy_play::tests::input_script_steps` fails as on main.
+- Next: the flag on by default after a non-Pod game frame with depth of field; the stencil-marked
+  composite; the change-over's room view against `open-t1` (`--final-pass` by default: D300).
+
+## D301 the pod computer's step against the planets view (2026-10-14)
+- Script VM (`docs/level-scripts.md` part 52). FOUND (EBOOT 01.33): the frame function 0x18558
+  makes the one call of the pod computer's slot 0x14 (0x40663c) after the main level's update;
+  it runs `PerFrameUpdate__b`, then (0x4064bc -> 0x43d900 -> 0x4381d8) the planets level's
+  update, the planets' `Update__rb` and `UpdatePlanetsView` (0x43ac68). `tick_level_in_session`
+  follows that order. MEASURED: the menu view blend steps on the tick of its push (0.05 on 601,
+  1.0 on 620, with the change-over; was 0.0 on 601, 1.0 on 621); nothing else changes
+  (`d301-session.json`). One of part 50's two ticks is explained; the other may be where
+  message 0x30's handler (it sets "in use") runs in the frame.
+
+## D300 the scene's alpha at the final pass (2026-10-14)
+- Viewer only (`docs/level-scripts.md` part 51). FOUND (RenderDoc frames 5247 and 14790, hidden
+  desktop): after the depth of field and the glow's source the frame goes to main memory
+  (0x33200000) for an SPU anti-aliasing job and comes back with alpha 0 on every pixel; the final
+  pass's `lerp(c, scene, a)` then outputs `c` (x1.2998, glow, vignette) on the whole 3-D picture.
+  Before the round trip the shell, glass, DualShock, room, planets and clear are all alpha 255.
+  The Puter menu (14790) is drawn after it with additive alpha and keeps its brightness. FOUND
+  (EBOOT): 0x31dfd4 runs the round trip only while byte 0xdb8208 is set (the job is the "EDGE
+  MLAA" task); 0x3205a0 and a paint UI page clear it. Levels' game frames show no pass, so the
+  job is off there (what keeps it off INFERRED: the 0x3205a0 / 0x40d184 render path).
+- The final pass is on by default on the level-lighting route and mixes back by alpha: 0 for the
+  Pod picture (`--pod-camera`), the scene's own elsewhere. `--no-final-pass` turns it off;
+  `--final-pass` is still accepted. The glow's source still reads the scene's alpha (D292).
+- MEASURED (`shots/d300-*`): closed Pod at 600 and the change-over at 614 byte-equal to D294's
+  `--final-pass` stills (closed vs the game 19.0 -> 5.8 viewport, grid 15.9 -> 2.5; 614 left glass
+  31.9 -> 0.4, DS body 4.0 -> 0.1). Da Vinci byte-equal to `--no-final-pass`; Bravery equal outside
+  Sackboy's box (his idle, as two runs without the pass).
+- Tests `d300_*` (five); fmt, the viewer's clippy and `cargo check --workspace` pass; viewer tests
+  129 pass, `sackboy_play::tests::input_script_steps` fails as on main.
+- Next: what keeps the job off in a level's play; the job's edge filtering in the viewer; the
+  alpha the viewer writes on glow materials in a level.
+
+## D302 the game's anti-aliasing job in the Pod picture (2026-10-15)
+- Viewer only (`docs/level-scripts.md` part 53). FOUND: the EDGE MLAA kick passes 10 and 0x59;
+  each pixel's threshold is max(10, its largest channel x 89 >> 8), kept in its alpha byte, and
+  a channel difference at or above the larger of two neighbours' thresholds is an edge (which
+  value is which is INFERRED). FOUND: the game's scene target has one sample (no MSAA).
+  MEASURED on frame 5247: Reshetov area weights on Z and U runs (fit 0.97), one neighbour per
+  pixel, a run limit of about 40 (INFERRED).
+- Viewer: `--mlaa` (off by default; the Pod picture on the level-lighting route only; MSAA off
+  under it), edge and blend passes after the depth of field, read by the final pass while the
+  glow's source keeps the scene before it (`mlaa_post.rs`). Closed Pod staircase RMS against the
+  game: floor line 0.349 -> 0.252 (game 0.136), post window edge 0.179 -> 0.151 (0.116).
+
+## D303 the alpha of glowing materials (2026-10-15)
+- Viewer only (`docs/level-scripts.md` part 54). FOUND (RenderDoc frame 5247): the game's lit
+  program with a constant glow g (port 4, added before the x4 and the square root) writes alpha
+  tintcol.w / (4|g|^2 + 1): the lamp bulb's g = (0.66, 0.56, 0) gives 64, the stars' g = 1 gives
+  20 (part 51's 319 pixels). FOUND (the Moon capture): the glow chain runs in a level too.
+- Viewer: opaque glowing surfaces on the level-lighting route write that alpha; the glow passes
+  run with the final pass on every frame (`glow_post::glow_runs`), not only during a dissolve.
+- MEASURED (closed Pod at 600 against the game's frame): bulb rings 0-4 / 8-12 / 12-16 px mean
+  |d| 31.8 / 24.4 / 18.5 -> 13.1 / 3.7 / 8.4; star pixels 14.21 -> 12.95. Da Vinci: 127
+  glowing-point pixels brighter; Bravery unchanged. Tests `d303_*` (three).
+- Open: the fog's mix of the alpha in the thing-colour glow listing; glow maps' alpha
+  (INFERRED); blended glowing draws; the spawn door's white ring in Bravery (not drawn).
+
+## D304 the anti-aliasing job and depth of field on by default in the Pod (2026-10-15)
+- Viewer only (`docs/level-scripts.md` part 55). In the Pod picture (`--pod-camera`) on the
+  level-lighting route the EDGE MLAA job (D302) and the depth of field (D298) now run by default;
+  `--no-mlaa` / `--no-depth-of-field` turn them off. Other levels unchanged (DoF only under
+  `--depth-of-field`, the job never).
+- MEASURED (hidden window): the defaults equal the previous build with both flags, `--no-*`
+  equals the previous default, Da Vinci byte-equal. Closed Pod staircase RMS against the game:
+  floor line 0.349 -> 0.252 (game 0.136). Change-over at 614 against `open-t1`: room behind the
+  window gradient 4.07 -> 1.93 (game 1.20), viewport mean |d| 12.39 -> 11.72. MLAA after DoF
+  also filters the blurred room (whether the game does is INFERRED; the copy back is stale).
+- Tests `d304_*` (two).
+
+## D305 where the game sets "in use" within the frame (2026-10-15)
+- Research only (`docs/level-scripts.md` part 56). FOUND (EBOOT 01.33): the network dispatcher
+  is 0x28b304 (any id through the 0x28a804 table), reached only from the pump 0x28baa4, which
+  runs at the start of the frame and of each simulation step, before the world update; message
+  0x30 (`RequestHostUsePod`, 0x3fa9cc) only queues. So the shell and the pod computer see "in
+  use" in the same frame, as the VM has it: the planets zoom's missing tick is not there.
+- Open (INFERRED, unread): the frame the change-over is drawn from (render 0x31e820), two
+  simulation steps in one frame near the push, the loopback's delay for our own Pod.
+
+## D306 the depth of field's stencil pass and gate constants (2026-10-15)
+- Research only (`docs/level-scripts.md` part 57). FOUND (EBOOT 01.33): 0x32820c builds the
+  gate as A = 0.125 / (d1 - d0), B = 0.875 - A d0 (part 49's fit, exactly; the viewer's ramp
+  already matches); the depths are read as stored, no conversion. FOUND: the scene's
+  translucent loop (0x349b64 / 0x3498d0) adds 0x80 to the stencil reference, so every
+  translucent draw (planets, glass in 5247; the menu's planets in 14790) gets the composite
+  without the plane test.
+- MEASURED: copying that rule into the viewer made the change-over's left glass sharper than
+  the game's `open-t1` (gradient 1.21 -> 1.79, game 1.50); not kept. Open: a capture of the
+  change-over itself (INFERRED: the dissolving glass is drawn differently from the closed Pod).
+
+## D307 the glow's alpha under fog, glow maps and blended draws (2026-10-15)
+- Viewer and `lbp-preview` / `lbp-level` (`docs/level-scripts.md` part 58). FOUND (the decoded
+  programs): 524 glowing programs lift their alpha towards 1 by the fog, 23 (the Pod's bulb and
+  stars, `neon_lifebar`) do not (`dual::GLOW_ALPHA_UNFOGGED`, by GUID); the thing colour feeds the
+  glow; the glass blends alpha Zero + One. FOUND: Bravery's spawn door ring (`neon_lifebar`)
+  samples at UV1 minus the colour alpha the checkpoint update (0x5aa9c) sets to 1 - 0.5 x the
+  share of spawns left, and its stored AlphaTestLevel only cuts out where a program names it.
+- MEASURED (hidden window): the ring is now drawn white (2,621 px, game ~254); closed Pod: the
+  stars and window behind the glass closer to the game (changed px |d| 10.90 -> 6.97); the
+  change-over band 20.80 -> 18.13; Da Vinci 482 px change. Tests `d307_*` (five).
+- Open: the checkpoint's colour vector; infinite checkpoints' ring (drawn black, unverified);
+  decoding each program's alpha form instead of the GUID list.
+
+## D308 the checkpoint's ring colour and the planets zoom's frame (2026-10-15)
+- Viewer (`lbp-preview`) and research (`docs/level-scripts.md` part 59). FOUND (0x5aa9c): the
+  checkpoint update writes the ring Thing's whole colour word: RGB white in normal play, alpha
+  1 - 0.5 x, and x = 1 for an infinite checkpoint (+0x41, INFERRED instanceInfiniteSpawns), so
+  infinite rings are white. -1 / 0 counts mean "not yet given" (set on activation).
+- MEASURED (hidden window): Bravery's infinite checkpoints 1000, 1018, 1425 draw their rings white
+  (about 2.2k-2.5k px, mean ~8 -> ~249); the spawn door unchanged. Census: 458 of 1,314
+  checkpoints are infinite.
+- Planets zoom's last tick: the render reads the live value; the loop is lockstep (0..n steps
+  a frame, the pod computer's step once a frame); INFERRED a no-step frame at the push. Open:
+  a memory read of the steps that frame (game +0x1fc).
+
+## D309 the glow alpha's fog form read from the material's program (2026-10-15)
+- Parsing (`lbp-resource` material program decoder) and viewer (`docs/level-scripts.md` part 60).
+  The glow alpha's fog form is classified from each gmat's compiled program (variant 8, the last
+  H0.w write) instead of D307's GUID list, which is removed.
+- MEASURED: census of 8,386 gmats: 23 unfogged (exactly D307's list), 556 fogged (524 + 32 new),
+  7,807 unknown; picture unchanged.
+
+## D310 steps per frame at the Pod push and a game sweep of the change-over (2026-10-15)
+- Research only (`docs/level-scripts.md` part 61). MEASURED (RPCS3 memory, three pushes): every
+  frame runs one step; "in use" turns on at the frame-start pump, so the VM's order is the game's.
+- MEASURED: ten game frames through the change-over match the viewer with zoom and dissolve on
+  the same tick at every offset; part 52's one-tick lead is not reproduced. The sweep had no post
+  chain (no DoF or vignette), so part 57's dissolving-glass question stays open.
+
+## D311 the post chain's patches and the dissolving glass's depth of field (2026-10-15)
+- Research only (`docs/level-scripts.md` part 62). FOUND: lane A's RPCS3 had LBP2 patches on since
+  2026-10-09 ("Disable MLAA" clears 0xdb8208, "Disable Motion Blur" stubs the DoF function 0x32897c),
+  which removed the post chain from part 61's frames; now off for good.
+- FOUND (RenderDoc, change-over frames 8348 / 8980, and 5247): the DoF runs twice: once over the
+  opaque scene before the translucent loop, then part 57's stencil form. The dissolving glass is a
+  marked, depth-writing translucent draw between them, so it stays sharp over a blurred room.
+
+## D312 the depth of field in two passes (2026-10-15)
+- Viewer (`docs/level-scripts.md` part 63): DoF 1 runs between the opaque and the transparent
+  pass over the opaque scene (second ring at twice the step, alpha 8a - 7, beyond the plane);
+  the glass writes its depth while the depth of field runs; DoF 2 (the post chain) composites
+  the pixels whose depth changed after the opaque pass without the plane test and the others
+  only nearer than the plane. Behind `dof_route`; without it byte-equal to main.
+- MEASURED (replays, `local-analysis/d312-planes/`): one range and plane for both passes; DoF 2's
+  GREATER passes nearer pixels (part 57's "beyond" corrected). Open: DoF 2's ring offset (tex 3).
+- MEASURED (hidden window): the change-over's left glass gradient 1.21 -> 1.58 (game `open-t1`
+  1.50), the open room 0.64 -> 0.57 (game 0.37), viewport |d| 11.72 -> 11.52; the band at 615
+  1.08 -> 1.76 (game 0.34; the viewer's glass still there). Closed Pod and Da Vinci unchanged.
+
+## D313 the depth of field's ring against the game's own frame (2026-10-15)
+- Viewer (`docs/level-scripts.md` part 64): the ring taps' +y now points down the picture,
+  in both the shader and the CPU mirror (`dof_ring_cpu`).
+- MEASURED (8980, each pass run on the game's own input, `local-analysis/d313-blur/`): the
+  ring errors fall from 0.27 / 0.26 to 0.015 / 0.018 levels. All 8 ring passes (8348, 8980,
+  14790) fit with y down. Part 49's y up came from buffers read bottom row first, because
+  RenderDoc's saved images are upside down.
+- MEASURED: on the game's input, main's room gradient is already the game's (1.08 against
+  1.09). The stills are unchanged to 0.01 (open room 0.57 against 0.37), so the remaining
+  gap is upstream (INFERRED).
+- Also MEASURED: DoF 2's offset texture is non-zero in 8980, and replays of 2769 carry
+  orange artefact tiles.
+
+## D314 the open room's light against the game's (2026-10-15)
+- Viewer (`docs/level-scripts.md` part 65): under a root that hangs under the world Thing the
+  planets level is lit from the sun as a point (the level's sun x `sun_position_scale`,
+  unturned; `planets_light_turn`, `planets_sun_point`); the dolly's root still turns its light.
+- FOUND (8980, draws 2400 / 2416, `local-analysis/d314-mip/`): the game's sun is the level's
+  sun x 300,000, unturned, while its normals turn with the world Thing; the viewer's normals
+  matched, its sun (turned 19 degrees) gave N.L 0.93 against 0.79, so x 1.07 to 1.09 light.
+  Samplers are trilinear, anisotropy 1, bias 0; the mural is mip 0; the disc's mips are
+  softer than the viewer's box filter but decide only 6 % of the box.
+- MEASURED (all post off, open room box, main -> point): |mean d| 5.7 -> 1.8, contrast x 1.10
+  -> x 1.04, gradient 1.136 -> 1.068 (game 1.008). Closed Pod against 5247 (|mean d|, main /
+  point, clean final output): room 3.8 / 4.9, globe 1.9 / 3.5, left glass 1.4 / 2.5, right 0.4 /
+  0.4. Term by term on the closed room (draw 2520) the point sun gives the game's fog share,
+  normal, sun direction and N.L (0.900 / 0.901; main 0.920); main's closer means are its turned
+  sun offsetting a 0.5 % shortfall elsewhere plus the post chain's darker room in both builds
+  (INFERRED). Da Vinci: 126 pixels at most 5, compiled-shader change, not the point path.
+
+## D315 two clocks in the change-over (2026-10-15)
+- Research (`docs/level-scripts.md` part 66), no code change. FOUND (RenderDoc 8348 / 8980,
+  `local-analysis/d315-dissolve/`): the pod's `vc[4]` alpha is 1 - v: 114/255 and 50/255, so
+  v 0.55 / 0.80, ticks 611 / 616, the focus-range clock exactly. The Earth's radius puts the
+  same captures at 607.1-607.5 / 613.6-613.9: the viewer's planets zoom leads the game's by
+  about 2.5 to 4 ticks at the same script tick.
+- FOUND: the glass program's line is part 29's (1150 + 11.76 - 1550 v over the camera); the
+  viewer computes the same (`pod_dissolve.rs:116`, the `dual.rs` edge test). The viewer's
+  dissolve is not late: the sweep's `d0600` is about tick 617.5 on the dissolve clock
+  (INFERRED), not 615.6. Open: the planets view blend's timing in the VM.
+
+## D316 the planets zoom against the game's captures (2026-10-15)
+- Research (`docs/level-scripts.md` part 67), no code change; withdraws part 66's lead. MEASURED
+  (RenderDoc, six captures, `local-analysis/d316-zoom/`): the Earth draw's fog plane `vc[16]`
+  gives the game's blend s = 0.2160 / 0.4253 / 0.5748 / 0.8960 / 0.99275 at dissolve ticks 606 /
+  609 / 611 / 616 / 619, SmoothStep(0.05 n), the VM's exactly. Earth sphere fits match
+  `GetTransform` with the VM's s within 0.1 % in distance; the planets world turns by
+  2 x camera pitch change - 0.2 s about the eye (source not found).
+- MEASURED: the lead came from `th*.png` desktop grabs (0.83x the frame, 0.5-1.8 ticks early);
+  on the captured frames the Earth sits at viewer ticks 611.8-612.2 / 616.9-617.5. Open: the
+  viewer's Earth about 5 % small before rest (placement, INFERRED).
+
+## D317 the Pod Earth drawn per bone under the scripts (2026-10-15)
+- Viewer (`docs/level-scripts.md` part 68): in the scripted Pod the Earth (pod_planets Thing 1,
+  boneThings [1, 2, 3]) is drawn per bone and the per-bone copy is on the Thing map, so it follows
+  the scripts; per-bone placement is on by default there (`--no-per-bone-placement` turns it off).
+- MEASURED (limb fits on captured frames 6082 / 8348 / 8980 / 9601 against stills): the gap was
+  the Earth's shape, not its size (part 67's 5 % came from a model curve): widths equal, the
+  viewer's height over width 1.06-1.12 against the game's 0.91-0.96, now 0.93-0.96; centres
+  within 2 to 5 px.
+
+## D318 the Pod planets' turn against the game's captures (2026-10-15)
+- Research (`docs/level-scripts.md` part 69), no code change. MEASURED (lane B's six RenderDoc
+  captures, `local-analysis/d321-planet-turn/`; drawn vertices paired with pod_planets' model by
+  order, clip y un-flipped): in the planets level's frame the Earth and the Moon are at their
+  class places, unturned (spin and pitch within 0.0004 rad, 0.025 deg) at ticks 600 to 619, closed
+  and in use: the point is along +z, which is the runtime's placeholder (0, 0, 1). No easing
+  toward "Story" by 619. The game's Earth face matches the viewer's (land centroid within 0.01 r).
+- MEASURED: the runtime's World Thing matrix is the game's at all six captures; part 67's extra
+  turn about the eye came from RPCS3's clip y flip. Open: the point once an entry is selected.
+
+## D320 Sackboy at the pod computer in the scripted Pod (2026-10-15)
+- Viewer (`docs/level-scripts.md` part 71): the scripted Pod has the viewer's own Sackboy by
+  default (`--no-pod-sackboy` leaves him out); at the pod computer he plays the game's
+  pod_computer_into / idle / out clips (FOUND, 01.33: GUIDs 42b3 / 42b2 / 42e9, weight (n+1)/3,
+  offset blend (n-5)/11, out 1-(n-5)/10) over his own pose.
+- MEASURED (heads on frames 8980 / 9601): at the target's depth he was 1.21x the game's; drawn
+  at z -200 (the game's memory) with the offset's depth reversed (INFERRED) his head is the
+  game's within 1-3 px (616: 630-695 top 604 vs 632-698 top 606; 619: 622-683 top 619 vs
+  624-685 top 620). Open: what moves him to -200; button and stick clips.
+
+## D319 the Pod main menu drawn from the scripts (2026-10-15)
+- Runtime and viewer (`docs/level-scripts.md` part 70): the main menu state's Gooey natives are
+  answered (`World::ui_call`, `lbp-runtime` `gooey.rs`), so its own `UpdateUI` builds the frame
+  tree (Story, Community, Recent Activity, Store, the player card, Me; focus on Story), and the
+  pod computer's per-frame `Draw__m` (FOUND constant matrix, 0x404598 / 0x404070) gives it its
+  matrix in the planets world. The scripted Pod draws it over the planets from tick 601, fading
+  in over 15 frames and zooming with them (game: there at 606, full by 616).
+- MEASURED (rt20_9601, tick 619): pills, card and Me within 1-4 px of the game's centres and
+  sizes; layout metrics fitted (INFERRED), OS font, PLACEHOLDER card picture.
+
+## D321 the Pod main menu in the game's font, with the player's card (2026-10-15)
+- Runtime and viewer (`docs/level-scripts.md` part 72): FOUND (01.33) the Gooey's text style
+  table (style 1, the menu's buttons: font 1, size 32) and the font GUID table; font 1 is
+  Eigerdals Black (INFERRED from the enum names, MEASURED on the frame). The fonts are loose disc
+  files (`gamedata/fonts`, outside DATA.FARC), read from a game directory; glyphs are distance
+  fields. Text drawn from them at size / 16 units a font pixel, advances rounded up; pills
+  measured with the font (pad 52.6 fitted). Card: `profile_default.tex` (000028d8, FOUND in the
+  engine's GUID table, MEASURED as the frame's picture), the frame's colour and turn, and the
+  profile's pins given by `--pod-card-pins` (the frame's: night owl, pod time, early bird).
+- MEASURED (rt20_9601 / 8980): text spans Community 148.0 / 148.0, Recent Activity 202.0 /
+  200.5, Me 41.0 / 40.5, Story 107.3 / 111.1 px at 619 (game / viewer; D319 136.5 / 166.5 /
+  30.5 / 90.2); card box 127 x 155 against 126 x 153. Open: the viewer's labels and pills are
+  brighter (linear UI blending), the profile itself, the card's shadow.
+
+## D322 the Pod main menu blended as the game blends it (2026-10-15)
+- Viewer (`docs/level-scripts.md` part 73): FOUND (RenderDoc frames 8980 / 9601) the menu is drawn
+  into the scene after the copy back and before the final pass, premultiplied colour over in
+  encoded 8-bit values (One, OneMinusSrcAlpha) with the alphas added (One, One): pill = player
+  colour at 82/255, text white at 102/255 (target alpha 82 / 184), focused pill and card opaque.
+  The viewer rasterizes the menu into a layer (`menu_layer.rs`) that the final pass composes
+  (`MENU_LAYER`: the menu over the scene, then the mix back by its alpha); `--no-final-pass`
+  keeps the UI overlay. `rt20_*_up` are the target before the final pass.
+- MEASURED against the game's final output at 619 (fill / text, Me): game (94, 129, 55) /
+  (160, 180, 139), D321 (99, 143, 55) / (213, 221, 208), D322 (94, 129, 56) / (160, 180, 141);
+  letter ink Me 29 / 54 / 30, Recent Activity 180 / 263 / 172. A no-menu still is byte-identical.
+  Open: the planets' rim halo, the card's shadows, the focused pill's own colour.
+
+## D323 the planets' coronas, the pins' shadows, the card and the focused pill (2026-10-15)
+- Viewer (`docs/level-scripts.md` part 74): FOUND (RenderDoc 6082 to 9601) the two additive draws
+  before the menu are the planets' coronas, in every capture from tick 600 (closed Pod, no menu):
+  a square facing the eye, +-1.6 units, 0.5 behind the planet, `earth_corona.tex` (00006993) x
+  (0.5, 0.7, 1, 0.5), SrcAlpha / One, depth tested; unit 3632.6 (Earth) / 1733.6 (Moon) world
+  units (MEASURED). PS 3441 = the pins' shadows (nine-tap alpha, black, 0.7); the card = the
+  `player_badge_overlays.tex` atlas's back (its shadow), the picture, the frame; PS 3455 = the
+  focused pill's slab (blue base at 0.8, eight cyan layers at 0.25 stepping back along z).
+  The menu layer draws all of them; the coronas also without the menu.
+- MEASURED against the game's final output (mean abs, levels): corona ring 14.4 -> 3.9 (619),
+  15.7 -> 4.5 (616), 19.0 -> 2.7 (600, closed); focused pill face 21.3 -> 16.7, slab side 31.6 ->
+  20.8; card shadow 10.1 -> 7.8. Open: what draws the coronas, the slab step's and focus scale's
+  rule, the card's turn, the menu's fade-in (its draws are at full alpha at 611).
