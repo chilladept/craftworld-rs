@@ -403,9 +403,13 @@ fn text(v: Option<&Value>) -> String {
 }
 
 fn numbers(args: &[Value]) -> Vec<f32> {
+    // D330: a vector's four components in place (the speech bubble's tail offset).
     args.iter()
-        .filter(|v| matches!(v, Value::Float(_) | Value::Int(_)))
-        .map(|v| num(Some(v)))
+        .flat_map(|v| match v {
+            Value::Float(_) | Value::Int(_) => vec![num(Some(v))],
+            Value::Vec4(c) => c.to_vec(),
+            _ => Vec::new(),
+        })
         .collect()
 }
 
@@ -976,6 +980,49 @@ pub enum PlacedKind {
         style: i32,
         font_scale: f32,
     },
+    /// D330: a frame drawn as a speech bubble's outline ([`SpeechBubble`]), placed before
+    /// its children (behind them); its rectangle is the frame's.
+    Bubble(SpeechBubble),
+}
+
+/// D330 FOUND (01.33: the bubble style enum at 0xd62d20, the style-15 path 0x4878d4): a
+/// frame of style 15 (`GCS_SPEECH_BUBBLE_OUTLINE`) is drawn as an outline with a tail, its
+/// look set by the frame's own calls (no table for styles above 11). Units are the root
+/// frame's. The Story title (`SearchDetailsStoryLevels.DoTitle`) passes width 35, radius
+/// 80 and tail settings ((50, 0, 0, 0), 30).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpeechBubble {
+    /// `SetFrameOutlineWidth`.
+    pub outline_width: f32,
+    /// `SetFrameCornerRadius` (the engine caps it at half the frame's sides).
+    pub corner_radius: f32,
+    /// `SetFrameSpeechBubbleOutlineTailSettings`: the vector's x and y, then the float
+    /// (FOUND default 20). INFERRED: the tail's offset and its size.
+    pub tail_offset: [f32; 2],
+    pub tail_size: f32,
+}
+
+/// `GCS_SPEECH_BUBBLE_OUTLINE`.
+pub const SPEECH_BUBBLE_OUTLINE: i32 = 15;
+
+impl SpeechBubble {
+    /// The bubble of a frame of style 15, else `None`.
+    pub fn of(f: &GooeyFrame) -> Option<Self> {
+        let first = |name: &str| f.other.get(name).and_then(|v| v.first().copied());
+        if first("SetFrameStyle")? as i32 != SPEECH_BUBBLE_OUTLINE {
+            return None;
+        }
+        let tail = f.other.get("SetFrameSpeechBubbleOutlineTailSettings");
+        Some(Self {
+            outline_width: first("SetFrameOutlineWidth").unwrap_or(0.),
+            corner_radius: first("SetFrameCornerRadius").unwrap_or(0.),
+            tail_offset: [
+                tail.and_then(|t| t.first().copied()).unwrap_or(0.),
+                tail.and_then(|t| t.get(1).copied()).unwrap_or(0.),
+            ],
+            tail_size: tail.and_then(|t| t.get(4).copied()).unwrap_or(20.),
+        })
+    }
 }
 
 /// The Gooey's fonts, in the order of the script enum's names (`FONT_HELVETICA`,
@@ -1318,6 +1365,14 @@ fn place_frame(
     out: &mut Vec<PlacedItem>,
 ) {
     let fonts = ctx.1;
+    if let Some(bubble) = SpeechBubble::of(f) {
+        out.push(PlacedItem {
+            kind: PlacedKind::Bubble(bubble),
+            centre: [r.x + r.w / 2., r.y + r.h / 2.],
+            size: [r.w, r.h],
+            angle: 0.,
+        });
+    }
     let b = borders(f);
     let inner = Rect {
         x: r.x + b[0],
@@ -1556,6 +1611,56 @@ mod tests {
             w.ui_call("Callout", "IsValid__Q5Gooey", None, &[]),
             Some(Value::Bool(false))
         );
+    }
+
+    /// D330: a style-15 frame (the Story title's calls) is placed as a speech bubble before
+    /// its text, with the outline, radius and tail settings it was given.
+    #[test]
+    fn d330_style_15_frame_is_a_speech_bubble_behind_its_text() {
+        let other = [
+            ("SetFrameStyle", vec![15.]),
+            ("SetFrameOutlineWidth", vec![35.]),
+            ("SetFrameCornerRadius", vec![80.]),
+            (
+                "SetFrameSpeechBubbleOutlineTailSettings",
+                numbers(&[Value::Vec4([50., 0., 0., 0.]), Value::Float(30.)]),
+            ),
+        ]
+        .into_iter()
+        .map(|(n, v)| (n.to_owned(), v))
+        .collect();
+        let bubble = GooeyFrame {
+            borders: Some([45.; 4]),
+            other,
+            children: vec![GooeyItem::Text {
+                text: "STORY".into(),
+                style: 16,
+                font_scale: 2.5,
+            }],
+            ..Default::default()
+        };
+        let root = GooeyFrame {
+            children: vec![GooeyItem::Frame(bubble)],
+            ..Default::default()
+        };
+        let placed = layout(&root, None);
+        assert_eq!(placed.len(), 2);
+        let PlacedKind::Bubble(b) = &placed[0].kind else {
+            panic!("{placed:?}");
+        };
+        assert_eq!(
+            *b,
+            SpeechBubble {
+                outline_width: 35.,
+                corner_radius: 80.,
+                tail_offset: [50., 0.],
+                tail_size: 30.,
+            }
+        );
+        assert!(matches!(placed[1].kind, PlacedKind::Text { .. }));
+        // The bubble is the text and its borders.
+        assert_eq!(placed[0].size[0], placed[1].size[0] + 90.);
+        assert_eq!(placed[0].centre, placed[1].centre);
     }
 
     #[test]

@@ -1016,6 +1016,10 @@ pub(crate) struct ScriptMenuNode(usize);
 #[derive(Component)]
 pub(crate) struct ScriptMenuPart([f32; 3]);
 
+/// D330: the tail of a speech bubble's node (the overlay's chevron; the layer draws its own).
+#[derive(Component)]
+pub(crate) struct ScriptMenuBubbleTail(usize);
+
 /// The label of a button node.
 #[derive(Component)]
 pub(crate) struct ScriptMenuLabel(usize);
@@ -1278,6 +1282,15 @@ const LABEL_ALPHA: f32 = 0.62;
 /// the letters); the focused pill's text is opaque white. Used when the menu is drawn as
 /// the game draws it (the final pass on); [`LABEL_ALPHA`] stays the overlay's.
 const GAME_LABEL_ALPHA: f32 = 102. / 255.;
+/// D330 MEASURED (two game frames of the Story title, the brightest quarter of its yellow
+/// pixels: 210, 179, 64 and 204, 182, 53): a speech bubble's outline and the text in it, in
+/// encoded values, opaque. The engine has no colour for the style (part 81); INFERRED to be
+/// the frame's default tint.
+const BUBBLE_COLOUR: [f32; 4] = [207. / 255., 181. / 255., 58. / 255., 1.];
+/// D330 INFERRED (the game frame's outline is 2 pixels where the frame's units are 0.47
+/// pixels, so `SetFrameOutlineWidth` 35 would be 16): the outline's width in frame units is
+/// the passed width over 8.
+const BUBBLE_WIDTH_SCALE: f32 = 1. / 8.;
 /// Text size against the pill's height (INFERRED by eye from the game frame's letters).
 const LABEL_SIZE: f32 = 0.56;
 /// A game-font label is rasterized again when its size has changed by this share.
@@ -1484,6 +1497,29 @@ fn spawn_script_menu(
                 }
                 card
             }
+            // D330: the bubble is drawn on the menu layer; its node only places it.
+            // On the overlay it is the node's border and a chevron child.
+            lbp_runtime::PlacedKind::Bubble(_) => commands
+                .spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        ..default()
+                    },
+                    UiTransform::IDENTITY,
+                    BackgroundColor(Color::NONE),
+                    BorderColor::all(Color::NONE),
+                    ScriptMenuNode(i),
+                    children![(
+                        Node {
+                            position_type: PositionType::Absolute,
+                            ..default()
+                        },
+                        UiTransform::from_rotation(Rot2::degrees(45.)),
+                        BorderColor::all(Color::NONE),
+                        ScriptMenuBubbleTail(i),
+                    )],
+                ))
+                .id(),
             lbp_runtime::PlacedKind::Text { text, .. } => commands
                 .spawn((
                     Node {
@@ -1701,8 +1737,17 @@ pub(crate) fn paint_script_menu(
             &mut Node,
             &mut UiTransform,
             &mut BackgroundColor,
+            Option<&mut BorderColor>,
         ),
         Without<ScriptMenuRoot>,
+    >,
+    mut tails: Query<
+        (&ScriptMenuBubbleTail, &mut Node, &mut BorderColor),
+        (
+            Without<ScriptMenuNode>,
+            Without<GameLabel>,
+            Without<ScriptMenuRoot>,
+        ),
     >,
     mut labels: Query<(&ScriptMenuLabel, &mut TextFont, &mut TextColor)>,
     mut parts: Query<(&ScriptMenuPart, &mut BackgroundColor), Without<ScriptMenuNode>>,
@@ -1789,7 +1834,8 @@ pub(crate) fn paint_script_menu(
     }
     // Screen pixels a root-frame unit along each item's own x (for the game-font labels).
     let mut px_per_unit = vec![None; frame.placed.len()];
-    for (ScriptMenuNode(i), mut node, mut ui, mut background) in &mut nodes {
+    let bubbled = in_bubble(&frame.placed);
+    for (ScriptMenuNode(i), mut node, mut ui, mut background, border) in &mut nodes {
         let Some(item) = frame.placed.get(*i) else {
             continue;
         };
@@ -1846,12 +1892,50 @@ pub(crate) fn paint_script_menu(
                 CARD_FRAME[2],
                 CARD_FRAME[3] * fade,
             ]),
-            lbp_runtime::PlacedKind::Text { .. } => None,
+            lbp_runtime::PlacedKind::Text { .. } | lbp_runtime::PlacedKind::Bubble(_) => None,
         };
         *background = match fill {
             Some(f) if !layer_route => BackgroundColor(Color::srgba(f[0], f[1], f[2], f[3])),
             _ => BackgroundColor(Color::NONE),
         };
+        // D330: on the overlay the bubble is the node's border with a chevron for its tail
+        // (the ring is not opened under it).
+        if let (lbp_runtime::PlacedKind::Bubble(b), Some(mut border)) = (&item.kind, border) {
+            let unit = dx.length();
+            let [r, g, bl, a] = BUBBLE_COLOUR;
+            let colour = if layer_route {
+                Color::NONE
+            } else {
+                Color::srgba(r, g, bl, a * fade)
+            };
+            let width = (b.outline_width * BUBBLE_WIDTH_SCALE * unit).max(1.);
+            node.border = UiRect::all(Val::Px(width));
+            node.border_radius =
+                BorderRadius::all(Val::Px((b.corner_radius * unit).min(w / 2.).min(h / 2.)));
+            *border = BorderColor::all(colour);
+            let tail = b.tail_size * unit;
+            // A square turned 45 degrees with two borders: arms `tail` long across, meeting
+            // the outline.
+            let side = tail * std::f32::consts::SQRT_2;
+            for (ScriptMenuBubbleTail(j), mut t, mut t_border) in &mut tails {
+                if j != i {
+                    continue;
+                }
+                t.width = Val::Px(side);
+                t.height = Val::Px(side);
+                // The chevron's tip `tail` past the outer edge (the child is placed from the
+                // inside of the border).
+                t.left =
+                    Val::Px(w - width + tail - side * std::f32::consts::FRAC_1_SQRT_2 - side / 2.);
+                t.top = Val::Px(h / 2. - width - side / 2.);
+                t.border = UiRect {
+                    top: Val::Px(width),
+                    right: Val::Px(width),
+                    ..default()
+                };
+                *t_border = BorderColor::all(colour);
+            }
+        }
         if layer_route {
             let centre = Vec2::new(at.x, at.y);
             placed_at[*i] = Some((centre, angle));
@@ -1867,6 +1951,21 @@ pub(crate) fn paint_script_menu(
                 (Some(back), Some(front)) if card => Some((back.clone(), front.clone())),
                 _ => None,
             };
+            if let lbp_runtime::PlacedKind::Bubble(b) = &item.kind {
+                let unit = dx.length() * scale;
+                list.push(MenuPrim {
+                    centre: centre * scale,
+                    size: Vec2::new(w, h),
+                    angle,
+                    shape: MenuShape::Bubble {
+                        radius: b.corner_radius * unit,
+                        width: b.outline_width * BUBBLE_WIDTH_SCALE * unit,
+                        tail: b.tail_size * unit,
+                    },
+                    colour: BUBBLE_COLOUR,
+                    image: None,
+                });
+            }
             if let Some(colour) = fill.filter(|_| card_atlas.is_none()) {
                 list.push(MenuPrim {
                     centre: centre * scale,
@@ -2050,19 +2149,29 @@ pub(crate) fn paint_script_menu(
                 placed_at.get(label.item).copied().flatten(),
             ) {
                 let a = if focused { 1. } else { GAME_LABEL_ALPHA };
+                let colour = if bubbled[label.item] {
+                    BUBBLE_COLOUR
+                } else {
+                    [1., 1., 1., a * fade]
+                };
                 prims[label.item].push(MenuPrim {
                     centre: centre * scale,
                     size: Vec2::new(img.width as f32, img.height as f32),
                     angle,
                     shape: MenuShape::Rect,
-                    colour: [1., 1., 1., a * fade],
+                    colour,
                     image: Some(img),
                 });
             }
             continue;
         }
         let a = if focused { 1. } else { LABEL_ALPHA };
-        image.color = Color::srgba(1., 1., 1., a * fade);
+        image.color = if bubbled[label.item] {
+            let [r, g, b, a] = BUBBLE_COLOUR;
+            Color::srgba(r, g, b, a * fade)
+        } else {
+            Color::srgba(1., 1., 1., a * fade)
+        };
     }
     if layer_route {
         let size = (
@@ -2083,6 +2192,22 @@ pub(crate) fn paint_script_menu(
             ),
         );
     }
+}
+
+/// D330: per placed item, whether it is text inside a speech bubble placed before it (the
+/// bubble's frame is placed before its children, part 81).
+fn in_bubble(placed: &[lbp_runtime::PlacedItem]) -> Vec<bool> {
+    placed
+        .iter()
+        .enumerate()
+        .map(|(i, item)| {
+            matches!(item.kind, lbp_runtime::PlacedKind::Text { .. })
+                && placed[..i].iter().any(|b| {
+                    matches!(b.kind, lbp_runtime::PlacedKind::Bubble(_))
+                        && (0..2).all(|k| (item.centre[k] - b.centre[k]).abs() <= b.size[k] / 2.)
+                })
+        })
+        .collect()
 }
 
 /// An encoded colour and an alpha as a layer colour.

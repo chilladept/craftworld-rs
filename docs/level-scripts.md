@@ -84,6 +84,7 @@ One file per part in `docs/level-scripts/`. A new part goes in its own
 - [Part 78: Story focuses Earth (2026-10-16, D327)](level-scripts/part-78.md)
 - [Part 79: Story lists its slots (2026-10-16, D328)](level-scripts/part-79.md)
 - [Part 80: the viewer draws Story (2026-10-16, D329)](level-scripts/part-80.md)
+- [Part 81: the Story title's speech bubble (2026-10-16, D330)](level-scripts/part-81.md)
 
 ## Next
 

@@ -19,6 +19,26 @@ use std::sync::Arc;
 pub enum MenuShape {
     Rect,
     Capsule,
+    /// D330: a speech bubble's outline (`GCS_SPEECH_BUBBLE_OUTLINE`, part 81): a rounded
+    /// rectangle's ring `width` pixels wide inside the edge, corners of `radius` (capped at
+    /// half the sides), open at the right edge's middle for a tail `tail` pixels long whose
+    /// arms are the ring's width. INFERRED from the game frame: the tail's tip points right
+    /// and its base is [`BUBBLE_TAIL_BASE`] of its length on each side of the middle.
+    Bubble {
+        radius: f32,
+        width: f32,
+        tail: f32,
+    },
+}
+
+/// D330 MEASURED (game frame, the Story title): the tail's base half-height over its length.
+pub const BUBBLE_TAIL_BASE: f32 = 0.4;
+
+/// The distance from `p` to the segment `a`..`b`.
+fn segment_distance(p: Vec2, a: Vec2, b: Vec2) -> f32 {
+    let ab = b - a;
+    let t = ((p - a).dot(ab) / ab.length_squared().max(1e-6)).clamp(0., 1.);
+    (p - (a + ab * t)).length()
 }
 
 /// A texture drawn over a primitive's rectangle: premultiplied RGBA texels in 0..1
@@ -237,6 +257,33 @@ impl MenuCanvas {
                 );
                 (0.5 - (q.length() - r)).clamp(0., 1.)
             }
+            MenuShape::Bubble {
+                radius,
+                width,
+                tail,
+            } => {
+                let r = radius.min(half.x).min(half.y).max(0.);
+                let q = l.abs() - (half - Vec2::splat(r));
+                let d = q.max(Vec2::ZERO).length() + q.x.max(q.y).min(0.) - r;
+                let w = width.max(1.);
+                let ring = (0.5 - ((d + w / 2.).abs() - w / 2.)).clamp(0., 1.);
+                if tail <= 0. {
+                    return ring;
+                }
+                // The tail: two arms from the edge, `base` above and below the middle, to
+                // the tip; the ring is open between them.
+                let base = tail * BUBBLE_TAIL_BASE;
+                let edge = half.x - w / 2.;
+                let tip = Vec2::new(half.x + tail, 0.);
+                let open = l.x > edge - w && l.y.abs() < base - w / 2.;
+                let ring = if open { 0. } else { ring };
+                let arm = segment_distance(l, Vec2::new(edge, base), tip).min(segment_distance(
+                    l,
+                    Vec2::new(edge, -base),
+                    tip,
+                ));
+                ring.max((0.5 - (arm - w / 2.)).clamp(0., 1.))
+            }
         }
     }
 
@@ -251,7 +298,12 @@ impl MenuCanvas {
         let ext = Vec2::new(
             half.x * c.abs() + half.y * s.abs(),
             half.x * s.abs() + half.y * c.abs(),
-        ) + Vec2::splat(1.);
+        ) + Vec2::splat(1.)
+            + match p.shape {
+                // The tail reaches past the rectangle.
+                MenuShape::Bubble { tail, .. } => Vec2::splat(tail.max(0.)),
+                _ => Vec2::ZERO,
+            };
         let x0 = (p.centre.x - ext.x).floor().max(0.) as usize;
         let y0 = (p.centre.y - ext.y).floor().max(0.) as usize;
         let x1 = ((p.centre.x + ext.x).ceil().max(0.) as usize).min(self.width);
@@ -447,6 +499,28 @@ mod tests {
             colour,
             image: None,
         }
+    }
+
+    /// D330: the speech bubble is a ring (empty inside), open at the right edge's middle,
+    /// with the tail's arms meeting at a tip past the edge.
+    #[test]
+    fn d330_bubble_outline_is_a_ring_with_a_tail() {
+        let shape = MenuShape::Bubble {
+            radius: 10.,
+            width: 2.,
+            tail: 8.,
+        };
+        let half = Vec2::new(30., 15.);
+        let cov = |x: f32, y: f32| MenuCanvas::coverage(shape, Vec2::new(x, y), half);
+        assert_eq!(cov(0., 0.), 0.);
+        assert_eq!(cov(0., -14.), 1.);
+        assert_eq!(cov(-29., 0.), 1.);
+        // Open where the tail meets the edge, closed above and below it.
+        assert_eq!(cov(29., 0.), 0.);
+        assert_eq!(cov(29., 6.), 1.);
+        // The tip, and nothing beyond it.
+        assert!(cov(37.5, 0.) > 0.5);
+        assert_eq!(cov(41., 0.), 0.);
     }
 
     /// D322: a pill at 82/255 then white text at 102/255 over it (the game's two draws over
