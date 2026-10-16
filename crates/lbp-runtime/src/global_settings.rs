@@ -86,6 +86,44 @@ impl SettingsInForce {
             self.lighting[2],
         ]
     }
+
+    /// D334: the world Y of the water surface without its bob ([`water_surface_y`]).
+    pub fn water_surface_y(&self) -> Option<f32> {
+        water_surface_y(self.water_level)
+    }
+}
+
+/// D334 (docs/level-globals.md): world Y of a water level of 0 and the rise per unit of
+/// level (01.33 0xd46c0, FOUND).
+pub const WATER_Y_AT_0: f32 = 1600.;
+pub const WATER_Y_PER_LEVEL: f32 = 40400.;
+
+/// D334: the world Y of the water surface for a water level in force, without the bob
+/// ([`water_bob`]); none when there is no water (level not above
+/// [`crate::WATER_LEVEL_MIN`], `WaterOn` 0xce438). Not clamped, as in the game.
+pub fn water_surface_y(level: f32) -> Option<f32> {
+    (crate::WATER_LEVEL_MIN < level).then_some(WATER_Y_AT_0 + WATER_Y_PER_LEVEL * level)
+}
+
+/// D334: what the bob adds to the surface Y at a wave phase (radians) for a wave
+/// magnitude in force: `sin(phase) * (240 W + 20)`, nothing for W not above 0.001
+/// (0xd46c0, FOUND).
+pub fn water_bob(waves: f32, phase: f32) -> f32 {
+    if waves > 0.001 {
+        phase.sin() * (240. * waves + 20.)
+    } else {
+        0.
+    }
+}
+
+/// D334: radians the wave phase moves on one world tick (0xd47d8, FOUND): 0.05 at W = 0,
+/// 0.02 at W = 1, 0.01 at W = 2.
+pub fn wave_phase_step(waves: f32) -> f32 {
+    if waves > 1. {
+        (2. - waves) * 0.01 + 0.01
+    } else {
+        (1. - waves) * 0.03 + 0.02
+    }
 }
 
 impl WorldState {
@@ -223,6 +261,24 @@ mod tests {
         assert_eq!(after.of_type(5), &[1., 1., 4., 3., 0.]);
         assert!(after.of_type(7).is_empty() && after.of_type(8).is_empty());
         assert_eq!(GLOBAL_SETTING_NAMES[5], "lighting");
+    }
+
+    #[test]
+    fn d334_water_surface_height_bob_and_phase() {
+        assert_eq!(water_surface_y(0.), None);
+        assert_eq!(water_surface_y(0.0001), None);
+        assert_eq!(water_surface_y(0.5), Some(1600. + 20200.));
+        assert_eq!(water_surface_y(1.), Some(42000.));
+        let s = SettingsInForce {
+            water_level: 0.25,
+            ..Default::default()
+        };
+        assert_eq!(s.water_surface_y(), Some(11700.));
+        assert_eq!(water_bob(0., 1.), 0.);
+        assert!((water_bob(1., std::f32::consts::FRAC_PI_2) - 260.).abs() < 1e-3);
+        for (w, step) in [(0., 0.05), (1., 0.02), (2., 0.01), (0.5, 0.035)] {
+            assert!((wave_phase_step(w) - step).abs() < 1e-6, "{w}");
+        }
     }
 
     #[test]

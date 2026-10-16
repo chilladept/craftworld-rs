@@ -24,6 +24,7 @@ mod pod_dissolve;
 mod sackboy_play;
 mod speech_overlay;
 mod thing_view;
+mod water;
 use bevy::{
     input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll},
     mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes},
@@ -110,6 +111,8 @@ struct LevelLoaded {
     /// D332: the fog tint's palettes (`fog_tint`), and whether the level is the Pod's.
     fog_palettes: Result<fog_tint::FogPalettes, String>,
     pod_level: bool,
+    /// D334: the water colours (`water::palette`).
+    water_palette: Result<Vec<[f32; 3]>, String>,
 }
 /// D278: the mask of the Pod tent's dissolve (`pod_dissolve::TRANSITION_MASK`) as an
 /// image, with a word on how the load went; there while the shell layer has a script
@@ -479,6 +482,9 @@ impl Viewer {
                             decode_texture(&catalog, &source, guid, &worker)
                         });
                         let fog_palettes = fog_tint::load_palettes(&source, &catalog, &worker);
+                        let water_palette =
+                            decode_texture(&catalog, &source, water::WATER_COLOURS, &worker)
+                                .map(|t| water::palette(&t));
                         Ok(LevelLoaded {
                             scene,
                             identity,
@@ -488,6 +494,7 @@ impl Viewer {
                             pod_mask,
                             fog_palettes,
                             pod_level: level_guid == Some(fog_tint::POD_LEVEL_GUID),
+                            water_palette,
                         })
                     });
                     let load_clip = |guid: &str| {
@@ -1420,6 +1427,19 @@ fn load(
             );
             if let Some(things) = things {
                 commands.insert_resource(things);
+            }
+            if v.level.pod.is_none() {
+                println!(
+                    "{}",
+                    spawn_water(
+                        &mut v,
+                        &mut commands,
+                        &mut meshes,
+                        &mut materials,
+                        &level,
+                        planets_normalize,
+                    )
+                );
             }
             v.lighting.level = followed.zip(light_frame).map(
                 |((main, presets, stored, fog_palette), (centre, scale))| lighting::LevelRelight {
@@ -2667,6 +2687,68 @@ fn use_world_lighting(scene: &mut LevelScene, fog_palette: &[[f32; 4]], pod: boo
         None => format!(
             "Lighting: no presets stored; main block (PWorld darkness {darkness:.2}; the live game's choice here is INFERRED)"
         ),
+    }
+}
+/// D334: the level's water body (`water::WaterBody`), from the level bottom up to the
+/// surface the PWorld's water level gives, over the level's span (backdrop excluded),
+/// coloured by its water tint. Hidden while there is no water; play mode
+/// (`level_play::follow_water`) moves it with the values in force. A line on what it did.
+fn spawn_water(
+    v: &mut Viewer,
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<ViewerMaterial>,
+    level: &LevelLoaded,
+    normalize: Mat4,
+) -> String {
+    let scene = &level.scene;
+    let Some([water_level, _, tint, _]) = scene.world_water else {
+        return "Water: no PWorld".into();
+    };
+    let backdrop = |i: &level_scene::SceneItem| Some(i.thing) == scene.counts.backdrop.thing;
+    let Some([lo, hi]) = scene
+        .bounds_where(|i| !backdrop(i))
+        .or_else(|| scene.bounds_where(|_| true))
+    else {
+        return "Water: no level bounds".into();
+    };
+    let (palette, note) = match &level.water_palette {
+        Ok(p) => (p.clone(), format!("{} colours", p.len())),
+        Err(e) => (Vec::new(), format!("colours not read ({e}), grey")),
+    };
+    let body = water::WaterBody {
+        floor: lo[1],
+        centre: Vec2::new(lo[0] + hi[0], lo[2] + hi[2]) * 0.5,
+        size: Vec2::new(hi[0] - lo[0], hi[2] - lo[2]),
+        normalize,
+        palette,
+        shown: None,
+    };
+    let surface = lbp_runtime::water_surface_y(water_level);
+    let transform = body.transform(surface.unwrap_or(body.floor));
+    let material = materials.add(water::material(body.colour(tint)));
+    let mesh = meshes.add(Cuboid::new(1., 1., 1.));
+    let visibility = if surface.is_some() {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
+    };
+    let shown = surface.map(|y| (y, tint));
+    let entity = commands
+        .spawn((
+            Mesh3d(mesh.clone()),
+            MeshMaterial3d(material.clone()),
+            transform,
+            visibility,
+            water::WaterBody { shown, ..body },
+        ))
+        .id();
+    v.scene.push((entity, mesh, material, None));
+    match surface {
+        Some(y) => format!(
+            "Water (D334): level {water_level:.3} -> surface Y {y:.1} level units, tint {tint:.3}; {note}"
+        ),
+        None => format!("Water (D334): none (level {water_level:.3}); {note}"),
     }
 }
 /// The frame of a level's light: the displayed bounds centre in level units and the

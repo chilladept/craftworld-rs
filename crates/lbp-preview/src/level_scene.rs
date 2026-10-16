@@ -549,6 +549,9 @@ pub struct LevelScene<T> {
     /// P3m: PWorld `lighting`, `colourCorrection`, `fog`, `fogTint`, `darkness` (the game
     /// blends the presets by `lighting` and dims by `darkness`; `LevelSettings::at_lighting`).
     pub world_lighting: Option<[f32; 5]>,
+    /// D334: PWorld `waterLevel`, `waterWaveMagnitude`, `waterTint`, `waterMurkiness` (the
+    /// stored current values).
+    pub world_water: Option<[f32; 4]>,
     /// P3b: presets of the PLevelSettings holder inside the backdrop plan. The Pod's live
     /// lighting is this holder's preset 0 (probe #105), not the level's own holder.
     pub backdrop_presets: Vec<LevelSettings>,
@@ -566,6 +569,7 @@ impl<T> Default for LevelScene<T> {
             settings: None,
             settings_presets: Vec::new(),
             world_lighting: None,
+            world_water: None,
             backdrop_presets: Vec::new(),
             checkpoints: Vec::new(),
         }
@@ -2598,6 +2602,18 @@ pub fn load_level_scene_with_options(
         .iter()
         .find_map(|t| t.data.world.as_ref())
         .map(|w| w.lighting);
+    scene.world_water = report
+        .things
+        .iter()
+        .find_map(|t| t.data.world.as_ref())
+        .map(|w| {
+            [
+                w.water_level,
+                w.water_wave_magnitude,
+                w.water_tint,
+                w.water_murkiness,
+            ]
+        });
     scene.checkpoints = checkpoints(&report.things);
     Ok(scene)
 }

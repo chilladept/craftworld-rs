@@ -26,7 +26,7 @@ use lbp_catalog::{attachment::AttachedSource, LoadControl};
 use lbp_preview::level_scene;
 use lbp_runtime::{
     tick_session, CameraPose, CameraSource, CameraView, DisplayCamera, LevelScripts, LevelWorld,
-    LightFollower, SessionLevel, StepReport, TICK_HZ,
+    LightFollower, SessionLevel, StepReport, RELIGHT_STEP, TICK_HZ,
 };
 use lbp_script_vm::natives::{Bindings, ACTION_ENGAGE_POD_BUTTON, PAD_ZONE_MIN_Z};
 use lbp_script_vm::Vm;
@@ -585,6 +585,7 @@ pub fn install(app: &mut App) -> Result<(), String> {
             tick,
             relight,
             follow_fog,
+            follow_water,
             follow_gravity,
             follow_colour_correction,
             follow_things,
@@ -1087,8 +1088,55 @@ fn follow_fog(play: NonSend<Play>, mut v: ResMut<crate::Viewer>) {
     );
 }
 
+/// D334: moves the water body (`water::WaterBody`) to the surface the water level in force
+/// gives and recolours it by the water tint in force; hidden while there is no water. The
+/// bob is not drawn. One line per change of more than a level unit or [`RELIGHT_STEP`]
+/// of tint.
+fn follow_water(
+    play: NonSend<Play>,
+    mut bodies: Query<(
+        &mut crate::water::WaterBody,
+        &mut Transform,
+        &mut Visibility,
+        &MeshMaterial3d<crate::dual::ViewerMaterial>,
+    )>,
+    mut materials: ResMut<Assets<crate::dual::ViewerMaterial>>,
+) {
+    let now = play.host.world.pworld.settings_in_force();
+    let tint = now.water_tint;
+    let surface = now.water_surface_y();
+    for (mut body, mut transform, mut visibility, material) in &mut bodies {
+        let moved = match (body.shown, surface) {
+            (None, None) => false,
+            (Some((y0, t0)), Some(y)) => (y - y0).abs() > 1. || (tint - t0).abs() > RELIGHT_STEP,
+            _ => true,
+        };
+        if !moved || !tint.is_finite() {
+            continue;
+        }
+        body.shown = surface.map(|y| (y, tint));
+        match surface {
+            Some(y) => {
+                *transform = body.transform(y);
+                *visibility = Visibility::Inherited;
+                if let Some(mut m) = materials.get_mut(&material.0) {
+                    m.base.base_color = body.colour(tint);
+                }
+                println!(
+                    "Water at tick {}: level {:.3} -> surface Y {y:.1} level units, tint {tint:.3}",
+                    play.scripts.ticks, now.water_level
+                );
+            }
+            None => {
+                *visibility = Visibility::Hidden;
+                println!("Water at tick {}: none", play.scripts.ticks);
+            }
+        }
+    }
+}
+
 /// D330: hands the gravity global setting in force to the physics (`lbp_sim::WorldGravity`:
-/// the world's gravity and Sackboy's fall, 2.3 x setting + 0.4 per tick², FOUND), when a
+/// the world's gravity and Sackboy's fall, 2.3 x setting + 0.4 per tickÂ², FOUND), when a
 /// physics world runs (`--play-sackboy`, the scripted Pod's Sackboy). One line per change.
 fn follow_gravity(play: NonSend<Play>, gravity: Option<ResMut<lbp_sim::WorldGravity>>) {
     let Some(mut gravity) = gravity else {
@@ -1100,7 +1148,7 @@ fn follow_gravity(play: NonSend<Play>, gravity: Option<ResMut<lbp_sim::WorldGrav
     }
     gravity.setting = setting;
     println!(
-        "Gravity at tick {}: setting {setting:.3}, {:.3} per tick² ({:.3} x normal) for the physics and Sackboy",
+        "Gravity at tick {}: setting {setting:.3}, {:.3} per tickÂ² ({:.3} x normal) for the physics and Sackboy",
         play.scripts.ticks,
         lbp_sim::gravity_per_tick(setting),
         gravity.scale()
@@ -2133,8 +2181,8 @@ fn window(mut contexts: EguiContexts, play: NonSend<Play>) -> Result {
                 }
             ));
             ui.small(format!(
-                "  gravity {:.3} (to the physics, D330); colour correction {correction:.3} (final pass, D331); not applied: water level {:.3}",
-                now.gravity, now.water_level
+                "  gravity {:.3} (to the physics, D330); colour correction {correction:.3} (final pass, D331); water level {:.3}, tint {:.3} (body, D334)",
+                now.gravity, now.water_level, now.water_tint
             ));
             ui.label(match play.things_scene {
                 Some(_) => format!("Things: {}", play.followed.line()),

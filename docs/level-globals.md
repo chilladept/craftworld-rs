@@ -166,7 +166,35 @@ relight; the follower now follows the fog too.
 Funland under `--level-scripts` (tick 291: fog 0.3, tint 0.875) logs fog 3026.6..28588.7 level
 units from 4323.7..40412.4 (x 0.7, + 300 for the far), in palette colour 6.
 
-## Research for the next PRs (not applied yet)
+## D334: water level and tint
 
-- Water (partly read): the tint picks from a 9-colour list at 8 x tint, murkiness x 0.7 goes
-  in the same vector's w (shader parameter 0x4da2db17); water level and waves not read.
+### What the game does (FOUND, 01.33)
+
+- Water is on when the level in force L is above 0.0001 (0xce438). The surface is at world
+  Y = 1600 + 40400 L (0xd46c0), not clamped; with a wave magnitude W above 0.001 it bobs by
+  sin(phase) (240 W + 20), the phase moving 0.05 radians a tick at W = 0, 0.02 at W = 1 and
+  0.01 at W = 2 (0xd47d8). The renderer caches Y each frame for the surface, underwater and
+  caustic passes (dedicated `watersurface*`, `finalcomp_water*` shaders).
+- The colour is a 9-entry palette read from the first nine texels of
+  `water_colours_32bit_linear.tex` (GUID 0x19bf3, RGB / 255, no sRGB decode; 0x357340,
+  0x3544ac). Tint T picks x = 8 T (clamped to 0..8) and blends entry floor(x) towards the
+  next. That colour and 0.7 x murkiness form shader parameter 0x4da2db17.
+- Load migration: files before revision 0x2b4 have their water level multiplied by 5.
+
+### What changed
+
+`lbp_runtime::water_surface_y`, `water_bob` and `wave_phase_step`; the level scene keeps the
+PWorld's water values. The viewer draws a translucent unlit body over the level's span from
+its bottom up to the surface (`water.rs`), coloured by the palette read from the texture,
+and under `--level-scripts` moves and recolours it with the values in force.
+
+### Not modelled
+
+- The surface bob, waves on the surface, caustics, reflections and the underwater pass
+  (murkiness); the body's opacity (0.35) is a PLACEHOLDER.
+- The tint colour does not ease from the old colour over the transition.
+- The revision < 0x2b4 x 5 migration.
+
+### Verification
+
+`cargo test -p lbp-runtime d334`, `cargo test -p lbp-bevy-viewer d334`, clippy.
