@@ -34,6 +34,7 @@
 //! runs in the Pod and in a level; its sources are the dissolve's alpha and the glowing
 //! materials' (`dual.rs`). Not under `--no-edge-glow`; without the glow or the final pass the
 //! frame is untouched.
+use crate::colour_grade::{self, ColourGrade};
 use crate::dual::{self, ViewerMaterial};
 use bevy::{
     core_pipeline::{tonemapping::tonemapping, Core3d, Core3dSystems, FullscreenShader},
@@ -43,13 +44,13 @@ use bevy::{
         extract_resource::{ExtractResource, ExtractResourcePlugin},
         render_asset::RenderAssets,
         render_resource::{
-            binding_types::{sampler, texture_2d},
+            binding_types::{sampler, texture_2d, uniform_buffer_sized},
             AddressMode, BindGroupEntries, BindGroupLayoutDescriptor, BindGroupLayoutEntries,
-            CachedRenderPipelineId, ColorTargetState, ColorWrites, Extent3d, FilterMode,
-            FragmentState, Operations, PipelineCache, RenderPassColorAttachment,
-            RenderPassDescriptor, RenderPipelineDescriptor, Sampler, SamplerBindingType,
-            SamplerDescriptor, ShaderStages, TextureDescriptor, TextureDimension, TextureFormat,
-            TextureSampleType, TextureUsages, TextureView,
+            BufferInitDescriptor, BufferUsages, CachedRenderPipelineId, ColorTargetState,
+            ColorWrites, Extent3d, FilterMode, FragmentState, Operations, PipelineCache,
+            RenderPassColorAttachment, RenderPassDescriptor, RenderPipelineDescriptor, Sampler,
+            SamplerBindingType, SamplerDescriptor, ShaderStages, TextureDescriptor,
+            TextureDimension, TextureFormat, TextureSampleType, TextureUsages, TextureView,
         },
         renderer::{RenderContext, RenderDevice, ViewQuery},
         sync_component::SyncComponent,
@@ -59,6 +60,7 @@ use bevy::{
     },
     shader::Shader,
 };
+use std::num::NonZeroU64;
 use std::{
     collections::HashMap,
     sync::atomic::{AtomicBool, Ordering},
@@ -319,6 +321,7 @@ fn init_pipelines(
                 texture_2d(TextureSampleType::Float { filterable: true }),
                 texture_2d(TextureSampleType::Float { filterable: true }),
                 texture_2d(TextureSampleType::Float { filterable: true }),
+                uniform_buffer_sized(false, NonZeroU64::new(colour_grade::UNIFORM_SIZE)),
             ),
         ),
     );
@@ -470,6 +473,7 @@ pub(crate) fn edge_glow(
     pipelines: Res<GlowPipelines>,
     cache: Res<PipelineCache>,
     (layer, gpu_images): (Option<Res<MenuLayer>>, Res<RenderAssets<GpuImage>>),
+    grade: Option<Res<ColourGrade>>,
     mut ctx: RenderContext,
 ) {
     let (target, glow, mlaa) = view.into_inner();
@@ -514,6 +518,12 @@ pub(crate) fn edge_glow(
         Some((c, a)) => (&c.texture_view, &a.texture_view),
         None => (post.source, post.source),
     };
+    // D331: the colour correction's constants (identity without a level).
+    let grade = device.create_buffer_with_data(&BufferInitDescriptor {
+        label: Some("d331_colour_grade"),
+        contents: &grade.as_deref().copied().unwrap_or_default().uniform(),
+        usage: BufferUsages::UNIFORM,
+    });
     let steps = [
         (source, bind_single(post.source), &glow.half.default_view),
         (
@@ -537,6 +547,7 @@ pub(crate) fn edge_glow(
                     glow_view,
                     menu_colour,
                     menu_alpha,
+                    grade.as_entire_binding(),
                 )),
             ),
             post.destination,
@@ -573,7 +584,7 @@ fn shader_source() -> String {
             .join(", ")
     };
     format!(
-        "const GLOW_STRENGTH: f32 = {:?};\nconst BLUR_OFFSETS = array<f32, 5>({});\nconst BLUR_WEIGHTS = array<f32, 5>({});\nconst FINAL_SCALE: f32 = {:?};\nconst VIGNETTE_AXES = vec2<f32>({:?}, {:?});\nconst VIGNETTE_START: f32 = {:?};\nconst VIGNETTE_FLOOR: f32 = {:?};\n{BODY}",
+        "const GLOW_STRENGTH: f32 = {:?};\nconst BLUR_OFFSETS = array<f32, 5>({});\nconst BLUR_WEIGHTS = array<f32, 5>({});\nconst FINAL_SCALE: f32 = {:?};\nconst VIGNETTE_AXES = vec2<f32>({:?}, {:?});\nconst VIGNETTE_START: f32 = {:?};\nconst VIGNETTE_FLOOR: f32 = {:?};\n{BODY}{}",
         GLOW_STRENGTH,
         list(BLUR_OFFSETS),
         list(BLUR_WEIGHTS),
@@ -581,7 +592,8 @@ fn shader_source() -> String {
         VIGNETTE_AXES[0],
         VIGNETTE_AXES[1],
         VIGNETTE_START,
-        VIGNETTE_FLOOR
+        VIGNETTE_FLOOR,
+        colour_grade::WGSL
     )
 }
 
@@ -676,13 +688,13 @@ fn glow_composite(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let e = min(to_encoded(scene.rgb) + glow, vec3<f32>(1.0));
     return vec4<f32>(from_encoded(e), 1.0);
 }
-// D294, pass 3454 (PS 14857) itself: the vignette over the viewport's uv (pixel centres),
-// VIGNETTE_FLOOR + (1 - VIGNETTE_FLOOR) x smoothstep(0, 1, saturate(VIGNETTE_START - r)).
+// D294, pass 3454 (PS 14857) itself: the vignette's weight over the viewport's uv (pixel
+// centres), s = smoothstep(0, 1, saturate(VIGNETTE_START - r)); D331 `graded` mixes from
+// the edge colour (VIGNETTE_FLOOR grey in record 0) to 1 by it.
 fn vignette(position: vec2<f32>) -> f32 {
     let uv = position / vec2<f32>(textureDimensions(source_texture));
     let r = length((uv - vec2<f32>(0.5)) * VIGNETTE_AXES);
-    let s = smoothstep(0.0, 1.0, saturate(VIGNETTE_START - r));
-    return VIGNETTE_FLOOR + (1.0 - VIGNETTE_FLOOR) * s;
+    return smoothstep(0.0, 1.0, saturate(VIGNETTE_START - r));
 }
 // D300: the pass's last step, lerp(c, scene, a) in encoded values, saturated at the end
 // (the 8-bit target), alpha 1. `a` is 0 in the Pod (the anti-aliasing job's copy back), else
@@ -720,17 +732,18 @@ fn final_mix_menu(e: vec4<f32>, c: vec3<f32>) -> vec4<f32> {
     return vec4<f32>(from_encoded(min(mixed, vec3<f32>(1.0))), 1.0);
 }
 #endif
-// c = (scene x FINAL_SCALE + glow) x vignette, then the mix back by the scene's alpha.
+// c = graded(scene x FINAL_SCALE + glow) (D331: colour correction and vignette), then the
+// mix back by the scene's alpha.
 @fragment
 fn final_composite(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let scene = textureLoad(source_texture, vec2<i32>(floor(in.position.xy)), 0);
     let glow = textureSampleLevel(glow_texture, source_sampler, in.uv, 0.0).rgb;
 #ifdef MENU_LAYER
     let e = with_menu(scene, in.position.xy);
-    let c = (e.rgb * FINAL_SCALE + glow) * vignette(in.position.xy);
+    let c = graded(e.rgb * FINAL_SCALE + glow, in.position.xy);
     return final_mix_menu(e, c);
 #else
-    let c = (to_encoded(scene.rgb) * FINAL_SCALE + glow) * vignette(in.position.xy);
+    let c = graded(to_encoded(scene.rgb) * FINAL_SCALE + glow, in.position.xy);
     return final_mix(scene, c);
 #endif
 }
@@ -740,10 +753,10 @@ fn final_only(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let scene = textureLoad(source_texture, vec2<i32>(floor(in.position.xy)), 0);
 #ifdef MENU_LAYER
     let e = with_menu(scene, in.position.xy);
-    let c = e.rgb * FINAL_SCALE * vignette(in.position.xy);
+    let c = graded(e.rgb * FINAL_SCALE, in.position.xy);
     return final_mix_menu(e, c);
 #else
-    let c = to_encoded(scene.rgb) * FINAL_SCALE * vignette(in.position.xy);
+    let c = graded(to_encoded(scene.rgb) * FINAL_SCALE, in.position.xy);
     return final_mix(scene, c);
 #endif
 }
@@ -1146,13 +1159,10 @@ mod tests {
             assert!(source.contains("const VIGNETTE_START: f32 = 1.2;"));
             assert!(source.contains("const VIGNETTE_FLOOR: f32 = 0.2;"));
             assert!(source.contains("smoothstep(0.0, 1.0, saturate(VIGNETTE_START - r))"));
-            assert!(source.contains("VIGNETTE_FLOOR + (1.0 - VIGNETTE_FLOOR) * s"));
-            assert!(source.contains(
-                "(to_encoded(scene.rgb) * FINAL_SCALE + glow) * vignette(in.position.xy)"
-            ));
-            assert!(
-                source.contains("to_encoded(scene.rgb) * FINAL_SCALE * vignette(in.position.xy)")
-            );
+            assert!(source.contains("mix(edge, vec3<f32>(1.0), vignette(position))"));
+            assert!(source
+                .contains("graded(to_encoded(scene.rgb) * FINAL_SCALE + glow, in.position.xy)"));
+            assert!(source.contains("graded(to_encoded(scene.rgb) * FINAL_SCALE, in.position.xy)"));
             // D300: both end in the mix back by the scene's alpha, saturated after it.
             assert_eq!(source.matches("return final_mix(scene, c);").count(), 2);
             assert!(source.contains("vec4<f32>(from_encoded(min(e, vec3<f32>(1.0))), 1.0)"));
@@ -1293,7 +1303,9 @@ mod tests {
                     source.contains("let a = clamp(scene.a + add, 0.0, 1.0);"),
                     !cleared
                 );
-                assert!(source.contains("let c = (e.rgb * FINAL_SCALE + glow) * vignette"));
+                assert!(
+                    source.contains("let c = graded(e.rgb * FINAL_SCALE + glow, in.position.xy);")
+                );
                 assert!(source.contains("let mixed = mix(c, e.rgb, e.a);"));
                 // D292's own add does not read the layer.
                 let d292 = &source[source.find("fn glow_composite").unwrap()..];

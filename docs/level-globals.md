@@ -48,14 +48,51 @@ RPCS3 memory reads (no writes, window minimized and never activated).
 378 levels part 18 counted the gravity setting unlike the file in 3 / 11 / 15 levels (plain /
 trigger visit / pulsed); none of them was played with Sackboy here.
 
+## D331: colour correction
+
+### What the game does (FOUND, 01.33)
+
+- The setting is a position over eight preset records read from
+  `gamedata/data/colcorrectpresets.raw` (GUID 31250; the Pod's `colcorrectpresetspod.raw`, GUID
+  127928, holds the same records in 01.33): two u32 words, then 8 x 28 big-endian floats
+  (loader 0x5e0814, parser 0x5df7e8; equal to the RAM tables read from RPCS3). Record floor(v)
+  is blended with the next by the fraction, 7 from 7 up (0x316a7c). The world builds a record
+  for the blend's start and its target and blends the two by the lighting group's factor
+  (0xda43c, 0xd978c).
+- Record: two transforms (tint rgb + weight w; saturation, hue in radians, contrast,
+  brightness), a picked colour (rgb, gain w), the vignette's top and bottom colours.
+- 0xe6e04 makes each transform a 4-row matrix for `(c, 1) x M`: hue rotation about the grey
+  axis, saturation with weights (0.2, 0.7, 0.1), `contrast x (c + brightness - 0.5) + 0.5`,
+  tint `c x (w + (1 - w) t) + w t` (checked against an emulation of the function's
+  instructions on three preset transforms).
+- The final pass (PS 14857, RPCS3 raw ucode): `c = scene x 1.2998 + glow`,
+  `g = lerp(c x M0, c x M1, saturate(pick.w x |c - pick.rgb|))`, then
+  `g x lerp(top + v x (bottom - top), 1, smoothstep(0, 1, saturate(1.2 - r)))`, then the mix
+  back by the scene's alpha. Record 0 is identity with a 0.2 grey vignette (part 45's frame).
+
+### What changed
+
+`colour_grade.rs` (matrices, record blend, presets file, the uniform and its WGSL); the final
+entries of `glow_post.rs` call `graded(..)`; `level_play.rs` reads the presets with the level
+and hands the record in force to the pass every tick (`follow_colour_correction`).
+
+### Not modelled
+
+- INFERRED: which shader slots each constant fills (no name table for the program), and that
+  the top colour is at the top of the frame. The flag at 0xe31e34 (saturation x 0.8; a 0/1/2
+  render state, possibly cinematic) is taken as clear.
+- The pass's uv offset by a neighbour difference of a single-channel buffer (`u3`, gated at
+  0.025), new in this read; part 45 did not have it.
+
+### Verification
+
+`cargo test -p lbp-bevy-viewer` (d331 tests; the d294/d300/d322 shader tests updated), clippy.
+Viewer: Cosmos `main_03_maingrapple` (setting 5.77, the only story level not at 0) logs the
+record and draws graded. NOT compared with a game frame yet: no RPCS3 frame of a level with a
+non-zero setting exists.
+
 ## Research for the next PRs (not applied yet)
 
-- Colour correction: the setting is a position over eight records the engine keeps (0x316a7c:
-  index = floor, the next one blended by the fraction, clamped to 0..7; two tables of eight,
-  picked by a flag). Each record holds a tint, saturation, hue, contrast and brightness pair,
-  and two vignette colours (record 0: identity grading, vignette 0.2 grey, the final pass's
-  0.2 floor of part 45). The final pass (0x323354) turns the blended record into the two
-  colour-matrix constants part 45 saw as identity (0xe6e04). Read from RPCS3 memory at boot.
 - Darkness and fog tint: the light-block function (0xac6c0) blends the stored presets at the
   lighting value (the P3m rule), then scales one colour of the blended block by 1 - darkness
   (masked lanes) and, for fog tint above 0, replaces it with a blend between that colour and a

@@ -1,4 +1,5 @@
 mod adapter;
+mod colour_grade;
 mod dof_post;
 mod dual;
 mod game_font;
@@ -1093,7 +1094,7 @@ fn main() {
             ..default()
         }))
         .add_plugins(dual::DualPlugin)
-        .add_plugins(glow_post::GlowPostPlugin)
+        .add_plugins((glow_post::GlowPostPlugin, colour_grade::ColourGradePlugin))
         .add_plugins(dof_post::DofPostPlugin)
         .add_plugins(mlaa_post::MlaaPostPlugin)
         .add_plugins(EguiPlugin::default())

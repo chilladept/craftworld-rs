@@ -416,8 +416,9 @@ pub fn install(app: &mut App) -> Result<(), String> {
         String,
         Option<(Vm, LevelWorld, String)>,
         Option<(crate::pod_menu::MenuAssets, String)>,
+        Result<[crate::colour_grade::Record; 8], String>,
     );
-    let (mut vm, mut world, header, shell, menu_assets) = std::thread::Builder::new()
+    let (mut vm, mut world, header, shell, menu_assets, cc_presets) = std::thread::Builder::new()
         .stack_size(level_scene::LEVEL_STACK_BYTES)
         .spawn(move || -> Result<Loaded, String> {
             let control = LoadControl::default();
@@ -468,7 +469,9 @@ pub fn install(app: &mut App) -> Result<(), String> {
             let menu_assets = shell.is_some().then(|| {
                 crate::pod_menu::load_menu_assets(&game, &source, &catalog, &control, &card_pins)
             });
-            Ok((vm, world, header, shell, menu_assets))
+            // D331: the colour correction's presets.
+            let cc_presets = crate::colour_grade::load_presets(&source, &catalog, &control);
+            Ok((vm, world, header, shell, menu_assets, cc_presets))
         })
         .map_err(|e| format!("level scripts thread: {e}"))?
         .join()
@@ -565,6 +568,13 @@ pub fn install(app: &mut App) -> Result<(), String> {
     })
     .insert_resource(crate::CaptureHold(hold_at.is_some()))
     .insert_resource(menu_assets.unwrap_or_default())
+    .insert_resource(crate::colour_grade::Presets(match cc_presets {
+        Ok(table) => Some(table),
+        Err(e) => {
+            println!("Colour correction: presets not read ({e}); the final pass stays at record 0");
+            None
+        }
+    }))
     .insert_resource(Time::<Fixed>::from_hz(f64::from(TICK_HZ)))
     .init_resource::<crate::pod_menu::ScriptMenu>()
     .init_resource::<crate::pod_menu::PodCoronas>()
@@ -576,6 +586,7 @@ pub fn install(app: &mut App) -> Result<(), String> {
             relight,
             follow_fog,
             follow_gravity,
+            follow_colour_correction,
             follow_things,
             follow_world,
             follow_menu,
@@ -1013,7 +1024,7 @@ const RELIGHT_AFTER_FRAMES: u32 = 60;
 /// blended at the new lighting and dimmed by the new darkness, the rule the viewer
 /// already uses for the level file's own values (P3m, `LevelSettings::at_lighting`).
 /// Nothing while the level is not drawn yet ([`RELIGHT_AFTER_FRAMES`]), or is lit another
-/// way (the Pod, a chosen preset, the main block). Colour correction, fog and fog tint
+/// way (the Pod, a chosen preset, the main block). Fog and fog tint
 /// are not applied: their mapping is not established. One line per new light: the check
 /// that needs no screenshot.
 fn relight(mut play: NonSendMut<Play>, mut v: ResMut<crate::Viewer>) {
@@ -1035,8 +1046,8 @@ fn relight(mut play: NonSendMut<Play>, mut v: ResMut<crate::Viewer>) {
     };
     let light = level.light(lighting, darkness);
     println!(
-        "Lighting at tick {}: lighting {lighting:.3}, darkness {darkness:.3} (new light {}); not applied: colour correction {:.3}, fog {:.3}, fog tint {:.3}",
-        p.scripts.ticks, follower.relights, now.lighting[1], now.lighting[2], now.lighting[3]
+        "Lighting at tick {}: lighting {lighting:.3}, darkness {darkness:.3} (new light {}); not applied: fog {:.3}, fog tint {:.3}",
+        p.scripts.ticks, follower.relights, now.lighting[2], now.lighting[3]
     );
     v.lighting.light = light;
     v.lighting.dirty = true;
@@ -1092,6 +1103,37 @@ fn follow_gravity(play: NonSend<Play>, gravity: Option<ResMut<lbp_sim::WorldGrav
         play.scripts.ticks,
         lbp_sim::gravity_per_tick(setting),
         gravity.scale()
+    );
+}
+
+/// D331: hands the colour correction in force to the final pass (`colour_grade.rs`): the
+/// preset records at the lighting group's start and target values, blended by its factor
+/// (FOUND, 0xda43c). One line per change of the setting.
+fn follow_colour_correction(
+    play: NonSend<Play>,
+    presets: Res<crate::colour_grade::Presets>,
+    mut grade: ResMut<crate::colour_grade::ColourGrade>,
+) {
+    let Some(table) = presets.0.as_ref() else {
+        return;
+    };
+    let p = &play.host.world.pworld;
+    let record = crate::colour_grade::record_of(
+        table,
+        p.lighting_from[1],
+        p.lighting_to[1],
+        p.lighting_blend,
+    );
+    if record == grade.record {
+        return;
+    }
+    grade.record = record;
+    println!(
+        "Colour correction at tick {}: setting {:.3} (from {:.3} to {:.3}) in the final pass",
+        play.scripts.ticks,
+        p.settings_in_force().lighting[1],
+        p.lighting_from[1],
+        p.lighting_to[1]
     );
 }
 
@@ -2090,7 +2132,7 @@ fn window(mut contexts: EguiContexts, play: NonSend<Play>) -> Result {
                 }
             ));
             ui.small(format!(
-                "  gravity {:.3} (to the physics, D330); not applied: colour correction {correction:.3}, fog {fog:.3}, fog tint {fog_tint:.3}, water level {:.3}",
+                "  gravity {:.3} (to the physics, D330); colour correction {correction:.3} (final pass, D331); not applied: fog {fog:.3}, fog tint {fog_tint:.3}, water level {:.3}",
                 now.gravity, now.water_level
             ));
             ui.label(match play.things_scene {
