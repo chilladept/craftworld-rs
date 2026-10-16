@@ -2857,6 +2857,7 @@ fn run() -> Result<(), String> {
             .map_err(|e| e.to_string())?;
         let mut second = LevelWorld::from_things(&report.things);
         second.translations = translations.clone();
+        second.story_slots = story_slots(&catalog, &source, &control)?;
         let mut second_vm = Vm::default();
         for (guid, s) in &scripts {
             second_vm.load(s.clone(), *guid);
@@ -3021,6 +3022,26 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
+/// D328: the slots of `gamedata/data/lbp2story_slots.slt` (GUID 000162ec), the list the
+/// Story search's results are made from.
+fn story_slots(
+    catalog: &lbp_catalog::Catalog,
+    source: &AttachedSource,
+    control: &LoadControl,
+) -> Result<Vec<lbp_runtime::SearchSlot>, String> {
+    let key = lbp_preview::resolve(catalog, Some(0x162ec), None)?;
+    let bytes = lbp_preview::level_scene::read_resource(source, &key, control, 16 << 20)?;
+    let report = lbp_level::slots::read(&bytes, lbp_level::Limits::default(), &|| false)
+        .map_err(|e| e.to_string())?;
+    match report.result {
+        Ok(lbp_level::slots::UiData::SlotList(list)) => {
+            Ok(lbp_runtime::SearchSlot::from_list(&list))
+        }
+        Ok(_) => Err("lbp2story_slots.slt is not a slot list".into()),
+        Err(e) => Err(format!("lbp2story_slots.slt: {e:?}")),
+    }
+}
+
 /// D327: what the pod's search state told the planets and the pod computer.
 fn search_json(s: &lbp_runtime::PlanetsSearch) -> serde_json::Value {
     serde_json::json!({
@@ -3033,5 +3054,8 @@ fn search_json(s: &lbp_runtime::PlanetsSearch) -> serde_json::Value {
         "want_search_details_calls": s.want_search_details_calls,
         "publish_cursor_badge_calls": s.publish_cursor_badge_calls,
         "error_message_calls": s.error_message_calls,
+        "default_result": s.default_result,
+        "cur_result": s.cur_result,
+        "set_search_results_calls": s.set_search_results_calls,
     })
 }

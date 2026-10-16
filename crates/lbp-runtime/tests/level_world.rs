@@ -5609,3 +5609,83 @@ fn search_state_selects_the_focus_planet_and_keeps_its_modes() {
     assert_eq!(w.pod.search.browse_mode, Some(1));
     assert_eq!(w.pod.search.error_message_calls, 1);
 }
+
+/// D328: the Story results. Every slot is a result in list order; a level's parent is its
+/// group's handle, a group's the empty handle; the Earth cursor starts on the default
+/// result and moves to the handle it is given.
+#[test]
+fn story_results_list_every_slot_and_link_levels_to_their_group() {
+    use lbp_runtime::{SearchSlot, StoryResult};
+    use lbp_script_vm::ObjectId;
+    let slot = |id, group| SearchSlot {
+        id,
+        group,
+        location: [1., 2., 3., 4.],
+    };
+    let result = |i: u32, parent| StoryResult {
+        result: ObjectId(10 + i),
+        handle: ObjectId(20 + i),
+        slot_id: ObjectId(30 + i),
+        parent,
+    };
+    let mut w = LevelWorld {
+        story_slots: vec![slot((0, 5), Some((4, 22))), slot((4, 22), None)],
+        story_results: vec![result(0, Some(1)), result(1, None)],
+        empty_result_handle: Some(ObjectId(40)),
+        ..LevelWorld::default()
+    };
+    w.pod.search.default_result = Some(1);
+    let o = |i| Value::Object(Some(ObjectId(i)));
+    let mut call = |class: &str, f: &str, this: Option<Value>, args: &[Value]| {
+        w.ui_call(class, f, this.as_ref(), args)
+    };
+    assert_eq!(
+        call("ResultCollection", "GetNumResults__", None, &[]),
+        Some(Value::Int(2))
+    );
+    assert_eq!(
+        call("ResultCollection", "GetResult__i", None, &[Value::Int(1)]),
+        Some(o(11))
+    );
+    assert_eq!(
+        call("ResultCollection", "GetResult__i", None, &[Value::Int(2)]),
+        Some(Value::Object(None))
+    );
+    assert_eq!(
+        call("SearchResult", "GetParent__", Some(o(10)), &[]),
+        Some(o(21))
+    );
+    assert_eq!(
+        call("SearchResult", "GetParent__", Some(o(11)), &[]),
+        Some(o(40))
+    );
+    assert_eq!(
+        call("SearchResult", "GetResultType__", Some(o(10)), &[]),
+        Some(Value::Int(1))
+    );
+    assert_eq!(
+        call("SearchResultSlot", "IsGroup__", Some(o(11)), &[]),
+        Some(Value::Bool(true))
+    );
+    assert_eq!(
+        call("SearchResultSlot", "GetSlotID__", Some(o(10)), &[]),
+        Some(o(30))
+    );
+    assert_eq!(
+        call(
+            "ResultCollection",
+            "FindResult__Q18SearchResultHandle",
+            None,
+            &[o(20)]
+        ),
+        Some(o(10))
+    );
+    assert_eq!(call("Planet", "GetCurResult__", None, &[]), Some(o(21)));
+    call(
+        "Planet",
+        "MoveCursorToResult__Q18SearchResultHandleb",
+        None,
+        &[o(20), Value::Bool(true)],
+    );
+    assert_eq!(call("Planet", "GetCurResult__", None, &[]), Some(o(20)));
+}

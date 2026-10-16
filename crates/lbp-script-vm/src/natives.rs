@@ -2428,6 +2428,14 @@ const TABLE: &[(&str, &str, NativeFn)] = &[
     ("Slot", "GetSlotGroup__Q6SlotID", |w, c| {
         w.slot_group(param(c, 0)?)
     }),
+    // D328 FOUND shape (the 01.33 listings; the engine's lock state is 0x1a7efc). Declared
+    // static `Slot.ELockState GetLockState(SlotID)`, an s32; the scripts compare it with 0
+    // and 1 (`SearchDetailsStoryLevels.WantVO__`: 1 or more is a second visit). The SlotID
+    // is often one a script built, so the world answers without reading it.
+    ("Slot", "GetLockState__Q6SlotID", |w, c| {
+        param(c, 0)?;
+        int_query(w, "Slot.GetLockState__Q6SlotID")
+    }),
     // FOUND shape (0x5f9ff0 -> 0x73a750). Declared static
     // `s32 GetPlayerIndicatorActivityType(s32 player)`: 0, 1 or 2; 0 = no off-screen
     // indicator. INFERRED for the world: 0 (see the world).
@@ -3152,7 +3160,7 @@ const TABLE: &[(&str, &str, NativeFn)] = &[
 ];
 
 /// The natives bound through [`World::state_query`], with their return type.
-pub const STATE_QUERIES: [(&str, &str); 34] = [
+pub const STATE_QUERIES: [(&str, &str); 35] = [
     ("Game.IsNonInteractive__", "bool"),
     ("Game.GetNumPendingLinks__", "s32"),
     ("Game.GetNumAvatars__", "s32"),
@@ -3179,6 +3187,7 @@ pub const STATE_QUERIES: [(&str, &str); 34] = [
         "OffScreenIndicator.GetPlayerIndicatorActivityType__i",
         "s32",
     ),
+    ("Slot.GetLockState__Q6SlotID", "s32"),
     ("Game.GetNumKeyNames__Q25Gooey.EGooeyNetworkAction", "s32"),
     (
         "Game.GetKeyIndex__Q25Gooey.EGooeyNetworkActionQ6String",
@@ -3269,7 +3278,7 @@ pub const UI_CLASSES: [&str; 2] = ["Gooey", "Callout"];
 /// D319: natives of other classes the pod computer's per-frame step and its main menu ask
 /// (part 46 found 28 kinds of them unbound in the planets level), also answered by
 /// [`World::ui_call`].
-pub const UI_NATIVES: [(&str, &str); 48] = [
+pub const UI_NATIVES: [(&str, &str); 69] = [
     ("Planets", "CheckOverlayNeedsUpdate__"),
     ("PodComputer", "GetPodComputerUserPlayerNumber__"),
     (
@@ -3325,6 +3334,28 @@ pub const UI_NATIVES: [(&str, &str); 48] = [
     ("SearchDetails", "GetCrossplaySearchMode__"),
     ("SearchDetails", "ShowErrorMessage__"),
     ("GriefReport", "ClearContext__"),
+    // D328: the Story results, their handles and the Earth planet's cursor.
+    ("ResultCollection", "GetResult__i"),
+    ("ResultCollection", "FindResult__Q18SearchResultHandle"),
+    ("ResultCollection", "FindResultSlot__Q6SlotID"),
+    ("ResultCollection", "FindResultIndex__Q18SearchResultHandle"),
+    ("SearchResults", "GetDefaultResult__"),
+    ("SearchResults", "SetDefaultResult__Q18SearchResultHandle"),
+    ("SearchResult", "GetResultType__"),
+    ("SearchResult", "GetHandle__"),
+    ("SearchResult", "GetParent__"),
+    ("SearchResult", "GetLocation__"),
+    ("SearchResult", "IsSelectable__"),
+    ("SearchResult", "IsClickable__"),
+    ("SearchResultSlot", "GetSlotID__"),
+    ("SearchResultSlot", "IsGroup__"),
+    ("SearchResultSlot", "IsEmptyMoon__"),
+    ("Planet", "SetSearchResults__Q13SearchResults"),
+    ("Planet", "GetResults__"),
+    ("Planet", "PickDefaultResult__"),
+    ("Planet", "MoveCursorToResult__Q18SearchResultHandleb"),
+    ("Planet", "GetCurResult__"),
+    ("GriefReport", "SetContext__Q18SearchResultHandle"),
 ];
 
 #[cfg(test)]
@@ -3980,7 +4011,7 @@ mod tests {
         assert_eq!(pressed, Ok(Value::Bool(false)));
         assert_eq!(w.0[7].pad.unwrap().now, START_BUTTON);
         // The table: 249 natives before these six; D274 added two, D295 four, D319 one.
-        assert_eq!(bound().count(), 262);
+        assert_eq!(bound().count(), 263);
     }
 
     #[test]
@@ -4040,7 +4071,7 @@ mod tests {
         assert!(call("Math", "ModAngleToWithinPI__f", &[Value::Int(1)]).is_err());
         assert_eq!(mod_angle_to_within_pi(0.25), wrap(0.25));
         // The table: 255 natives before these two; D295 added four, D319 one.
-        assert_eq!(bound().count(), 262);
+        assert_eq!(bound().count(), 263);
     }
 
     #[test]
@@ -4167,7 +4198,7 @@ mod tests {
         assert_eq!(w.0, 3);
         // The table: 238 natives before these eleven; D273 added six, D274 two, D295 four, D319
         // one.
-        assert_eq!(bound().count(), 262);
+        assert_eq!(bound().count(), 263);
     }
 
     #[test]

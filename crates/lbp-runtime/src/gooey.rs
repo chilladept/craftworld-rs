@@ -426,12 +426,11 @@ impl LevelWorld {
         receiver: Option<&Value>,
         args: &[Value],
     ) -> Option<Value> {
-        let _ = receiver;
         let frame = self.pworld.frame;
         let answer = match class {
             "Gooey" => self.gooey_call(mangled, args, frame),
             "Callout" => Some(callout(mangled)),
-            _ => self.menu_query(class, mangled, args),
+            _ => self.menu_query(class, mangled, receiver, args),
         }?;
         *self
             .gooey
@@ -653,8 +652,14 @@ impl LevelWorld {
         })
     }
 
-    fn menu_query(&mut self, class: &str, mangled: &str, args: &[Value]) -> Option<Value> {
-        if let Some(v) = self.search_query(class, mangled, args) {
+    fn menu_query(
+        &mut self,
+        class: &str,
+        mangled: &str,
+        receiver: Option<&Value>,
+        args: &[Value],
+    ) -> Option<Value> {
+        if let Some(v) = self.search_query(class, mangled, receiver, args) {
             return Some(v);
         }
         Some(match (class, mangled) {
@@ -706,7 +711,16 @@ impl LevelWorld {
     /// `GetCurrentPage__` s32, the rest bool or void) and that `GetFocusPlanet__` and
     /// `GetResults__` are used without a null check. The answers are INFERRED unless the
     /// line says otherwise.
-    fn search_query(&mut self, class: &str, mangled: &str, args: &[Value]) -> Option<Value> {
+    fn search_query(
+        &mut self,
+        class: &str,
+        mangled: &str,
+        receiver: Option<&Value>,
+        args: &[Value],
+    ) -> Option<Value> {
+        if let Some(v) = self.story_result_query(class, mangled, receiver, args) {
+            return Some(v);
+        }
         let int = || match args.first() {
             Some(Value::Int(i)) => Some(*i),
             _ => None,
@@ -760,10 +774,9 @@ impl LevelWorld {
                 search.want_search_details_calls += 1;
                 Value::Void
             }
-            // The search's results: one SearchResults object, with no results (the story
-            // levels the game would list were not read), obtained at once, on one page.
+            // The search's results: one SearchResults object (D328: its results are
+            // `LevelWorld::story_results`), obtained at once, on one page.
             ("SearchDetails", "GetResults__") => Value::Object(self.search_results),
-            ("ResultCollection", "GetNumResults__") => Value::Int(0),
             ("SearchResults", "GetWantZoom__") => Value::Bool(false),
             ("SearchDetails", "IsBusyObtainingResults__")
             | ("SearchDetails", "IsPaged__")
@@ -779,6 +792,103 @@ impl LevelWorld {
             }
             // No grief report is open.
             ("GriefReport", "ClearContext__") => Value::Void,
+            _ => return None,
+        })
+    }
+}
+
+impl LevelWorld {
+    /// D328: the natives on the Story search's results ([`LevelWorld::story_results`]),
+    /// their handles and the Earth planet's cursor. FOUND (the 01.33 listings): the return
+    /// types (`GetResult__i`, `FindResult__` a SearchResult, `FindResultSlot__` a
+    /// SearchResultSlot, `GetHandle__` / `GetParent__` / `GetCurResult__` /
+    /// `GetDefaultResult__` a SearchResultHandle, `GetResultType__` s32 compared with 1,
+    /// `GetLocation__` a vector) and that the pod computer treats a result whose parent
+    /// handle is not `Empty__` as inside a group. FOUND (01.33, 0x605b5c):
+    /// `GetNumResults__` is the size of the flat result array (groups and levels). A
+    /// handle or SlotID is found by object identity: only the objects made here match
+    /// (INFERRED enough for the search state, which hands back what it was given).
+    fn story_result_query(
+        &mut self,
+        class: &str,
+        mangled: &str,
+        receiver: Option<&Value>,
+        args: &[Value],
+    ) -> Option<Value> {
+        let object = |v: Option<&Value>| match v {
+            Some(Value::Object(Some(o))) => Some(*o),
+            _ => None,
+        };
+        let results = &self.story_results;
+        let slots = &self.story_slots;
+        let this = object(receiver).and_then(|o| results.iter().position(|r| r.result == o));
+        let by_handle =
+            |v: Option<&Value>| object(v).and_then(|o| results.iter().position(|r| r.handle == o));
+        let empty = self.empty_result_handle;
+        let handle_of = |i: Option<usize>| Value::Object(i.map(|i| results[i].handle).or(empty));
+        let result_of = |i: Option<usize>| Value::Object(i.map(|i| results[i].result));
+        let search = &mut self.pod.search;
+        Some(match (class, mangled) {
+            ("ResultCollection", "GetNumResults__") => {
+                Value::Int(i32::try_from(results.len()).unwrap_or(i32::MAX))
+            }
+            ("ResultCollection", "GetResult__i") => result_of(match args.first() {
+                Some(Value::Int(i)) => usize::try_from(*i).ok().filter(|i| *i < results.len()),
+                _ => None,
+            }),
+            ("ResultCollection", "FindResult__Q18SearchResultHandle") => {
+                result_of(by_handle(args.first()))
+            }
+            ("ResultCollection", "FindResultSlot__Q6SlotID") => result_of(
+                object(args.first()).and_then(|o| results.iter().position(|r| r.slot_id == o)),
+            ),
+            ("ResultCollection", "FindResultIndex__Q18SearchResultHandle") => {
+                Value::Int(by_handle(args.first()).map_or(-1, |i| i32::try_from(i).unwrap_or(-1)))
+            }
+            ("SearchResults", "GetDefaultResult__") => handle_of(search.default_result),
+            ("SearchResults", "SetDefaultResult__Q18SearchResultHandle") => {
+                search.default_result = by_handle(args.first());
+                Value::Void
+            }
+            // INFERRED: 1 is the slot kind (the SearchResultHandle of a slot has `_Type` 1,
+            // and the pod computer compares the type with 1 before reading the parent).
+            ("SearchResult", "GetResultType__") => Value::Int(i32::from(this.is_some())),
+            ("SearchResult", "GetHandle__") => handle_of(this),
+            ("SearchResult", "GetParent__") => handle_of(this.and_then(|i| results[i].parent)),
+            ("SearchResult", "GetLocation__") => Value::Vec4(
+                this.and_then(|i| slots.get(i))
+                    .map_or([0.; 4], |s| s.location),
+            ),
+            // INFERRED: every story result can be picked (no lock state was read).
+            ("SearchResult", "IsSelectable__") | ("SearchResult", "IsClickable__") => {
+                Value::Bool(this.is_some())
+            }
+            ("SearchResultSlot", "GetSlotID__") => Value::Object(this.map(|i| results[i].slot_id)),
+            // DEVELOPER_GROUP (4).
+            ("SearchResultSlot", "IsGroup__") => {
+                Value::Bool(this.and_then(|i| slots.get(i)).is_some_and(|s| s.id.0 == 4))
+            }
+            ("SearchResultSlot", "IsEmptyMoon__") => Value::Bool(false),
+            // The Earth planet's results and cursor. INFERRED: the cursor is on the
+            // default result until it is moved (`PickDefaultResult__` puts it back).
+            ("Planet", "SetSearchResults__Q13SearchResults") => {
+                search.set_search_results_calls += 1;
+                Value::Void
+            }
+            ("Planet", "GetResults__") => Value::Object(self.search_results),
+            ("Planet", "PickDefaultResult__") => {
+                search.cur_result = search.default_result;
+                Value::Void
+            }
+            ("Planet", "MoveCursorToResult__Q18SearchResultHandleb") => {
+                if let Some(i) = by_handle(args.first()) {
+                    search.cur_result = Some(i);
+                }
+                Value::Void
+            }
+            ("Planet", "GetCurResult__") => handle_of(search.cur_result.or(search.default_result)),
+            // No grief report is open; the context the search state hands it is not kept.
+            ("GriefReport", "SetContext__Q18SearchResultHandle") => Value::Void,
             _ => return None,
         })
     }

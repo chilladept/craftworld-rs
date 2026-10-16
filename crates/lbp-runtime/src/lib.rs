@@ -346,6 +346,14 @@ pub struct LevelWorld {
     pub crafteroids: Vec<(ObjectId, Option<u32>)>,
     /// D327: the SearchResults object `SearchDetails.GetResults__` answers (no results).
     pub search_results: Option<ObjectId>,
+    /// D328: the slots the Story search lists, in slot-list order (the caller reads
+    /// `lbp2story_slots.slt`; empty: no results). See [`SearchSlot`].
+    pub story_slots: Vec<SearchSlot>,
+    /// D328: the result objects of [`Self::story_slots`], one per slot, same order.
+    pub story_results: Vec<StoryResult>,
+    /// D328: an empty SearchResultHandle (`_Type` 0): `SearchResult.GetParent__` of a
+    /// result without a group.
+    pub empty_result_handle: Option<ObjectId>,
     /// The game state's player records, in join order (`Game.GetNumPlayers__` is their
     /// count). A level read with [`LevelWorld::from_things`] starts with the record of
     /// one local player, number 0, who has no Sackboy yet; [`LevelWorld::add_player`]
@@ -2206,6 +2214,10 @@ impl World for LevelWorld {
     /// - `Score_Board.GetGameScoreDataType__`: 6 in game mode 1, else the number of
     ///   player records - 1, not below 0.
     ///
+    /// D328: `Slot.GetLockState__Q6SlotID` is 0 (locked) for every slot (INFERRED: the
+    /// profile's lock states were not read), so the Story search plays its first-visit
+    /// line "pod_select_story".
+    ///
     /// D263, constants that hold for one local player in a level (INFERRED):
     /// - `OffScreenIndicator.GetPlayerIndicatorActivityType__i` is 0, no indicator: the
     ///   game gives 1 or 2 for a Sackboy off the screen or a second session entry. Not
@@ -2248,6 +2260,7 @@ impl World for LevelWorld {
                 (self.player_records.len() as i32 - 1).max(0)
             }),
             "OffScreenIndicator.GetPlayerIndicatorActivityType__i"
+            | "Slot.GetLockState__Q6SlotID"
             | "Game.GetNumKeyNames__Q25Gooey.EGooeyNetworkAction"
             | "Game.GetNumKnownItemsCollectedAtStart__" => Value::Int(0),
             "Game.GetKeyIndex__Q25Gooey.EGooeyNetworkActionQ6String" => Value::Int(-1),
@@ -2605,8 +2618,74 @@ pub fn add_engine_objects(
             Err(f) => faults.push(format!("SlotID {f:?}")),
         }
     }
+    add_story_results(vm, host, budget, &mut faults);
     faults.dedup();
     faults
+}
+
+/// D328: the Story search's results, one per [`LevelWorld::story_slots`] entry.
+///
+/// FOUND (01.33, 0x40f120, from the Story setup 0x449ce8): the engine clears the results,
+/// adds a SearchResultSlot for every slot of its slot list in list order (groups
+/// included), then links every slot with a group as a child of that group's result.
+/// INFERRED: that list is `lbp2story_slots.slt` (the default result below is one of its
+/// groups 22..27). FOUND (the 01.33 listings): SearchResultSlot is a script class (base
+/// SearchResult, `.init__`); SearchResultHandle's `.ctor__Q6SlotID` sets `_Type` 1 and
+/// `_SlotID`. FOUND (0x449ce8): the default result is group (4, n), n the highest of 27
+/// down to 22 whose lock state is above 0; one mode bit forces 22. INFERRED: 22 (Da
+/// Vinci's Hideout), the lock states of the profile were not read.
+fn add_story_results(
+    vm: &mut Vm,
+    host: &mut Bindings<LevelWorld>,
+    budget: u64,
+    faults: &mut Vec<String>,
+) {
+    let classes = ["SearchResultSlot", "SearchResultHandle", "SlotID"].map(|c| vm.class_by_name(c));
+    let [Some(result_class), Some(handle_class), Some(slot_class)] = classes else {
+        return;
+    };
+    let handle = |vm: &mut Vm, kind: i32, slot: Value| -> Option<ObjectId> {
+        let o = vm.instantiate(handle_class).ok()?;
+        if let Some(fields) = vm.fields_mut(o) {
+            fields.insert("_Type".into(), Value::Int(kind));
+            fields.insert("_SlotID".into(), slot);
+            fields.insert("_OnlineID".into(), Value::Str("".into()));
+        }
+        Some(o)
+    };
+    host.world.empty_result_handle = handle(vm, 0, Value::Object(None));
+    let slots = host.world.story_slots.clone();
+    let mut results = Vec::with_capacity(slots.len());
+    for s in &slots {
+        let made = (|| {
+            let slot_id = vm.instantiate(slot_class).map_err(|f| format!("{f:?}"))?;
+            if let Some(fields) = vm.fields_mut(slot_id) {
+                fields.insert("Type".into(), Value::Int(s.id.0));
+                fields.insert("SlotNumber".into(), Value::Int(s.id.1));
+            }
+            let handle = handle(vm, 1, Value::Object(Some(slot_id))).ok_or("handle")?;
+            let result = vm.instantiate(result_class).map_err(|f| format!("{f:?}"))?;
+            run_on_object(vm, host, result_class, result, ".init__", budget)?;
+            Ok::<_, String>(StoryResult {
+                result,
+                handle,
+                slot_id,
+                parent: None,
+            })
+        })();
+        match made {
+            Ok(r) => results.push(r),
+            Err(e) => {
+                faults.push(format!("SearchResultSlot {e}"));
+                return;
+            }
+        }
+    }
+    for (i, s) in slots.iter().enumerate() {
+        results[i].parent = s.group.and_then(|g| slots.iter().position(|o| o.id == g));
+    }
+    host.world.pod.search.default_result = slots.iter().position(|s| s.id == (4, 22));
+    host.world.story_results = results;
 }
 
 /// A scripted Thing and its class, when the class is loaded.

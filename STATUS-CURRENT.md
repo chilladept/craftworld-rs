@@ -1,4 +1,4 @@
-# Current state (overwrite each milestone) — after D326
+# Current state (overwrite each milestone) — after D328
 
 ## Product
 Independent LBP2 Asset Explorer (Rust): Bevy viewer (main) and legacy viewer read the
@@ -11,13 +11,13 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D327 Story focuses Earth (2026-10-16)
-- Runtime (`docs/level-scripts/part-78.md`): the search state's natives on its SearchDetails, its
-  results and the planets answer (`gooey.rs` `search_query`; kept in `PodState::search`). FOUND
-  (listings): `GetPlanet__` feeds `SelectPlanet__i`, and the Story planet views (6/7) are for planet
-  1. INFERRED: Story is on Earth, a local one-page search; the results stay empty (story slots not
-  read), so `ShowErrorMessage__` is called once. Session: unbound calls 742 -> 2, planets view 6.
-- Next: the story results (the slots the game lists on Earth), then draw the Story frame in the viewer.
+## Latest: D328 Story lists its slots (2026-10-16)
+- Runtime (`docs/level-scripts/part-79.md`): the Story search's results are the 82 slots of
+  `lbp2story_slots.slt` in list order, levels linked under their groups (FOUND, 0x40f120); the
+  result, handle and Earth cursor natives answer (`gooey.rs` `story_result_query`). INFERRED:
+  every lock state 0, default result group 22. Session: unbound calls 2 -> 1, no error message.
+- Next: draw the Story frame in the viewer and lift the `--pod-menu-choose` gate.
+- D327 (part 78): Story focuses Earth (search state natives, planets view 6).
 - D326 (part 77): Story's search state runs (factory natives, Story title bubble).
 
 ## Measured counts (distinct catalog GUID; Complete = manual, all textures + geometry)

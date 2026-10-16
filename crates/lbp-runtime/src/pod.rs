@@ -12,7 +12,7 @@ use crate::{LevelScripts, LevelWorld, StepReport};
 use lbp_script_vm::natives::{
     Bindings, DEFAULT_PLANETS_BACKGROUND, PAD_ZONE_MIN_Z, POD_MESH, POD_PLATFORM_MESH,
 };
-use lbp_script_vm::Vm;
+use lbp_script_vm::{ObjectId, Vm};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// The script class of the pod computer's trigger. INFERRED: the game tests the script
@@ -124,6 +124,49 @@ pub struct PlanetsSearch {
     /// `SearchDetails.ShowErrorMessage__` calls (the search answered no results on its
     /// first page); no message is drawn.
     pub error_message_calls: u64,
+    /// D328: `SearchResults.SetDefaultResult__` / the default found when the results were
+    /// made, and the Earth planet's cursor result (`Planet.GetCurResult__`), as indices
+    /// into [`LevelWorld::story_results`].
+    pub default_result: Option<usize>,
+    pub cur_result: Option<usize>,
+    /// D328: `Planet.SetSearchResults__Q13SearchResults` calls.
+    pub set_search_results_calls: u64,
+}
+
+/// D328: one slot of the Story search, as the engine keeps it for a result.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SearchSlot {
+    /// `SlotID` (`Type`, `SlotNumber`).
+    pub id: (i32, i32),
+    /// The slot's group, when not (0, 0).
+    pub group: Option<(i32, i32)>,
+    pub location: [f32; 4],
+}
+
+impl SearchSlot {
+    /// The search slots of a slot list, in list order (every slot, groups included).
+    pub fn from_list(list: &lbp_level::slots::SlotList) -> Vec<Self> {
+        let id = |s: lbp_level::slots::SlotId| (s.slot_type as i32, s.number as i32);
+        list.slots
+            .iter()
+            .map(|s| SearchSlot {
+                id: id(s.id),
+                group: s.group.map(id).filter(|g| *g != (0, 0)),
+                location: s.location,
+            })
+            .collect()
+    }
+}
+
+/// D328: the script objects made for one [`SearchSlot`]: its SearchResultSlot, the
+/// SearchResultHandle `GetHandle__` gives (`_Type` 1, `_SlotID`) and that SlotID.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StoryResult {
+    pub result: ObjectId,
+    pub handle: ObjectId,
+    pub slot_id: ObjectId,
+    /// The index of the group's result, when the slot has a group in the list.
+    pub parent: Option<usize>,
 }
 
 /// Most requests [`PodState::host_use_pod_requests`] keeps.

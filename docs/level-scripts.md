@@ -82,6 +82,7 @@ One file per part in `docs/level-scripts/`. A new part goes in its own
 - [Part 76: the Pod main menu answers the pad (2026-10-16, D325)](level-scripts/part-76.md)
 - [Part 77: Story's search state runs (2026-10-16, D326)](level-scripts/part-77.md)
 - [Part 78: Story focuses Earth (2026-10-16, D327)](level-scripts/part-78.md)
+- [Part 79: Story lists its slots (2026-10-16, D328)](level-scripts/part-79.md)
 
 ## Next
 
