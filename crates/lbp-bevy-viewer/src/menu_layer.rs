@@ -73,6 +73,52 @@ impl MenuImage {
             texels: Arc::new(texels),
         }
     }
+    /// D323: the texels of the rectangle at (`x`, `y`) of `width` x `height` (an atlas
+    /// cell), clamped to the image.
+    pub fn crop(&self, x: usize, y: usize, width: usize, height: usize) -> Self {
+        let width = width.min(self.width.saturating_sub(x));
+        let height = height.min(self.height.saturating_sub(y));
+        let texels = (y..y + height)
+            .flat_map(|j| {
+                let row = j * self.width;
+                self.texels[row + x..row + x + width].iter().copied()
+            })
+            .collect();
+        Self {
+            width,
+            height,
+            texels: Arc::new(texels),
+        }
+    }
+
+    /// D323 FOUND (frames 8980 / 9601, PS 3441, the drop shadow under each pin): the
+    /// image's alpha read at nine taps `step` texels apart (a 3 x 3 grid, weights 0.1592 at
+    /// the centre, 0.0965 on the sides, 0.0586 at the corners), as a coverage over the
+    /// weights' sum.
+    pub fn shadow(&self, step: f32) -> Self {
+        let mut texels = Vec::with_capacity(self.width * self.height);
+        let total = SHADOW_WEIGHTS[0] + 4. * SHADOW_WEIGHTS[1] + 4. * SHADOW_WEIGHTS[2];
+        for j in 0..self.height {
+            for i in 0..self.width {
+                let (u, v) = (i as f32 + 0.5, j as f32 + 0.5);
+                let mut a = 0.;
+                for dj in -1i32..=1 {
+                    for di in -1i32..=1 {
+                        let w = SHADOW_WEIGHTS[(di.abs() + dj.abs()) as usize];
+                        a += w * self.sample(u + di as f32 * step, v + dj as f32 * step)[3];
+                    }
+                }
+                let a = a / total;
+                texels.push([a, a, a, a]);
+            }
+        }
+        Self {
+            width: self.width,
+            height: self.height,
+            texels: Arc::new(texels),
+        }
+    }
+
     /// Bilinear at texel coordinates (texel centres at +0.5), clamped to the edge.
     fn sample(&self, u: f32, v: f32) -> [f32; 4] {
         let (w, h) = (self.width as isize, self.height as isize);
@@ -97,6 +143,32 @@ impl MenuImage {
         }
         out
     }
+}
+
+/// The pin shadow's tap weights: centre, side, corner (PS 3441's constants).
+pub const SHADOW_WEIGHTS: [f32; 3] = [0.1592, 0.0965, 0.0586];
+
+/// D323: a planet's corona (part 74): a square of `half` x 2 corona units a side facing the
+/// eye, `pull` corona units behind the planet's place, drawn with the texture `image`
+/// times `colour` and added to the picture (SrcAlpha, One: the shader's premultiplied
+/// colour times its alpha again), the alpha untouched. Where a planet's sphere is nearer
+/// than the square along a pixel's ray it is hidden (the game's depth test). Positions are
+/// relative to the eye, in any one unit.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CoronaPrim {
+    /// A pixel (x, y, 1) of the layer to the direction of its ray from the eye.
+    pub pixel_to_ray: bevy::math::Mat3,
+    /// The square's centre, and its two axes in the plane (each one corona unit long).
+    pub centre: bevy::math::Vec3,
+    pub axes: [bevy::math::Vec3; 2],
+    /// Half the square's side, in corona units.
+    pub half: f32,
+    /// The pixels to look at: x0, y0, x1, y1 (end exclusive).
+    pub bounds: [usize; 4],
+    /// Spheres that hide it: centre and radius.
+    pub spheres: Vec<bevy::math::Vec4>,
+    pub colour: [f32; 4],
+    pub image: MenuImage,
 }
 
 /// One draw of the menu, in pixels of the layer (from the top left): a shape of `size`
@@ -199,6 +271,65 @@ impl MenuCanvas {
                 }
                 dst[3] = a + (1. - a) * dst[3];
                 self.sum[i] += a;
+            }
+        }
+    }
+
+    /// D323: adds a planet's corona (PS 3429 with SrcAlpha, One): per pixel the texel `t`
+    /// times the colour `c`, premultiplied by its alpha `c.a t.a`, then times that alpha
+    /// again by the blend, added to the colour; the alpha and its sum are not changed.
+    /// Draw it before the menu's shapes, which then cover it as they cover the scene.
+    pub fn draw_corona(&mut self, p: &CoronaPrim) {
+        let n = p.axes[0].cross(p.axes[1]);
+        let (l0, l1) = (p.axes[0].length_squared(), p.axes[1].length_squared());
+        if !(n.length_squared() > 0. && l0 > 0. && l1 > 0. && p.half > 0.) {
+            return;
+        }
+        let d_plane = n.dot(p.centre);
+        let [r, g, b, alpha] = p.colour;
+        let [x0, y0, x1, y1] = p.bounds;
+        let (img_w, img_h) = (p.image.width as f32, p.image.height as f32);
+        for y in y0..y1.min(self.height) {
+            for x in x0..x1.min(self.width) {
+                let ray =
+                    p.pixel_to_ray * bevy::math::Vec3::new(x as f32 + 0.5, y as f32 + 0.5, 1.);
+                let denom = n.dot(ray);
+                if denom.abs() < 1e-12 {
+                    continue;
+                }
+                let t = d_plane / denom;
+                if t <= 0. {
+                    continue;
+                }
+                let rel = ray * t - p.centre;
+                let (u, v) = (rel.dot(p.axes[0]) / l0, rel.dot(p.axes[1]) / l1);
+                if u.abs() >= p.half || v.abs() >= p.half {
+                    continue;
+                }
+                let len = ray.length();
+                let (dir, at) = (ray / len, t * len);
+                let hidden = p.spheres.iter().any(|s| {
+                    let c = s.truncate();
+                    let b = dir.dot(c);
+                    let disc = b * b - (c.length_squared() - s.w * s.w);
+                    disc >= 0. && {
+                        let near = b - disc.sqrt();
+                        near > 0. && near < at
+                    }
+                });
+                if hidden {
+                    continue;
+                }
+                let tex = p.image.sample(
+                    (u / p.half + 1.) / 2. * img_w,
+                    (1. - v / p.half) / 2. * img_h,
+                );
+                // t.rgb (straight) x c.rgb x (c.a t.a)^2, from premultiplied texels.
+                let k = alpha * alpha * tex[3];
+                let dst = &mut self.over[y * self.width + x];
+                dst[0] += r * tex[0] * k;
+                dst[1] += g * tex[1] * k;
+                dst[2] += b * tex[2] * k;
             }
         }
     }
@@ -311,5 +442,83 @@ mod tests {
                 assert!((got - want).abs() < 1e-6, "{i} {j} {got} {want}");
             }
         }
+    }
+
+    /// A corona 20 pixels across, centred in a 32 x 32 layer, the eye at the origin looking
+    /// down -z (a pixel's ray: (x - 16, 16 - y, -16)), the square 10 units away.
+    fn corona(spheres: Vec<bevy::math::Vec4>) -> CoronaPrim {
+        use bevy::math::{Mat3, Vec3};
+        CoronaPrim {
+            pixel_to_ray: Mat3::from_cols(
+                Vec3::new(1., 0., 0.),
+                Vec3::new(0., -1., 0.),
+                Vec3::new(-16., 16., -16.),
+            ),
+            centre: Vec3::new(0., 0., -10.),
+            axes: [Vec3::new(1., 0., 0.), Vec3::new(0., 1., 0.)],
+            half: 6.25,
+            bounds: [0, 0, 32, 32],
+            spheres,
+            colour: [0.5, 0.7, 1., 0.5],
+            image: MenuImage::from_rgba(2, 2, &[255; 16]),
+        }
+    }
+
+    /// D323: the corona adds colour x texel x (alpha x texel alpha)^2 (premultiplied, then
+    /// SrcAlpha, One) to the layer's colour inside its square, leaves the alphas alone, and
+    /// is hidden where a sphere is nearer than the square along the ray.
+    #[test]
+    fn d323_corona_adds_and_hides_behind_spheres() {
+        let mut canvas = MenuCanvas::new(32, 32);
+        canvas.draw_corona(&corona(Vec::new()));
+        let at = |c: &MenuCanvas, x: usize, y: usize| c.over[y * 32 + x];
+        let centre = at(&canvas, 16, 16);
+        for (got, want) in centre.iter().zip([0.125, 0.175, 0.25, 0.]) {
+            assert!((got - want).abs() < 1e-6, "{centre:?}");
+        }
+        // The square is 12.5 units across at depth 10: 20 pixels at 16 pixels a unit
+        // of depth; outside it nothing is added.
+        assert_eq!(at(&canvas, 2, 16), [0.; 4]);
+        assert!(at(&canvas, 7, 16)[2] > 0.);
+        assert!(canvas.sum.iter().all(|&a| a == 0.));
+        // A sphere of radius 2 at depth 9 hides the middle; one behind the square does not.
+        let mut hidden = MenuCanvas::new(32, 32);
+        hidden.draw_corona(&corona(vec![bevy::math::Vec4::new(0., 0., -9., 2.)]));
+        assert_eq!(at(&hidden, 16, 16), [0.; 4]);
+        assert!(at(&hidden, 7, 16)[2] > 0.);
+        let mut behind = MenuCanvas::new(32, 32);
+        behind.draw_corona(&corona(vec![bevy::math::Vec4::new(0., 0., -14., 2.)]));
+        assert_eq!(at(&behind, 16, 16), centre);
+        // A menu shape drawn after covers it as it covers the scene.
+        canvas.draw(&MenuPrim {
+            centre: bevy::math::Vec2::new(16., 16.),
+            size: bevy::math::Vec2::new(4., 4.),
+            angle: 0.,
+            shape: MenuShape::Rect,
+            colour: [0., 0., 0., 0.5],
+            image: None,
+        });
+        assert!((at(&canvas, 16, 16)[2] - 0.125).abs() < 1e-6);
+    }
+
+    /// D323: a pin's shadow is its alpha over the nine taps' weights (1 inside, 0 far
+    /// outside); an atlas cell is cropped texel for texel.
+    #[test]
+    fn d323_shadow_and_atlas_cell() {
+        let mut rgba = vec![0u8; 16 * 16 * 4];
+        for j in 4..12 {
+            for i in 4..12 {
+                rgba[(j * 16 + i) * 4 + 3] = 255;
+            }
+        }
+        let img = MenuImage::from_rgba(16, 16, &rgba);
+        let shadow = img.shadow(1.);
+        assert!((shadow.texels[8 * 16 + 8][3] - 1.).abs() < 1e-6);
+        assert_eq!(shadow.texels[0][3], 0.);
+        let edge = shadow.texels[8 * 16 + 4][3];
+        assert!(edge > 0.4 && edge < 1., "{edge}");
+        let cell = img.crop(4, 4, 8, 8);
+        assert_eq!((cell.width, cell.height), (8, 8));
+        assert!(cell.texels.iter().all(|t| t[3] == 1.));
     }
 }

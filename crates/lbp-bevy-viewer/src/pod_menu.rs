@@ -13,7 +13,7 @@
 //! [--qa-hide-ui] [--qa-capture local-analysis/NEW.png]`.
 use crate::game_font::GameFont;
 use crate::gooey_ui::{demo_capture, demo_capture_path, DemoCapture};
-use crate::menu_layer::{MenuCanvas, MenuImage, MenuPrim, MenuShape};
+use crate::menu_layer::{CoronaPrim, MenuCanvas, MenuImage, MenuPrim, MenuShape, SHADOW_WEIGHTS};
 use crate::ui_script::{run_script, DEFAULT_FUNCTION};
 use bevy::prelude::*;
 use lbp_ui_script::pod::{layout, PodMenu, ASPECT, GLOBE, MOON};
@@ -738,6 +738,8 @@ pub struct ScriptMenuFrame {
     pub fade: f32,
     /// The player's primary colour (`Gooey.SetColoursFromPlayer`), RGBA 0..1.
     pub colour: [f32; 4],
+    /// D323: frames since the frame was first built.
+    pub age: f32,
 }
 
 impl ScriptMenuFrame {
@@ -772,7 +774,75 @@ impl ScriptMenuFrame {
             matrix: Mat4::from_cols_array(&menu.matrix),
             fade,
             colour: lbp_script_vm::natives::colour_vector(colour),
+            age: if age == f32::MAX { 0. } else { age },
         })
+    }
+}
+
+/// D323 (part 74): the planets' coronas: FOUND (RenderDoc 6082 to 9601, ticks 600 to 619,
+/// closed and open Pod, with and without the menu) two additive draws after the copy back,
+/// one square each for the Earth and the Moon, facing the eye (its normal points at the
+/// eye to 1e-5), [`CORONA_HALF`] x 2 corona units a side, [`CORONA_PULL`] units behind the
+/// planet's place, colour [`CORONA_COLOUR`] times the texture, depth tested. A corona unit
+/// is a size of the planet's own: MEASURED in the game's world (level units under the world
+/// Thing), the same in every capture.
+#[derive(Resource, Default, Clone, PartialEq)]
+pub struct PodCoronas(pub Vec<Corona>);
+
+/// One planet's corona: the Thing, its place in the level's world (level units, under the
+/// world Thing) and its corona unit.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Corona {
+    pub thing: u32,
+    pub place: Vec3,
+    pub size: f32,
+}
+
+/// D323 FOUND: the coronas' vertex colour (0.5, 0.7, 1, 0.5); the square's half side and
+/// its pull behind the planet, in corona units (the quad's corners +-1.6, z -0.5).
+pub const CORONA_COLOUR: [f32; 4] = [0.5, 0.7, 1., 0.5];
+pub const CORONA_HALF: f32 = 1.6;
+pub const CORONA_PULL: f32 = 0.5;
+/// D323 MEASURED (the square's matrix against the Earth draw's, six captures, within
+/// 0.1 %): the corona unit by the planet's script class, in the world's units. The Earth's
+/// sphere fits r = 3239 there (part 67), so 1.12 r; what the engine derives it from was
+/// not read.
+pub const CORONA_SIZES: [(&str, f32); 2] = [("Earth", 3632.6), ("OrbitingMoon", 1733.6)];
+
+impl PodCoronas {
+    /// The planets of a level world that have a corona, at their places now: each Thing's
+    /// world matrix, moved with the world Thing (the level hangs under it, part 23).
+    pub fn of(world: &lbp_runtime::LevelWorld) -> Self {
+        let moved = world
+            .world_thing_moved()
+            .map_or(Mat4::IDENTITY, |m| Mat4::from_cols_array(&m));
+        let mut out = Vec::new();
+        for (thing, state) in world.things.iter().enumerate() {
+            // A planet of the Pod's planets level: a `PlanetThing` of a class in the table.
+            if !state.script_classes.iter().any(|c| c == "PlanetThing") {
+                continue;
+            }
+            let Some(size) = CORONA_SIZES.iter().find_map(|(class, size)| {
+                state
+                    .script_classes
+                    .iter()
+                    .any(|c| c == class)
+                    .then_some(*size)
+            }) else {
+                continue;
+            };
+            let thing = thing as u32;
+            let Some(m) = world
+                .thing_display(thing)
+                .and_then(|d| d.world)
+                .or(state.world_matrix)
+            else {
+                continue;
+            };
+            let place = moved.transform_point3(Vec3::new(m[12], m[13], m[14]));
+            out.push(Corona { thing, place, size });
+        }
+        Self(out)
     }
 }
 
@@ -794,6 +864,10 @@ pub struct MenuAssets {
     pub gooey_fonts: lbp_runtime::GooeyFonts,
     pub picture: Option<Picture>,
     pub pins: Vec<Picture>,
+    /// D323 (part 74): the planets' corona ([`CORONA_TEXTURE`]) and the card's atlas
+    /// ([`CARD_ATLAS`]).
+    pub corona: Option<Picture>,
+    pub card_atlas: Option<Picture>,
 }
 
 /// The default picture of a player's card: `gamedata/texture_library/pod_computer/
@@ -803,6 +877,16 @@ pub struct MenuAssets {
 /// levels over the face against 41 for a flat colour), turned with the card. INFERRED: it
 /// stands for the player's own picture (the PSN avatar) when there is none, offline.
 pub const PROFILE_DEFAULT_PICTURE: u32 = 0x28d8;
+
+/// D323 (part 74): `gamedata/mesh_library/coder_art/earth_corona.tex` (00006993), a ring of
+/// light on black. FOUND (RenderDoc 6082 to 9601): the texture of the two additive draws
+/// after the copy back, its top mip byte for byte; its GUID is in the engine's static
+/// resource list (0xc2658c, set up at 0x12668).
+pub const CORONA_TEXTURE: u32 = 0x6993;
+/// D323: `gamedata/texture_library/ui/player_badge_overlays.tex` (00009c83), the card's
+/// atlas: the Polaroid frame (top left cell), its dark back with a soft drop shadow (bottom
+/// left). FOUND (9601 / 8980): the card's first and third draws, top mip byte for byte.
+pub const CARD_ATLAS: u32 = 0x9c83;
 
 /// Loads [`MenuAssets`] for the scripted Pod: the fonts as loose files under the game
 /// directories, the card picture and the pins (`--pod-card-pins HEX,HEX,HEX`, pin
@@ -840,8 +924,10 @@ pub fn load_menu_assets(
         .iter()
         .filter_map(|g| picture(*g).map_err(|e| notes.push(e)).ok())
         .collect();
+    let corona = picture(CORONA_TEXTURE).map_err(|e| notes.push(e)).ok();
+    let card_atlas = picture(CARD_ATLAS).map_err(|e| notes.push(e)).ok();
     let line = format!(
-        "Pod menu assets: fonts {:?}; card picture {}; pins {}{}",
+        "Pod menu assets: fonts {:?}; card picture {}; pins {}; corona {}; card atlas {}{}",
         fonts.keys().collect::<Vec<_>>(),
         if card.is_some() {
             "profile_default"
@@ -849,6 +935,8 @@ pub fn load_menu_assets(
             "none"
         },
         pins.len(),
+        corona.is_some(),
+        card_atlas.is_some(),
         if notes.is_empty() {
             String::new()
         } else {
@@ -864,6 +952,8 @@ pub fn load_menu_assets(
             gooey_fonts,
             picture: card,
             pins,
+            corona,
+            card_atlas,
         },
         line,
     )
@@ -935,6 +1025,192 @@ pub(crate) struct ScriptMenuImage;
 /// 211, 200 to 204), the third colour of the default player colour (entry 0 of the script
 /// class `PlayerColour`: 29, 220, 205). INFERRED: the focus takes that colour.
 const FOCUS_COLOUR: [f32; 3] = [29. / 255., 220. / 255., 205. / 255.];
+/// D323 FOUND (frames 8348 / 8980 / 9601, the draws after the four pills): the focused pill
+/// is drawn as a pill in (0.2157, 0.5686, 0.8431) at alpha 0.8 (PS 3451), then the same
+/// shape eight times in [`FOCUS_COLOUR`] at alpha 0.25 (PS 3455, its edge from a curve
+/// test), each a step [`focus_layer_step`] further back along the menu's z, the last at
+/// the pill itself: a slab seen from the front. Over the scene its middle is 0.9 cyan,
+/// 0.08 blue.
+const FOCUS_BASE: [f32; 4] = [0.2157, 0.5686, 0.8431, 0.8];
+const FOCUS_LAYERS: usize = 8;
+const FOCUS_LAYER_ALPHA: f32 = 0.25;
+/// D323 MEASURED: the step between the focused pill's layers, in the menu's units (x and y
+/// along the pill's own axes, z back), by the frame's age in frames: 62.8 / 44.5 / 17.7
+/// back at ticks 611 / 616 / 619 (ages 10, 15, 18). INFERRED: linear between them and held
+/// outside; the rule that shrinks it was not read.
+const FOCUS_LAYER_STEPS: [(f32, [f32; 3]); 3] = [
+    (10., [4.843, 3.216, 62.826]),
+    (15., [2.234, 1.408, 44.524]),
+    (18., [0.878, 0.167, 17.672]),
+];
+
+/// The step between the focused pill's layers at a frame age ([`FOCUS_LAYER_STEPS`]).
+fn focus_layer_step(age: f32) -> Vec3 {
+    let steps = FOCUS_LAYER_STEPS;
+    let (first, last) = (steps[0], steps[steps.len() - 1]);
+    if age <= first.0 {
+        return Vec3::from(first.1);
+    }
+    for pair in steps.windows(2) {
+        let ((a0, s0), (a1, s1)) = (pair[0], pair[1]);
+        if age <= a1 {
+            let t = (age - a0) / (a1 - a0);
+            return Vec3::from(s0).lerp(Vec3::from(s1), t);
+        }
+    }
+    Vec3::from(last.1)
+}
+
+/// D323 FOUND (PS 3441 before each pin, frames 8348 / 8980 / 9601): a pin's drop shadow is
+/// its texture's alpha read at nine taps 0.0125 of the texture apart, black, at alpha 0.7
+/// times the taps' weighted sum (0.7796 at most); MEASURED: the texture lands 1.0392 times
+/// the pin's size about a centre 0.0100 / 0.0112 of the pin's side right of and below the
+/// pin's.
+const PIN_SHADOW_TAP: f32 = 0.0125;
+const PIN_SHADOW_ALPHA: f32 = 0.7;
+const PIN_SHADOW_SCALE: f32 = 1.0392;
+const PIN_SHADOW_OFFSET: [f32; 2] = [0.0100, 0.0112];
+/// D323 FOUND (frames 8980 / 9601, the card's three draws): the card is a square
+/// [`CARD_QUAD`] menu units a side drawn three times: the atlas's dark back (bottom left
+/// cell; its soft edge is the card's drop shadow), the player's picture at
+/// [`CARD_QUAD_PICTURE`] (left, top, side as shares of the square), the Polaroid frame (top
+/// left cell). The frame's opaque part spans the cell's x 23 to 233 and y 0 to 250 of 256:
+/// the square is placed with that box's centre on the card's.
+const CARD_QUAD: f32 = 280.8;
+const CARD_QUAD_PICTURE: [f32; 3] = [0.1250, 0.0390, 0.7493];
+const CARD_FRAME_BOX_DOWN: f32 = 0.5 - 125. / 256.;
+
+/// D323: the coronas as the menu layer draws them, made each frame by [`paint_coronas`].
+#[derive(Resource, Default)]
+pub struct CoronaPrims(pub Vec<CoronaPrim>);
+
+/// D323 (part 74): the planets' coronas for the menu layer, from [`PodCoronas`], the
+/// camera and the planets' draw entities (their bounds give the spheres that hide them).
+/// Only with the final pass (the layer's route).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn paint_coronas(
+    coronas: Res<PodCoronas>,
+    display: Option<Res<crate::sackboy_play::LevelDisplay>>,
+    cameras: Query<(&Transform, &Projection), With<Camera3d>>,
+    windows: Query<&Window>,
+    assets: Option<Res<MenuAssets>>,
+    things: Option<Res<crate::thing_view::LevelThings>>,
+    parts: Query<(
+        &GlobalTransform,
+        &bevy::camera::primitives::Aabb,
+        &InheritedVisibility,
+    )>,
+    mut out: ResMut<CoronaPrims>,
+    mut image: Local<Option<MenuImage>>,
+) {
+    out.0.clear();
+    if !crate::glow_post::final_pass_on() || coronas.0.is_empty() {
+        return;
+    }
+    let (Some(display), Ok((transform, projection)), Ok(window), Some(picture)) = (
+        display,
+        cameras.single(),
+        windows.single(),
+        assets.as_ref().and_then(|a| a.corona.as_ref()),
+    ) else {
+        return;
+    };
+    let texture = image
+        .get_or_insert_with(|| MenuImage::from_rgba(picture.width, picture.height, &picture.rgba))
+        .clone();
+    let (w, h) = (
+        window.physical_width() as f32,
+        window.physical_height() as f32,
+    );
+    let lens = projection.get_clip_from_view();
+    let (p00, p11) = (lens.x_axis.x, lens.y_axis.y);
+    let turn = Mat3::from_quat(transform.rotation);
+    let pixel_to_ray = turn
+        * Mat3::from_cols(
+            Vec3::new(2. / (w * p00), 0., 0.),
+            Vec3::new(0., -2. / (h * p11), 0.),
+            Vec3::new(-1. / p00, 1. / p11, -1.),
+        );
+    let eye = transform.translation;
+    let clip_from_display = lens * transform.to_matrix().inverse();
+    let unit = display.0.x_axis.truncate().length();
+    // Each planet's sphere: the largest of its draw entities' bounds (the globe; the
+    // per-bone parts of the Earth are pieces of it), as a sphere around the box's centre.
+    let spheres: Vec<Vec4> = coronas
+        .0
+        .iter()
+        .filter_map(|c| {
+            let entities = things.as_ref()?.entities.get(&c.thing)?;
+            entities
+                .iter()
+                .filter_map(|e| parts.get(*e).ok())
+                .filter(|(_, _, shown)| shown.get())
+                .map(|(g, aabb, _)| {
+                    let m = g.to_matrix();
+                    let k = (m.x_axis.truncate().length()
+                        + m.y_axis.truncate().length()
+                        + m.z_axis.truncate().length())
+                        / 3.;
+                    let half = Vec3::from(aabb.half_extents);
+                    let r = (half.x + half.y + half.z) / 3. * k;
+                    (m.transform_point3(Vec3::from(aabb.center)) - eye).extend(r)
+                })
+                .max_by(|a, b| a.w.total_cmp(&b.w))
+        })
+        .collect();
+    let up = turn * Vec3::Y;
+    for c in &coronas.0 {
+        let place = display.0.transform_point3(c.place);
+        let size = c.size * unit;
+        let to_eye = (eye - place).normalize_or_zero();
+        let across = up.cross(to_eye).normalize_or_zero();
+        if to_eye == Vec3::ZERO || across == Vec3::ZERO {
+            continue;
+        }
+        let along = to_eye.cross(across);
+        let centre = place - to_eye * (CORONA_PULL * size) - eye;
+        let axes = [across * size, along * size];
+        // The pixels of the square's corners (all of the layer when one is behind the eye).
+        let mut lo = Vec2::splat(f32::INFINITY);
+        let mut hi = Vec2::splat(f32::NEG_INFINITY);
+        let mut behind = false;
+        for (sx, sy) in [(-1., -1.), (1., -1.), (1., 1.), (-1., 1.)] {
+            let p = eye + centre + (axes[0] * sx + axes[1] * sy) * CORONA_HALF;
+            let clip = clip_from_display * p.extend(1.);
+            if clip.w <= 0. {
+                behind = true;
+                break;
+            }
+            let px = Vec2::new(
+                (clip.x / clip.w + 1.) / 2. * w,
+                (1. - clip.y / clip.w) / 2. * h,
+            );
+            lo = lo.min(px);
+            hi = hi.max(px);
+        }
+        let bounds = if behind {
+            [0, 0, w as usize, h as usize]
+        } else {
+            [
+                lo.x.floor().clamp(0., w) as usize,
+                lo.y.floor().clamp(0., h) as usize,
+                hi.x.ceil().clamp(0., w) as usize,
+                hi.y.ceil().clamp(0., h) as usize,
+            ]
+        };
+        out.0.push(CoronaPrim {
+            pixel_to_ray,
+            centre,
+            axes,
+            half: CORONA_HALF,
+            bounds,
+            spheres: spheres.clone(),
+            colour: CORONA_COLOUR,
+            image: texture.clone(),
+        });
+    }
+}
+
 /// MEASURED (game frame, alpha channel = the menu's coverage): an unfocused pill's body
 /// covers 82 / 255 of the picture, its text about 0.62.
 const PILL_ALPHA: f32 = 82. / 255.;
@@ -1178,7 +1454,12 @@ fn spawn_script_menu(
 /// Where a point of the menu's root frame (its units) shows, in logical pixels from the
 /// top left, through `world_from_menu`, the level's display matrix and the camera.
 fn menu_to_screen(clip_from_world: Mat4, world_from_menu: Mat4, p: Vec2, size: Vec2) -> Vec3 {
-    let world = world_from_menu.transform_point3(p.extend(0.));
+    menu_to_screen_3d(clip_from_world, world_from_menu, p.extend(0.), size)
+}
+
+/// [`menu_to_screen`] for a point off the menu's plane (z along the menu's own z).
+fn menu_to_screen_3d(clip_from_world: Mat4, world_from_menu: Mat4, p: Vec3, size: Vec2) -> Vec3 {
+    let world = world_from_menu.transform_point3(p);
     let clip = clip_from_world * world.extend(1.);
     let ndc = clip.truncate() / clip.w;
     Vec3::new(
@@ -1194,7 +1475,47 @@ fn menu_to_screen(clip_from_world: Mat4, world_from_menu: Mat4, p: Vec2, size: V
 pub(crate) struct LayerState {
     canvas: Option<MenuCanvas>,
     last: Vec<MenuPrim>,
-    pictures: Option<(Option<MenuImage>, Vec<MenuImage>)>,
+    /// D323: the coronas drawn last.
+    last_coronas: Vec<CoronaPrim>,
+    pictures: Option<LayerPictures>,
+}
+
+/// The menu's pictures as layer images: the player's picture, the pins and (D323) their
+/// shadows, the card atlas's back and frame cells.
+#[derive(Default, Clone)]
+struct LayerPictures {
+    picture: Option<MenuImage>,
+    pins: Vec<MenuImage>,
+    pin_shadows: Vec<MenuImage>,
+    card_back: Option<MenuImage>,
+    card_frame: Option<MenuImage>,
+}
+
+impl LayerPictures {
+    fn of(assets: Option<&MenuAssets>) -> Self {
+        let image = |p: &Picture| MenuImage::from_rgba(p.width, p.height, &p.rgba);
+        let pins: Vec<MenuImage> = assets
+            .map(|a| a.pins.iter().map(image).collect())
+            .unwrap_or_default();
+        let pin_shadows = pins
+            .iter()
+            .map(|p| p.shadow(PIN_SHADOW_TAP * p.width as f32))
+            .collect();
+        let atlas = assets.and_then(|a| a.card_atlas.as_ref()).map(image);
+        let cell = |row: usize| {
+            atlas.as_ref().map(|a| {
+                let (w, h) = (a.width / 2, a.height / 2);
+                a.crop(0, row * h, w, h)
+            })
+        };
+        Self {
+            picture: assets.and_then(|a| a.picture.as_ref()).map(image),
+            pins,
+            pin_shadows,
+            card_back: cell(1),
+            card_frame: cell(0),
+        }
+    }
 }
 
 fn layer_texture(
@@ -1225,13 +1546,18 @@ fn update_layer(
     images: &mut Assets<Image>,
     (width, height): (usize, usize),
     prims: Vec<MenuPrim>,
+    coronas: &[CoronaPrim],
 ) {
     use bevy::render::render_resource::TextureFormat;
     let resized = state
         .canvas
         .as_ref()
         .is_none_or(|c| (c.width, c.height) != (width, height));
-    if !resized && prims == state.last && layer.as_ref().is_some_and(|l| l.on) {
+    if !resized
+        && prims == state.last
+        && coronas == state.last_coronas.as_slice()
+        && layer.as_ref().is_some_and(|l| l.on)
+    {
         return;
     }
     if resized {
@@ -1239,10 +1565,15 @@ fn update_layer(
     }
     let canvas = state.canvas.as_mut().expect("made above");
     canvas.clear();
+    // D323: the coronas first (drawn before the menu, after the copy back).
+    for c in coronas {
+        canvas.draw_corona(c);
+    }
     for p in &prims {
         canvas.draw(p);
     }
     state.last = prims;
+    state.last_coronas = coronas.to_vec();
     let (colour, alpha) = canvas.bytes();
     let (w, h) = (width as u32, height as u32);
     match layer {
@@ -1303,6 +1634,7 @@ pub(crate) fn paint_script_menu(
         Option<ResMut<crate::glow_post::MenuLayer>>,
         Local<LayerState>,
     ),
+    coronas: Res<CoronaPrims>,
 ) {
     let frame = menu.as_ref().and_then(|m| m.0.as_ref());
     let (Some(frame), Some(display), Ok((transform, projection)), Ok(window)) =
@@ -1311,7 +1643,22 @@ pub(crate) fn paint_script_menu(
         for (_, mut v) in &mut roots {
             *v = Visibility::Hidden;
         }
-        if let Some(l) = layer.as_mut().filter(|l| l.on) {
+        // D323: the planets' coronas show without the menu too (the closed Pod, part 74).
+        if let (false, Ok(window)) = (coronas.0.is_empty(), windows.single()) {
+            let size = (
+                window.physical_width() as usize,
+                window.physical_height() as usize,
+            );
+            update_layer(
+                &mut commands,
+                layer.map(Mut::from),
+                &mut layer_state,
+                &mut images,
+                size,
+                Vec::new(),
+                &coronas.0,
+            );
+        } else if let Some(l) = layer.as_mut().filter(|l| l.on) {
             l.on = false;
         }
         return;
@@ -1340,15 +1687,9 @@ pub(crate) fn paint_script_menu(
     let mut prims: Vec<Vec<MenuPrim>> = vec![Vec::new(); frame.placed.len()];
     let mut placed_at: Vec<Option<(Vec2, f32)>> = vec![None; frame.placed.len()];
     if layer_route && layer_state.pictures.is_none() {
-        let image = |p: &Picture| MenuImage::from_rgba(p.width, p.height, &p.rgba);
-        layer_state.pictures = Some((
-            assets.as_ref().and_then(|a| a.picture.as_ref()).map(image),
-            assets
-                .as_ref()
-                .map(|a| a.pins.iter().map(image).collect())
-                .unwrap_or_default(),
-        ));
+        layer_state.pictures = Some(LayerPictures::of(assets.as_deref()));
     }
+    let pics = layer_state.pictures.clone().unwrap_or_default();
     for (ScriptMenuPart(c), mut background) in &mut parts {
         *background = if layer_route {
             BackgroundColor(Color::NONE)
@@ -1390,6 +1731,13 @@ pub(crate) fn paint_script_menu(
         ui.rotation = Rot2::radians(angle);
         // The fill in encoded values (the game's numbers) and its alpha.
         let fill = match &item.kind {
+            // D323: on the layer the focused pill starts as the blue base under its layers.
+            lbp_runtime::PlacedKind::Button { focused: true, .. } if layer_route => Some([
+                FOCUS_BASE[0],
+                FOCUS_BASE[1],
+                FOCUS_BASE[2],
+                FOCUS_BASE[3] * fade,
+            ]),
             lbp_runtime::PlacedKind::Button { focused: true, .. } => {
                 Some([FOCUS_COLOUR[0], FOCUS_COLOUR[1], FOCUS_COLOUR[2], fade])
             }
@@ -1420,7 +1768,11 @@ pub(crate) fn paint_script_menu(
                 MenuShape::Capsule
             };
             let list = &mut prims[*i];
-            if let Some(colour) = fill {
+            let card_atlas = match (&pics.card_back, &pics.card_frame) {
+                (Some(back), Some(front)) if card => Some((back.clone(), front.clone())),
+                _ => None,
+            };
+            if let Some(colour) = fill.filter(|_| card_atlas.is_none()) {
                 list.push(MenuPrim {
                     centre: centre * scale,
                     size: Vec2::new(w, h),
@@ -1430,43 +1782,107 @@ pub(crate) fn paint_script_menu(
                     image: None,
                 });
             }
+            if matches!(
+                item.kind,
+                lbp_runtime::PlacedKind::Button { focused: true, .. }
+            ) {
+                // D323: the focused pill's eight layers, the deepest first, each a step
+                // back along the menu's z (the projection moves and shrinks it) and a little
+                // along the pill's own axes; the last at the pill.
+                let step = focus_layer_step(frame.age);
+                let ex = Vec2::from_angle(angle);
+                let up = Vec2::new(ex.y, -ex.x);
+                let unit = dx.length();
+                for k in (0..FOCUS_LAYERS).rev() {
+                    let k = k as f32;
+                    let p = c.extend(step.z * k);
+                    let at_k = menu_to_screen_3d(clip_from_world, world_from_menu, p, size);
+                    let along_k =
+                        menu_to_screen_3d(clip_from_world, world_from_menu, p + Vec3::X, size);
+                    let shrink = (along_k - at_k).truncate().length() / unit;
+                    if at_k.z <= 0. || !shrink.is_finite() {
+                        continue;
+                    }
+                    let drift = (ex * step.x + up * step.y) * k * unit;
+                    list.push(MenuPrim {
+                        centre: (at_k.truncate() + drift) * scale,
+                        size: Vec2::new(w, h) * shrink,
+                        angle,
+                        shape: MenuShape::Capsule,
+                        colour: [
+                            FOCUS_COLOUR[0],
+                            FOCUS_COLOUR[1],
+                            FOCUS_COLOUR[2],
+                            FOCUS_LAYER_ALPHA * fade,
+                        ],
+                        image: None,
+                    });
+                }
+            }
             if card {
                 // The card's parts at the places the card's nodes give them (shares of the
                 // card; the pins square, a share of its width).
                 let rot = Vec2::from_angle(angle);
                 let at_local = |x: f32, y: f32| centre * scale + rot.rotate(Vec2::new(x, y));
-                let (pictures, pins) = layer_state
-                    .pictures
-                    .as_ref()
-                    .map(|(p, pins)| (p.clone(), pins.clone()))
-                    .unwrap_or_default();
-                let [left, top, pw, ph] = CARD_PICTURE_BOX;
-                let (colour, image) = match pictures {
+                let (colour, image) = match pics.picture.clone() {
                     Some(img) => ([1., 1., 1., fade], Some(img)),
                     None => (rgba_of(CARD_PICTURE, fade), None),
                 };
-                list.push(MenuPrim {
-                    centre: at_local(
-                        -w / 2. + (left + pw / 2.) / 100. * w,
-                        -h / 2. + (top + ph / 2.) / 100. * h,
-                    ),
-                    size: Vec2::new(pw / 100. * w, ph / 100. * h),
-                    angle,
-                    shape: MenuShape::Rect,
-                    colour,
-                    image,
-                });
+                if let Some((back, front)) = card_atlas {
+                    // D323: the game's three draws over the card's square: the dark back
+                    // (its soft edge the card's shadow), the picture, the frame.
+                    let q = CARD_QUAD * w / item.size[0];
+                    let quad = at_local(0., CARD_FRAME_BOX_DOWN * q);
+                    let [left, top, side] = CARD_QUAD_PICTURE;
+                    let white = [1., 1., 1., fade];
+                    let square = |centre: Vec2, side: f32, colour, image| MenuPrim {
+                        centre,
+                        size: Vec2::splat(side),
+                        angle,
+                        shape: MenuShape::Rect,
+                        colour,
+                        image,
+                    };
+                    list.push(square(quad, q, white, Some(back)));
+                    let off = Vec2::new(left + side / 2. - 0.5, top + side / 2. - 0.5) * q;
+                    list.push(square(quad + rot.rotate(off), side * q, colour, image));
+                    list.push(square(quad, q, white, Some(front)));
+                } else {
+                    let [left, top, pw, ph] = CARD_PICTURE_BOX;
+                    list.push(MenuPrim {
+                        centre: at_local(
+                            -w / 2. + (left + pw / 2.) / 100. * w,
+                            -h / 2. + (top + ph / 2.) / 100. * h,
+                        ),
+                        size: Vec2::new(pw / 100. * w, ph / 100. * h),
+                        angle,
+                        shape: MenuShape::Rect,
+                        colour,
+                        image,
+                    });
+                }
+                let weights = SHADOW_WEIGHTS[0] + 4. * SHADOW_WEIGHTS[1] + 4. * SHADOW_WEIGHTS[2];
                 for (n, x) in CARD_PIN_CENTRES.into_iter().enumerate() {
                     let side = CARD_PIN_WIDTH / 100. * w;
-                    let (colour, image, shape) = match pins.get(n) {
+                    let pin_centre =
+                        at_local(-w / 2. + x / 100. * w, -h / 2. + CARD_PIN_DOWN / 100. * h);
+                    // D323: the pin's drop shadow first (PS 3441).
+                    if let (Some(_), Some(shadow)) = (pics.pins.get(n), pics.pin_shadows.get(n)) {
+                        list.push(MenuPrim {
+                            centre: pin_centre + rot.rotate(Vec2::from(PIN_SHADOW_OFFSET) * side),
+                            size: Vec2::splat(side * PIN_SHADOW_SCALE),
+                            angle,
+                            shape: MenuShape::Rect,
+                            colour: [0., 0., 0., PIN_SHADOW_ALPHA * weights * fade],
+                            image: Some(shadow.clone()),
+                        });
+                    }
+                    let (colour, image, shape) = match pics.pins.get(n) {
                         Some(img) => ([1., 1., 1., fade], Some(img.clone()), MenuShape::Rect),
                         None => (rgba_of(CARD_ICONS[n], fade), None, MenuShape::Capsule),
                     };
                     list.push(MenuPrim {
-                        centre: at_local(
-                            -w / 2. + x / 100. * w,
-                            -h / 2. + CARD_PIN_DOWN / 100. * h,
-                        ),
+                        centre: pin_centre,
                         size: Vec2::splat(side),
                         angle,
                         shape,
@@ -1564,6 +1980,7 @@ pub(crate) fn paint_script_menu(
             &mut images,
             size,
             prims.into_iter().flatten().collect(),
+            &coronas.0,
         );
     }
 }
@@ -1576,6 +1993,25 @@ fn rgba_of(c: [f32; 3], a: f32) -> [f32; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// D323: the focused pill's layer step is the measured one at ages 10 / 15 / 18,
+    /// linear between, held outside.
+    #[test]
+    fn d323_focus_layer_step_by_age() {
+        assert_eq!(focus_layer_step(0.).z, 62.826);
+        assert_eq!(focus_layer_step(15.).z, 44.524);
+        assert_eq!(focus_layer_step(40.).z, 17.672);
+        let mid = focus_layer_step(16.5);
+        assert!((mid.z - (44.524 + 17.672) / 2.).abs() < 1e-3, "{mid:?}");
+        // The coronas' table: the Earth's unit 1.12 of its sphere (r 3239 in the world).
+        let earth = CORONA_SIZES
+            .iter()
+            .find(|(c, _)| *c == "Earth")
+            .expect("earth")
+            .1;
+        assert!((earth / 3239. - 1.1215).abs() < 1e-3);
+        assert_eq!(CORONA_COLOUR, [0.5, 0.7, 1., 0.5]);
+    }
 
     #[test]
     fn d321_card_pins_option_reads_up_to_three_guids() {

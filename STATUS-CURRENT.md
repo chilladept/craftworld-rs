@@ -11,7 +11,21 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D322 the Pod main menu blended as the game blends it (2026-10-15)
+## Latest: D323 the planets' coronas, the pins' shadows, the card and the focused pill (2026-10-15)
+- Viewer (`docs/level-scripts.md` part 74): FOUND (RenderDoc 6082 to 9601) the two additive draws
+  before the menu are the planets' coronas, in every capture from tick 600 (closed Pod, no menu):
+  a square facing the eye, +-1.6 units, 0.5 behind the planet, `earth_corona.tex` (00006993) x
+  (0.5, 0.7, 1, 0.5), SrcAlpha / One, depth tested; unit 3632.6 (Earth) / 1733.6 (Moon) world
+  units (MEASURED). PS 3441 = the pins' shadows (nine-tap alpha, black, 0.7); the card = the
+  `player_badge_overlays.tex` atlas's back (its shadow), the picture, the frame; PS 3455 = the
+  focused pill's slab (blue base at 0.8, eight cyan layers at 0.25 stepping back along z).
+  The menu layer draws all of them; the coronas also without the menu.
+- MEASURED against the game's final output (mean abs, levels): corona ring 14.4 -> 3.9 (619),
+  15.7 -> 4.5 (616), 19.0 -> 2.7 (600, closed); focused pill face 21.3 -> 16.7, slab side 31.6 ->
+  20.8; card shadow 10.1 -> 7.8. Open: what draws the coronas, the slab step's and focus scale's
+  rule, the card's turn, the menu's fade-in (its draws are at full alpha at 611).
+
+## Before: D322 the Pod main menu blended as the game blends it (2026-10-15)
 - Viewer (`docs/level-scripts.md` part 73): FOUND (RenderDoc frames 8980 / 9601) the menu is drawn
   into the scene after the copy back and before the final pass, premultiplied colour over in
   encoded 8-bit values (One, OneMinusSrcAlpha) with the alphas added (One, One): pill = player

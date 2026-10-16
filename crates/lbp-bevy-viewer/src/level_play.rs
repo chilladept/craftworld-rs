@@ -562,6 +562,8 @@ pub fn install(app: &mut App) -> Result<(), String> {
     .insert_resource(menu_assets.unwrap_or_default())
     .insert_resource(Time::<Fixed>::from_hz(f64::from(TICK_HZ)))
     .init_resource::<crate::pod_menu::ScriptMenu>()
+    .init_resource::<crate::pod_menu::PodCoronas>()
+    .init_resource::<crate::pod_menu::CoronaPrims>()
     .add_systems(
         FixedUpdate,
         (
@@ -583,6 +585,7 @@ pub fn install(app: &mut App) -> Result<(), String> {
             follow_dof,
             follow_dissolve,
             layer_depths,
+            crate::pod_menu::paint_coronas,
             crate::pod_menu::paint_script_menu,
         )
             .chain()
@@ -1176,7 +1179,23 @@ fn follow_menu(
     play: NonSend<Play>,
     assets: Res<crate::pod_menu::MenuAssets>,
     mut menu: ResMut<crate::pod_menu::ScriptMenu>,
+    mut coronas: ResMut<crate::pod_menu::PodCoronas>,
 ) {
+    // D323 (part 74): the planets' coronas, at the planets' places after this tick.
+    let now = crate::pod_menu::PodCoronas::of(&play.host.world);
+    if *coronas != now {
+        if coronas.0.is_empty() && !now.0.is_empty() {
+            println!(
+                "Planet coronas at tick {}: {:?}",
+                play.scripts.ticks,
+                now.0
+                    .iter()
+                    .map(|c| (c.thing, c.place.to_array(), c.size))
+                    .collect::<Vec<_>>()
+            );
+        }
+        *coronas = now;
+    }
     let fonts = (!assets.gooey_fonts.faces.is_empty()).then_some(&assets.gooey_fonts);
     let now = crate::pod_menu::ScriptMenuFrame::of(&play.host.world, fonts);
     if menu.0 != now {
