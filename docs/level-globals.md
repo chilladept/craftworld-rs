@@ -78,9 +78,11 @@ and hands the record in force to the pass every tick (`follow_colour_correction`
 
 ### Not modelled
 
-- INFERRED: which shader slots each constant fills (no name table for the program), and that
-  the top colour is at the top of the frame. The flag at 0xe31e34 (saturation x 0.8; a 0/1/2
-  render state, possibly cinematic) is taken as clear.
+- MEASURED, not FOUND: the top colour is at the top of the frame. Over 20 game frames of
+  maingrapple the top band's channels stand to the bottom band's as 1.20 / 1.41 / 1.10
+  (r / g / b); the record predicts green highest, then red, then blue with top at the top, and
+  the reverse order otherwise. The flag at 0xe31e34 (saturation x 0.8; a 0/1/2 render state,
+  possibly cinematic) is taken as clear.
 - The pass's uv offset by a neighbour difference of a single-channel buffer (`u3`, gated at
   0.025), new in this read; part 45 did not have it.
 
@@ -88,8 +90,15 @@ and hands the record in force to the pass every tick (`follow_colour_correction`
 
 `cargo test -p lbp-bevy-viewer` (d331 tests; the d294/d300/d322 shader tests updated), clippy.
 Viewer: Cosmos `main_03_maingrapple` (setting 5.77, the only story level not at 0) logs the
-record and draws graded. NOT compared with a game frame yet: no RPCS3 frame of a level with a
-non-zero setting exists.
+record and draws graded.
+
+Game (RPCS3, 2026-10-16, "Where In The World Is Avalon Centrifuge?", patches off): FOUND the
+slot mapping. The live copies of PS 14857 in guest memory hold M0 = matrix(Matrix[0]) in fc19,
+fc17, fc23, fc25, M1 = matrix(Matrix[1]) in fc20, fc14, fc21, fc22, ColPick in fc16 and fc24,
+VignetteTop in fc2 and fc12, VignetteBottom in fc8 and (0, 0, 0, 1) in fc28: the viewer's
+record at 5.77 within 1e-3 (`d331_record_matches_the_live_constants`). The level's start in the
+game does not look like the viewer's at the same place (a scrap shell over an orange planet,
+against the viewer's toy shop); that is the level's scene, not this grade.
 
 ## Research for the next PRs (not applied yet)
 

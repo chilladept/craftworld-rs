@@ -12,10 +12,12 @@
 //! `g x lerp(top + v x (bottom - top), 1, smoothstep(0, 1, saturate(1.2 - r)))`
 //!
 //! on `c = scene x 1.2998 + glow` (encoded values; M0 near the picked colour, M1 away from
-//! it). Record 0 is the identity with a 0.2 grey vignette: part 45's frame.
+//! it). Record 0 is the identity with a 0.2 grey vignette: part 45's frame. FOUND: which
+//! shader constant holds each value (the live constants of maingrapple, read from RPCS3).
 //!
-//! INFERRED: the vignette's top colour is at the top of the frame (v = 0); the bss flag at
-//! 0xe31e34 that scales saturation by 0.8 is taken as clear.
+//! MEASURED, not FOUND: the vignette's top colour is at the top of the frame (v = 0), from the
+//! game frames' top and bottom bands. Taken as clear: the bss flag at 0xe31e34 that scales
+//! saturation by 0.8.
 use bevy::{
     prelude::*,
     render::extract_resource::{ExtractResource, ExtractResourcePlugin},
@@ -364,5 +366,43 @@ mod tests {
         assert_eq!(&f[28..32], &[0., 0., 0., 1.]);
         assert_eq!(&f[32..36], &[0.; 4]);
         assert_eq!(&f[36..40], &GREY);
+    }
+
+    /// The constants the game wrote into PS 14857 in Cosmos `main_03_maingrapple` (setting
+    /// 5.77), read from RPCS3 guest memory on 2026-10-16: M0 rows fc19, fc17, fc23, fc25,
+    /// M1 rows fc20, fc14, fc21, fc22, pick fc16/fc24, top fc2/fc12, bottom fc8.
+    #[test]
+    fn d331_record_matches_the_live_constants() {
+        let r5 = [
+            0.27112, 0.038254, 0.0042362, 1., 0.97938, 0., 1.9794, 0.12371, 0.49656, 0.32288,
+            0.20506, 1., 0.69072, 0., 1.8763, 0., 0.022281, 0.022281, 0.022281, 1.1783, 0.89272,
+            -0.034991, -0.063226, 1., 0.126, -0.042453, -0.026925, 1.,
+        ];
+        let r6 = [
+            0.38307, -0.043775, 0.11366, 1., 1., 0., 1.7732, 0., 0.15958, 0.41416, 0.21335, 1.,
+            0.29897, 0., 1.6701, -0.041237, -0.075631, -0.075631, 0.031297, 1.0749, 0.49821,
+            0.43492, 0.1821, 1., 0.21169, -0.042894, 0.1133, 1.,
+        ];
+        let mut table = [Record::IDENTITY; 8];
+        table[5] = Record::from_floats(&r5);
+        table[6] = Record::from_floats(&r6);
+        let r = Record::at(&table, 5.77);
+        let near = |a: &[f32], b: &[f32]| {
+            for (x, y) in a.iter().zip(b) {
+                assert!((x - y).abs() < 1e-3, "{a:?} vs {b:?}");
+            }
+        };
+        let (m0, m1) = (matrix(&r.matrix[0]), matrix(&r.matrix[1]));
+        near(&m0[0], &[1.8137, 0.0017268, 0.0017268]);
+        near(&m0[1], &[0.0060437, 1.818, 0.0060437]);
+        near(&m0[2], &[0.00086339, 0.00086339, 1.8128]);
+        near(&m0[3], &[-0.0011806, -0.38341, -0.27001]);
+        near(&m1[0], &[0.8781, 0.20986, 0.20986]);
+        near(&m1[1], &[0.7345, 1.4027, 0.7345]);
+        near(&m1[2], &[0.10493, 0.10493, 0.77317]);
+        near(&m1[3], &[-0.17621, -0.02013, -0.20186]);
+        near(&r.pick, &[-0.053111, -0.053111, 0.029223, 1.0987]);
+        near(&r.top, &[0.58895, 0.32684, 0.12567, 1.]);
+        near(&r.bottom, &[0.19198, -0.042793, 0.081048, 1.]);
     }
 }
