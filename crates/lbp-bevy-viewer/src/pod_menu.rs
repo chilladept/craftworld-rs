@@ -2132,6 +2132,28 @@ pub(crate) fn paint_script_menu(
                 });
             }
             if let Some(colour) = fill.filter(|_| card_atlas.is_none()) {
+                // D348: a part-filled disc is one draw of two segments (FOUND 0x4f5abc): the
+                // colour's, then a gap, then the shade's.
+                let shape = match item.kind {
+                    lbp_runtime::PlacedKind::Disc { fraction, .. }
+                        if fraction > 0. && fraction < 1. =>
+                    {
+                        let [(start, sweep), shade] = crate::menu_layer::pie_segments(fraction);
+                        list.push(MenuPrim {
+                            centre: centre * scale,
+                            size: Vec2::new(w, h),
+                            angle,
+                            shape: MenuShape::Pie {
+                                start: shade.0,
+                                sweep: shade.1,
+                            },
+                            colour: rgba_of([0.; 3], DISC_SHADE_ALPHA * fade),
+                            image: None,
+                        });
+                        MenuShape::Pie { start, sweep }
+                    }
+                    _ => shape,
+                };
                 list.push(MenuPrim {
                     centre: centre * scale,
                     size: Vec2::new(w, h),
@@ -2395,12 +2417,16 @@ fn bubble_colour(b: &lbp_runtime::SpeechBubble, player: [f32; 4]) -> [f32; 4] {
 /// D347: a horizontal break's line, half white ([`lbp_runtime::RULE_HEIGHT`]).
 const RULE_COLOUR: [f32; 4] = [1., 1., 1., 0.5];
 
+/// D347 FOUND (0x4f5abc): the shade of a play stat's disc not yet collected, black.
+const DISC_SHADE_ALPHA: f32 = 0.3;
+
 /// D347 FOUND (0x4f5abc): a play stat's disc is all the widget's colour once collected
 /// reaches the total and all (0, 0, 0, 0.3) at none; between, a pie of the colour over
-/// that shade. Left out: the pie (a part-filled disc is drawn in the colour).
+/// that shade. D348: on the layer route a part-filled disc draws the shade, then the colour
+/// as a [`MenuShape::Pie`]; on the UI route it is drawn in the colour.
 fn disc_colour(colour: u32, fraction: f32) -> [f32; 4] {
     if fraction <= 0. {
-        [0., 0., 0., 0.3]
+        [0., 0., 0., DISC_SHADE_ALPHA]
     } else {
         let [r, g, b, _] = lbp_script_vm::natives::colour_vector(colour);
         [r, g, b, 1.]

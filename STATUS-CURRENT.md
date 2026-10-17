@@ -11,7 +11,13 @@ runtime (physics, scripts, playable Sackboy) lives in its own crates (AGENTS.md)
 - Snapshot `local-analysis/d68-inventory-0133-verified.json` (~166 MB; summarize by script).
 - Toolkit oracle pin d6a2ef80b5a09999f08f23a803b516096055e5c9 under `references/`.
 
-## Latest: D347 the info bubble's size and goodies row (2026-10-17)
+## Latest: D348 the goodies disc's pie (2026-10-17)
+- Part 95 (`docs/level-scripts/part-95.md`): a part-filled goodies disc is two segments in one
+  draw (FOUND 0x4f5abc / 0x4a3824): the collected share in the profile's colour, a 0.1 radian
+  gap, the rest in the shade (0, 0, 0, 0.3). The viewer's `MenuShape::Pie`; the shader's
+  zero axis and turn (straight up, clockwise) are INFERRED.
+
+## D347 the info bubble's size and goodies row (2026-10-17)
 - Part 94 (`docs/level-scripts/part-94.md`): the goodies row is the game's play stat widget
   (FOUND 0x496700 / 0x4f5400: a disc in the profile's second colour, the percent at S x 1.9,
   the label at S x 0.9 below); the bubble's texts at the Gooey scale 1.42 (MEASURED), its
