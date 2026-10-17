@@ -33,6 +33,29 @@ pub enum MenuShape {
         tail: f32,
         filled: bool,
     },
+    /// D348: one segment of a play stat's part-filled disc: the circle in the rectangle (as
+    /// a square capsule) cut to the sector `sweep` turns wide from `start`, in turns
+    /// clockwise from straight up on screen (INFERRED: the game's zero axis and its turn
+    /// are set in shader 0x109ee, not read).
+    Pie {
+        start: f32,
+        sweep: f32,
+    },
+}
+
+/// D348 FOUND (0x4f5abc, the global 0xdb86b4): the gap between a part-filled disc's two
+/// segments, 0.1 radians; both segments are scaled by (2 pi - 2 gap) / 2 pi to fit.
+pub const PIE_GAP: f32 = 0.1 / std::f32::consts::TAU;
+
+/// D348: a part-filled disc's two segments, (start, sweep) in turns: the collected share
+/// from half a gap past straight up, then a gap, then the rest (FOUND 0x4a3824: the shader's
+/// limits b0 = (s theta + g) / 2, b1 = b0 + s (2 pi - theta) + g, the quad turned by
+/// theta / 2 about the centre).
+pub fn pie_segments(fraction: f32) -> [(f32, f32); 2] {
+    let s = 1. - 2. * PIE_GAP;
+    let fill = s * fraction;
+    let start = PIE_GAP / 2.;
+    [(start, fill), (start + fill + PIE_GAP, s * (1. - fraction))]
 }
 
 /// D330 MEASURED (game frame, the Story title): the tail's base half-height over its length.
@@ -260,6 +283,27 @@ impl MenuCanvas {
                     (l.y.abs() - (half.y - r)).max(0.),
                 );
                 (0.5 - (q.length() - r)).clamp(0., 1.)
+            }
+            MenuShape::Pie { start, sweep } => {
+                let disc = Self::coverage(MenuShape::Capsule, l, half);
+                if sweep >= 1. {
+                    return disc;
+                }
+                if sweep <= 0. || disc <= 0. {
+                    return 0.;
+                }
+                // The turns clockwise from the start (screen y is down), and the soft edge
+                // a pixel wide along the arc at this radius on both of the sector's sides.
+                let tau = std::f32::consts::TAU;
+                let turn = (l.x.atan2(-l.y) / tau - start).rem_euclid(1.);
+                let arc = l.length() * tau;
+                let past_start = if turn > (1. + sweep) / 2. {
+                    turn - 1.
+                } else {
+                    turn
+                };
+                let edge = (sweep - turn).min(past_start);
+                disc * (0.5 + edge * arc).clamp(0., 1.)
             }
             MenuShape::Bubble {
                 radius,
@@ -591,6 +635,42 @@ mod tests {
         let composed = over[0] + (1. - over[3]) * s;
         let by_steps = 0.4 + 0.6 * (pill[0] * pill[3] + (1. - pill[3]) * s);
         assert!((composed - by_steps).abs() < 1e-5);
+    }
+
+    /// D348: a quarter pie covers the sector from straight up to the right (screen y down)
+    /// and nothing else; full and empty pies are the disc and nothing.
+    #[test]
+    fn d348_pie_is_a_clockwise_sector_from_the_top() {
+        let half = Vec2::splat(10.);
+        let pie = |sweep, x, y| {
+            MenuCanvas::coverage(MenuShape::Pie { start: 0., sweep }, Vec2::new(x, y), half)
+        };
+        // Up and right of the centre: inside a quarter; right and down, left: outside.
+        assert_eq!(pie(0.25, 4., -4.), 1.);
+        assert_eq!(pie(0.25, 4., 4.), 0.);
+        assert_eq!(pie(0.25, -4., -4.), 0.);
+        // On the start ray the edge is half covered.
+        assert!((pie(0.25, 0., -5.) - 0.5).abs() < 1e-3);
+        // Half: the whole right side.
+        assert_eq!(pie(0.5, 5., 3.), 1.);
+        assert_eq!(pie(0.5, -5., 3.), 0.);
+        assert_eq!(
+            pie(1., -5., 3.),
+            MenuCanvas::coverage(MenuShape::Capsule, Vec2::new(-5., 3.), half)
+        );
+        assert_eq!(pie(0., 5., 3.), 0.);
+    }
+
+    /// D348: the two segments and their two gaps make one turn, the collected share first.
+    #[test]
+    fn d348_pie_segments_leave_the_game_gaps() {
+        let [(a, fill), (b, rest)] = pie_segments(0.25);
+        assert!((a - PIE_GAP / 2.).abs() < 1e-6);
+        assert!((b - (a + fill + PIE_GAP)).abs() < 1e-6);
+        assert!((fill + rest + 2. * PIE_GAP - 1.).abs() < 1e-6);
+        assert!((fill / rest - 1. / 3.).abs() < 1e-5);
+        // 0.1 radians is about 0.016 of a turn.
+        assert!((PIE_GAP - 0.015_915).abs() < 1e-5);
     }
 
     /// The capsule is a circle when square and has a soft edge about a pixel wide.
