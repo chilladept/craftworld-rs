@@ -10,9 +10,10 @@
 - D601 shipped: PR 195 merged as 9ce8441 (plain-words setup errors, disc folder accepted,
   FARC-tag check for encrypted dumps, "didn't load" window in game modes, README guide).
 - Friends zip rebuilt from 9ce8441: craftworld-rs-preview-2026-10-19.zip (40.5 MB).
-- GitHub release: planned tag `preview-2026-10-19` (pre-release, title "craftworld-rs
-  preview 2026-10-19", zip attached). Publishing needs the owner's own approval on the PC
-  (the auto-mode permission check blocks `gh release create`); not posted yet.
+- GitHub release posted 2026-10-19 on the owner's word: tag `preview-2026-10-19`
+  (pre-release, target 9ce8441, zip attached):
+  https://github.com/chilladept/craftworld-rs/releases/tag/preview-2026-10-19
+  `gh release create --target` needs the full commit SHA (a short one gives HTTP 422).
 - Decision numbers D600-D699; next free D602.
 
 ## Facts
@@ -33,5 +34,4 @@
   The exe has no user paths or email strings.
 
 ## Next
-1. Owner approves the release publish; then post it with the zip.
-2. On the PC: run Set up from the GUI against the real ISO once (headless already passes).
+1. On the PC: run Set up from the GUI against the real ISO once (headless already passes).
