@@ -20,8 +20,8 @@
 - Second friends zip 2026-10-19 from main f01f988: craftworld-rs-preview-2026-10-19b.zip
   (40,555,343 bytes, SHA-256 f734588bb585ed3975f74644b1219c8221bea7136ab0b4c40bad865f32543b05).
   README.txt adds "press Set up again once". Tag `preview-2026-10-19b` (today's plain tag
-  was taken). `gh release create` was blocked by the PC permission check; the owner posts it
-  or allows it (notes draft: see Next 1).
+  was taken), posted 2026-10-19 on the owner's word (pre-release, target f01f988):
+  https://github.com/chilladept/craftworld-rs/releases/tag/preview-2026-10-19b
 - Decision numbers D600-D699; next free D603.
 
 ## Facts
@@ -44,7 +44,4 @@
   The exe has no user paths or email strings.
 
 ## Next
-1. Post the release: `gh release create preview-2026-10-19b <zip> --repo chilladept/craftworld-rs
-   --target f01f98886118381a5dd99f77bd1538cc8734c1d5 --prerelease --title "craftworld-rs preview 2026-10-19b"`
-   with notes (new since preview-2026-10-19, Set up again, needs ISO + 01.33, README links, SHA).
-2. On the PC: run Set up from the GUI against the real ISO once (headless already passes).
+1. On the PC: run Set up from the GUI against the real ISO once (headless already passes).
