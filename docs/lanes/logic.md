@@ -127,7 +127,9 @@
 - D1188 (branch `logic-d1188`, worktree `E:\Projects\wt-d324`): a piston with a
   strength slides with or without a k (docs/logic/part-89.md). Route and parity PENDING
   (PC locked, viewer DeviceLost at about tick 810, control on main too).
-- Decision numbers: D1100-D1199, next free D1189.
+- D1189 (branch `logic-d1189`, stacked on `logic-d1188`): a piston's angle rows give
+  way past 800 × the reduced mass (docs/logic/part-90.md). Docs only.
+- Decision numbers: D1100-D1199, next free D1190.
 
 ## Facts
 - Route run: as docs/lanes/level1.md Facts, with `--native-scripts`; captures under
@@ -319,6 +321,7 @@ when a later PR finds it), then the thread's own context at hand-off (ctx_audit)
 - D1187: general-purpose (sonnet), decoded PJoint +0xf0/+0xc8 and row 0x960988's k=0
   edges, 99k tokens, 47 tools, 6.8 minutes; thread context 136k after PR 330.
 - D1188: no subagent.
+- D1189: no subagent.
 
 ## Next
 Logic as a whole, one component kind per PR, each with a census across all levels, the
@@ -363,7 +366,7 @@ EBOOT rule and unit tests:
    UNVERIFIED, Part 74); the band's cap scale (INFERRED in Part 80, the row is solved off
    the PPU); the
    wired ramp's clock start against the centre sync (Part 77); and, for pistons, the
-   the impulse cap at row+0x4c (Part 87),
+   mapping the angle rows' impulse cap (800 × the reduced mass, Part 90) to our units,
    the stiff pose re-base 0xcab7c when SetStiff turns stiffness on (Part 86);
    rerun the route and parity for D1188 (Part 89) once the PC is unlocked, and recheck
    the D1182 route fall with it.
