@@ -805,8 +805,15 @@ fn wrap_pi(x: f32) -> f32 {
 /// 0x95ba80, 0x1c5e8c), frictionless (0x95bc58), with no strength term, bias 0.4 × the
 /// separation past a slop of 1 (0x95bef4): hard positional holds of each anchor along a
 /// direction turned by the saved angle, which the prismatic joint here matches.
+/// D1188: FOUND (Part 88) the row's `delta` edge and its push do not depend on k, only
+/// the 1.5 × `err` edge's cap does, and its limits are the rule's range from the saved
+/// length. So a piston with a strength but no k (any pattern but 2, or wired in mode 1
+/// or 4) also slides: it is pushed by its rule's change each frame within that range but,
+/// with nothing to close the error, is not pulled back to the rule. Only strength 0 is
+/// held. `wired` no longer matters here.
 pub fn slides(params: &lbp_level::parts::JointParams, wired: bool) -> bool {
-    motor_damping(params) > 0. && motor_k(params, wired) > 0.
+    let _ = wired;
+    motor_damping(params) > 0.
 }
 
 /// D1103: at tick `now` steps each piston with the `signal` on its input and holds its

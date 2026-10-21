@@ -122,9 +122,12 @@
   (Part 85).
 - Merged: D1185 (PR 328, d93c4eb) the byte at +0x29 is editor-only (Part 86).
 - Merged: D1186 (PR 329, 37e3ddd) a non-stiff piston's angle rows are hard (Part 87).
-- D1187 (branch `logic-d1187`, worktree `E:\Projects\wt-d324`): a piston's rule and
-  limits start from its saved length, not the tweak minimum (docs/logic/part-88.md).
-- Decision numbers: D1100-D1199, next free D1188.
+- Merged: D1187 (PR 330, 1021384) a piston's rule and limits start from its saved
+  length (Part 88).
+- D1188 (branch `logic-d1188`, worktree `E:\Projects\wt-d324`): a piston with a
+  strength slides with or without a k (docs/logic/part-89.md). Route and parity PENDING
+  (PC locked, viewer DeviceLost at about tick 810, control on main too).
+- Decision numbers: D1100-D1199, next free D1189.
 
 ## Facts
 - Route run: as docs/lanes/level1.md Facts, with `--native-scripts`; captures under
@@ -179,7 +182,7 @@
   tick 1,000, ending at x -2,450.6, y 1,725.8 on tick 2,007 (Part 56); after D1155
   lift 2643 no longer sees its switched-off tags and Sackboy no longer falls: x -2,870.3,
   y 5,188.6 to about tick 1,400, then x -2,440.6, y 5,400.9 to tick 2,007 (Part 57).
-  After D1156 to D1187 unchanged (Parts 58-88; D1163 changes 2 Rookie Test
+  After D1156 to D1187 unchanged (Parts 58-88; D1188 PENDING; D1163 changes 2 Rookie Test
   followers, none on the route; D1164 and D1165 change no Rookie Test aimer; D1166 is not hosted).
 - Switch census (Part 14): `level_scripts` example with `--all` over the 01.33 catalog
   into local-analysis/logic/census-all-1.json (378 levels, 358 read, 141,572 switches);
@@ -314,7 +317,8 @@ when a later PR finds it), then the thread's own context at hand-off (ctx_audit)
 - D1186: general-purpose (sonnet), decoded the piston block's row pool and filler
   0x95ba80, 86k tokens, 20 tools, 4.6 minutes; thread context 106k after PR 329.
 - D1187: general-purpose (sonnet), decoded PJoint +0xf0/+0xc8 and row 0x960988's k=0
-  edges, 99k tokens, 47 tools, 6.8 minutes; thread context in the PR reply.
+  edges, 99k tokens, 47 tools, 6.8 minutes; thread context 136k after PR 330.
+- D1188: no subagent.
 
 ## Next
 Logic as a whole, one component kind per PR, each with a census across all levels, the
@@ -360,9 +364,9 @@ EBOOT rule and unit tests:
    the PPU); the
    wired ramp's clock start against the centre sync (Part 77); and, for pistons, the
    the impulse cap at row+0x4c (Part 87),
-   the stiff pose re-base 0xcab7c when SetStiff turns stiffness on (Part 86), and how a pattern-0 piston (k 0) closes the gap to its rule:
-   the game limits it to base..base + range (Part 88), while D1183 holds it at the rule;
-   recheck the D1182 route fall now that the base is the saved length.
+   the stiff pose re-base 0xcab7c when SetStiff turns stiffness on (Part 86);
+   rerun the route and parity for D1188 (Part 89) once the PC is unlocked, and recheck
+   the D1182 route fall with it.
 5. The creature brain (PEnemy reader NOT FOUND; leads: the TOC entry for string
    "PEnemy" 0xc79058, bit 0x1c tests); who puts a player in state 5 on contact (Part
    42 has the seat path) and sends the respawn (0x7feb8, Part 41); the controlinator's
